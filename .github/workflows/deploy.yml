@@ -1,0 +1,73 @@
+name: Deploy CDK Infrastructure
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:  # allows manual triggering
+
+jobs:
+  # Diff job for PRs
+  diff:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.CDK_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.CDK_AWS_SECRET_ACCESS_KEY }}
+          aws-region: eu-west-2
+
+      - name: CDK Diff
+        run: |
+          npx cdk diff
+
+  # Deploy job for main branch
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.CDK_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.CDK_AWS_SECRET_ACCESS_KEY }}
+          aws-region: eu-west-2
+
+      - name: CDK Bootstrap
+        run: npx cdk bootstrap
+
+      - name: CDK Deploy
+        run: npx cdk deploy --require-approval never
+
+      - name: Get Stack Outputs
+        id: outputs
+        run: |
+          BUCKET_NAME=$(aws cloudformation describe-stacks --stack-name AkliInfrastructureStack --query 'Stacks[0].Outputs[?OutputKey==`BucketName`].OutputValue' --output text)
+          DISTRIBUTION_ID=$(aws cloudformation describe-stacks --stack-name AkliInfrastructureStack --query 'Stacks[0].Outputs[?OutputKey==`DistributionId`].OutputValue' --output text)
+          echo "bucket-name=$BUCKET_NAME" >> $GITHUB_OUTPUT
+          echo "distribution-id=$DISTRIBUTION_ID" >> $GITHUB_OUTPUT

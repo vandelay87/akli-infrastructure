@@ -35,7 +35,7 @@ export class AkliInfrastructureStack extends Stack {
     const certificate = new certificatemanager.DnsValidatedCertificate(this, 'SiteCert', {
       domainName,
       hostedZone,
-      region: 'us-east-1',
+      region: 'us-east-1', // Cross-region certificate
     })
 
     // S3 bucket for everything
@@ -118,15 +118,57 @@ export class AkliInfrastructureStack extends Stack {
       target: route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)),
     })
 
-    // Single deployment for everything
-    new s3deploy.BucketDeployment(this, 'DeployWebsite', {
-      sources: [s3deploy.Source.asset('./dist')], // Your build output folder
-      destinationBucket: siteBucket,
-      distribution: distribution,
-      distributionPaths: ['/*'],
-      prune: true,
-      exclude: ['*.map'], // Exclude source maps
+    // IAM user for GitHub Actions deployment
+    const deployUser = new iam.User(this, 'GitHubActionsUser', {
+      userName: 'github-actions-deploy',
     })
+
+    // Access key for GitHub Actions
+    const accessKey = new iam.AccessKey(this, 'GitHubActionsAccessKey', {
+      user: deployUser,
+    })
+
+    // Policy for S3 and CloudFront access
+    const deployPolicy = new iam.Policy(this, 'GitHubActionsDeployPolicy', {
+      statements: [
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            's3:GetObject',
+            's3:PutObject',
+            's3:DeleteObject',
+            's3:ListBucket',
+          ],
+          resources: [
+            siteBucket.bucketArn,
+            `${siteBucket.bucketArn}/*`,
+          ],
+        }),
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['cloudfront:CreateInvalidation'],
+          resources: [`arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`],
+        }),
+      ],
+    })
+
+    // Attach policy to user
+    deployUser.attachInlinePolicy(deployPolicy)
+
+    // IAM user for CDK GitHub Actions (separate user for infrastructure)
+    const cdkUser = new iam.User(this, 'CDKGitHubActionsUser', {
+      userName: 'cdk-github-actions',
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('PowerUserAccess'), // For CDK operations
+      ],
+    })
+
+    // Access key for CDK GitHub Actions
+    const cdkAccessKey = new iam.AccessKey(this, 'CDKGitHubActionsAccessKey', {
+      user: cdkUser,
+    })
+
+    // Website deployment handled by GitHub Actions in separate repo
 
     // Outputs
     new CfnOutput(this, 'BucketName', {
@@ -142,6 +184,26 @@ export class AkliInfrastructureStack extends Stack {
     new CfnOutput(this, 'WebsiteUrl', {
       value: `https://${domainName}`,
       description: 'Website URL',
+    })
+
+    new CfnOutput(this, 'GitHubActionsAccessKeyId', {
+      value: accessKey.accessKeyId,
+      description: 'Access Key ID for GitHub Actions',
+    })
+
+    new CfnOutput(this, 'GitHubActionsSecretAccessKey', {
+      value: accessKey.secretAccessKey.unsafeUnwrap(),
+      description: 'Secret Access Key for GitHub Actions (handle securely!)',
+    })
+
+    new CfnOutput(this, 'CDKGitHubActionsAccessKeyId', {
+      value: cdkAccessKey.accessKeyId,
+      description: 'Access Key ID for CDK GitHub Actions',
+    })
+
+    new CfnOutput(this, 'CDKGitHubActionsSecretAccessKey', {
+      value: cdkAccessKey.secretAccessKey.unsafeUnwrap(),
+      description: 'Secret Access Key for CDK GitHub Actions (handle securely!)',
     })
   }
 }
