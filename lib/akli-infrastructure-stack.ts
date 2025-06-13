@@ -31,10 +31,11 @@ export class AkliInfrastructureStack extends Stack {
       zoneName: domainName,
     })
 
-    // TLS certificate for domain
-    const certificate = new certificatemanager.Certificate(this, 'SiteCert', {
+    // TLS certificate for domain - MUST be in us-east-1 for CloudFront
+    const certificate = new certificatemanager.DnsValidatedCertificate(this, 'SiteCert', {
       domainName,
-      validation: certificatemanager.CertificateValidation.fromDns(hostedZone),
+      hostedZone,
+      region: 'us-east-1',
     })
 
     // S3 bucket for everything
