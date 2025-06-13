@@ -10,7 +10,7 @@ import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager'
 import * as iam from 'aws-cdk-lib/aws-iam'
 
-export class AkliCdkStack extends Stack {
+export class AkliInfrastructureStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props)
 
