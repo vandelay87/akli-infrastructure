@@ -27,8 +27,8 @@ export class AkliInfrastructureStack extends Stack {
     });
 
     // Lookup the Route 53 hosted zone
-    const hostedZone = route53.HostedZone.fromLookup(this, 'HostedZone', {
-      domainName,
+    const hostedZone = new route53.HostedZone(this, 'HostedZone', {
+      zoneName: domainName,
     })
 
     // TLS certificate for domain
