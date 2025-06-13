@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
-import { AkliCdkStack } from '../lib/akli-infrastructure-stack';
+import { AkliInfrastructureStack } from '../lib/akli-infrastructure-stack';
 
 const app = new cdk.App();
 
@@ -9,7 +9,7 @@ const account = app.node.tryGetContext('account') || process.env.CDK_DEFAULT_ACC
 const region = app.node.tryGetContext('region') || process.env.CDK_DEFAULT_REGION;
 
 // Create the stack with proper environment configuration
-new AkliCdkStack(app, 'AkliCdkStack', {
+new AkliInfrastructureStack(app, 'AkliInfrastructureStack', {
   env: {
     account,
     region
