@@ -14,7 +14,8 @@ export class AkliInfrastructureStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props)
 
-    const domainName = 'akli.dev'
+    const DOMAIN_NAME = 'akli.dev'
+    const WWW_DOMAIN_NAME = `www.${DOMAIN_NAME}`
 
     // Add secrets
     new secretsmanager.Secret(this, 'CdkDefaultAccount', {
@@ -28,12 +29,13 @@ export class AkliInfrastructureStack extends Stack {
 
     // Lookup the Route 53 hosted zone
     const hostedZone = new route53.HostedZone(this, 'HostedZone', {
-      zoneName: domainName,
+      zoneName: DOMAIN_NAME,
     })
 
     // TLS certificate for domain - MUST be in us-east-1 for CloudFront
     const certificate = new certificatemanager.DnsValidatedCertificate(this, 'SiteCert', {
-      domainName,
+      domainName: DOMAIN_NAME,
+      subjectAlternativeNames: [WWW_DOMAIN_NAME],
       hostedZone,
       region: 'us-east-1', // Cross-region certificate
     })
@@ -49,7 +51,7 @@ export class AkliInfrastructureStack extends Stack {
 
     // Origin Access Control
     const originAccessControl = new cloudfront.S3OriginAccessControl(this, 'SiteOAC', {
-      description: `OAC for ${domainName}`,
+      description: `OAC for ${DOMAIN_NAME}`,
     })
 
     // Security headers
@@ -70,7 +72,7 @@ export class AkliInfrastructureStack extends Stack {
     // CloudFront distribution
     const distribution = new cloudfront.Distribution(this, 'SiteDistribution', {
       defaultRootObject: 'index.html',
-      domainNames: [domainName],
+      domainNames: [DOMAIN_NAME, WWW_DOMAIN_NAME], // Add both domains
       certificate,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
       defaultBehavior: {
@@ -112,9 +114,16 @@ export class AkliInfrastructureStack extends Stack {
       },
     }))
 
-    // DNS A record
+    // DNS A record for apex domain
     new route53.ARecord(this, 'SiteAliasRecord', {
       zone: hostedZone,
+      target: route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)),
+    })
+
+    // DNS A record for www subdomain
+    new route53.ARecord(this, 'WWWSiteAliasRecord', {
+      zone: hostedZone,
+      recordName: 'www',
       target: route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)),
     })
 
@@ -182,8 +191,13 @@ export class AkliInfrastructureStack extends Stack {
     })
 
     new CfnOutput(this, 'WebsiteUrl', {
-      value: `https://${domainName}`,
+      value: `https://${DOMAIN_NAME}`,
       description: 'Website URL',
+    })
+
+    new CfnOutput(this, 'WWWWebsiteUrl', {
+      value: `https://${WWW_DOMAIN_NAME}`,
+      description: 'WWW Website URL',
     })
 
     new CfnOutput(this, 'GitHubActionsAccessKeyId', {
