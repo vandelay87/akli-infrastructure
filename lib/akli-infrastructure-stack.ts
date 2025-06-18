@@ -69,10 +69,32 @@ export class AkliInfrastructureStack extends Stack {
       },
     })
 
-    // CloudFront distribution
-    const distribution = new cloudfront.Distribution(this, 'SiteDistribution', {
+    // CloudFront function to redirect www to apex
+    const wwwRedirectFunction = new cloudfront.Function(this, 'WWWRedirectFunction', {
+      code: cloudfront.FunctionCode.fromInline(`
+        function handler(event) {
+          var request = event.request;
+          var host = request.headers.host.value;
+
+          if (host === '${WWW_DOMAIN_NAME}') {
+            return {
+              statusCode: 301,
+              statusDescription: 'Moved Permanently',
+              headers: {
+                'location': { value: 'https://${DOMAIN_NAME}' + request.uri + (request.querystring ? '?' + request.querystring : '') }
+              }
+            };
+          }
+
+          return request;
+        }
+      `),
+    })
+
+    // Main CloudFront distribution for apex domain (akli.dev)
+    const mainDistribution = new cloudfront.Distribution(this, 'MainSiteDistribution', {
       defaultRootObject: 'index.html',
-      domainNames: [DOMAIN_NAME, WWW_DOMAIN_NAME], // Add both domains
+      domainNames: [DOMAIN_NAME], // Only apex domain serves content
       certificate,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
       defaultBehavior: {
@@ -100,31 +122,64 @@ export class AkliInfrastructureStack extends Stack {
       ],
     })
 
-    // Grant CloudFront access to S3 bucket
+    // WWW redirect distribution (redirects www to apex)
+    const wwwRedirectDistribution = new cloudfront.Distribution(this, 'WWWRedirectDistribution', {
+      domainNames: [WWW_DOMAIN_NAME], // Only www domain
+      certificate,
+      priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
+      defaultBehavior: {
+        origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
+          originAccessControl: originAccessControl,
+        }),
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED, // Don't cache redirects
+        compress: false,
+        functionAssociations: [{
+          function: wwwRedirectFunction,
+          eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+        }],
+      },
+    })
+
+    // Grant CloudFront access to S3 bucket for main distribution
     siteBucket.addToResourcePolicy(new iam.PolicyStatement({
-      sid: 'AllowCloudFrontServicePrincipal',
+      sid: 'AllowCloudFrontServicePrincipalMain',
       effect: iam.Effect.ALLOW,
       principals: [new iam.ServicePrincipal('cloudfront.amazonaws.com')],
       actions: ['s3:GetObject'],
       resources: [`${siteBucket.bucketArn}/*`],
       conditions: {
         StringEquals: {
-          'AWS:SourceArn': `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`,
+          'AWS:SourceArn': `arn:aws:cloudfront::${this.account}:distribution/${mainDistribution.distributionId}`,
         },
       },
     }))
 
-    // DNS A record for apex domain
+    // Grant CloudFront access to S3 bucket for www redirect distribution
+    siteBucket.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AllowCloudFrontServicePrincipalWWW',
+      effect: iam.Effect.ALLOW,
+      principals: [new iam.ServicePrincipal('cloudfront.amazonaws.com')],
+      actions: ['s3:GetObject'],
+      resources: [`${siteBucket.bucketArn}/*`],
+      conditions: {
+        StringEquals: {
+          'AWS:SourceArn': `arn:aws:cloudfront::${this.account}:distribution/${wwwRedirectDistribution.distributionId}`,
+        },
+      },
+    }))
+
+    // DNS A record for apex domain (serves the actual content)
     new route53.ARecord(this, 'SiteAliasRecord', {
       zone: hostedZone,
-      target: route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)),
+      target: route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(mainDistribution)),
     })
 
-    // DNS A record for www subdomain
+    // DNS A record for www subdomain (redirects to apex)
     new route53.ARecord(this, 'WWWSiteAliasRecord', {
       zone: hostedZone,
       recordName: 'www',
-      target: route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)),
+      target: route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(wwwRedirectDistribution)),
     })
 
     // IAM user for GitHub Actions deployment
@@ -156,7 +211,10 @@ export class AkliInfrastructureStack extends Stack {
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,
           actions: ['cloudfront:CreateInvalidation'],
-          resources: [`arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`],
+          resources: [
+            `arn:aws:cloudfront::${this.account}:distribution/${mainDistribution.distributionId}`,
+            `arn:aws:cloudfront::${this.account}:distribution/${wwwRedirectDistribution.distributionId}`,
+          ],
         }),
       ],
     })
@@ -177,27 +235,30 @@ export class AkliInfrastructureStack extends Stack {
       user: cdkUser,
     })
 
-    // Website deployment handled by GitHub Actions in separate repo
-
     // Outputs
     new CfnOutput(this, 'BucketName', {
       value: siteBucket.bucketName,
       description: 'S3 bucket name',
     })
 
-    new CfnOutput(this, 'DistributionId', {
-      value: distribution.distributionId,
-      description: 'CloudFront distribution ID',
+    new CfnOutput(this, 'MainDistributionId', {
+      value: mainDistribution.distributionId,
+      description: 'Main CloudFront distribution ID (apex domain)',
+    })
+
+    new CfnOutput(this, 'WWWDistributionId', {
+      value: wwwRedirectDistribution.distributionId,
+      description: 'WWW redirect CloudFront distribution ID',
     })
 
     new CfnOutput(this, 'WebsiteUrl', {
       value: `https://${DOMAIN_NAME}`,
-      description: 'Website URL',
+      description: 'Main Website URL (apex domain)',
     })
 
     new CfnOutput(this, 'WWWWebsiteUrl', {
       value: `https://${WWW_DOMAIN_NAME}`,
-      description: 'WWW Website URL',
+      description: 'WWW URL (redirects to apex)',
     })
 
     new CfnOutput(this, 'GitHubActionsAccessKeyId', {
