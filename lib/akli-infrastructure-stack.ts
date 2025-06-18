@@ -27,17 +27,17 @@ export class AkliInfrastructureStack extends Stack {
       secretStringValue: SecretValue.unsafePlainText(process.env.CDK_DEFAULT_REGION || ''),
     });
 
-    // Lookup the Route 53 hosted zone
-    const hostedZone = new route53.HostedZone(this, 'HostedZone', {
-      zoneName: DOMAIN_NAME,
+    // Look up existing hosted zone
+    const hostedZone = route53.HostedZone.fromLookup(this, 'HostedZone', {
+      domainName: DOMAIN_NAME,
     })
 
     // TLS certificate for domain - MUST be in us-east-1 for CloudFront
-    const certificate = new certificatemanager.DnsValidatedCertificate(this, 'SiteCert', {
+    // Use Certificate
+    const certificate = new certificatemanager.Certificate(this, 'SiteCert', {
       domainName: DOMAIN_NAME,
       subjectAlternativeNames: [WWW_DOMAIN_NAME],
-      hostedZone,
-      region: 'us-east-1', // Cross-region certificate
+      validation: certificatemanager.CertificateValidation.fromDns(hostedZone),
     })
 
     // S3 bucket for everything
