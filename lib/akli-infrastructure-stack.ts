@@ -27,16 +27,17 @@ export class AkliInfrastructureStack extends Stack {
       secretStringValue: SecretValue.unsafePlainText(process.env.CDK_DEFAULT_REGION || ''),
     });
 
-    // Look up existing hosted zone
-    const hostedZone = route53.HostedZone.fromLookup(this, 'HostedZone', {
-      domainName: DOMAIN_NAME,
+    // Lookup the Route 53 hosted zone
+    const hostedZone = new route53.HostedZone(this, 'HostedZone', {
+      zoneName: DOMAIN_NAME,
     })
 
-    // Certificate
-    const certificate = new certificatemanager.Certificate(this, 'SiteCert', {
+    // TLS certificate for domain - MUST be in us-east-1 for CloudFront
+    const certificate = new certificatemanager.DnsValidatedCertificate(this, 'SiteCert', {
       domainName: DOMAIN_NAME,
       subjectAlternativeNames: [WWW_DOMAIN_NAME],
-      validation: certificatemanager.CertificateValidation.fromDns(hostedZone),
+      hostedZone,
+      region: 'us-east-1', // Cross-region certificate
     })
 
     // S3 bucket for everything
@@ -68,10 +69,10 @@ export class AkliInfrastructureStack extends Stack {
       },
     })
 
-    // CloudFront distribution - serves both akli.dev and www.akli.dev
+    // CloudFront distribution
     const distribution = new cloudfront.Distribution(this, 'SiteDistribution', {
       defaultRootObject: 'index.html',
-      domainNames: [DOMAIN_NAME, WWW_DOMAIN_NAME], // Both domains point to same content
+      domainNames: [DOMAIN_NAME, WWW_DOMAIN_NAME], // Add both domains
       certificate,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
       defaultBehavior: {
@@ -113,13 +114,13 @@ export class AkliInfrastructureStack extends Stack {
       },
     }))
 
-    // DNS A record for apex domain (akli.dev)
+    // DNS A record for apex domain
     new route53.ARecord(this, 'SiteAliasRecord', {
       zone: hostedZone,
       target: route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)),
     })
 
-    // DNS A record for www subdomain (www.akli.dev)
+    // DNS A record for www subdomain
     new route53.ARecord(this, 'WWWSiteAliasRecord', {
       zone: hostedZone,
       recordName: 'www',
