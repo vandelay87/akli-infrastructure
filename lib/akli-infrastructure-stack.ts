@@ -28,8 +28,9 @@ export class AkliInfrastructureStack extends Stack {
     });
 
     // Lookup the Route 53 hosted zone
-    const hostedZone = route53.HostedZone.fromLookup(this, 'HostedZone', {
-      domainName: DOMAIN_NAME,
+    const hostedZone = route53.HostedZone.fromHostedZoneAttributes(this, 'HostedZone', {
+      hostedZoneId: 'Z01187527UMKIW5T6UAU',
+      zoneName: DOMAIN_NAME,
     })
 
     // TLS certificate for domain - MUST be in us-east-1 for CloudFront
