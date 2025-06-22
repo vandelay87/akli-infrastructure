@@ -3,6 +3,7 @@ import { Construct } from 'constructs'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
+import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as targets from 'aws-cdk-lib/aws-route53-targets'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
@@ -12,6 +13,9 @@ import * as iam from 'aws-cdk-lib/aws-iam'
 export class AkliInfrastructureStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props)
+
+    // Disable termination protection
+    this.terminationProtection = false
 
     const DOMAIN_NAME = 'akli.dev'
     const WWW_DOMAIN_NAME = `www.${DOMAIN_NAME}`
@@ -32,10 +36,11 @@ export class AkliInfrastructureStack extends Stack {
     })
 
     // TLS certificate for domain - MUST be in us-east-1 for CloudFront
-    const certificate = new certificatemanager.Certificate(this, 'SiteCert', {
+    const certificate = new certificatemanager.DnsValidatedCertificate(this, 'SiteCert', {
       domainName: DOMAIN_NAME,
       subjectAlternativeNames: [WWW_DOMAIN_NAME],
-      validation: certificatemanager.CertificateValidation.fromDns(hostedZone),
+      hostedZone,
+      region: 'us-east-1', // Cross-region certificate
     })
 
     // S3 bucket for everything
