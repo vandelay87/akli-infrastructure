@@ -135,9 +135,19 @@ export class AkliInfrastructureStack extends Stack {
       userName: 'github-actions-deploy',
     })
 
-    // Access key for GitHub Actions
+    // Access key for GitHub Actions - stored in Secrets Manager
     const accessKey = new iam.AccessKey(this, 'GitHubActionsAccessKey', {
       user: deployUser,
+    })
+
+    // Store GitHub Actions credentials in Secrets Manager
+    new secretsmanager.Secret(this, 'GitHubActionsCredentials', {
+      secretName: 'github-actions-credentials',
+      secretObjectValue: {
+        accessKeyId: SecretValue.unsafePlainText(accessKey.accessKeyId),
+        secretAccessKey: accessKey.secretAccessKey,
+      },
+      description: 'GitHub Actions deployment credentials',
     })
 
     // Policy for S3 and CloudFront access
@@ -175,12 +185,22 @@ export class AkliInfrastructureStack extends Stack {
       ],
     })
 
-    // Access key for CDK GitHub Actions
+    // Access key for CDK GitHub Actions - stored in Secrets Manager
     const cdkAccessKey = new iam.AccessKey(this, 'CDKGitHubActionsAccessKey', {
       user: cdkUser,
     })
 
-    // Outputs
+    // Store CDK GitHub Actions credentials in Secrets Manager
+    new secretsmanager.Secret(this, 'CDKGitHubActionsCredentials', {
+      secretName: 'cdk-github-actions-credentials',
+      secretObjectValue: {
+        accessKeyId: SecretValue.unsafePlainText(cdkAccessKey.accessKeyId),
+        secretAccessKey: cdkAccessKey.secretAccessKey,
+      },
+      description: 'CDK GitHub Actions credentials',
+    })
+
+    // CloudFormation outputs
     new CfnOutput(this, 'BucketName', {
       value: siteBucket.bucketName,
       description: 'S3 bucket name',
@@ -201,24 +221,14 @@ export class AkliInfrastructureStack extends Stack {
       description: 'WWW Website URL',
     })
 
-    new CfnOutput(this, 'GitHubActionsAccessKeyId', {
-      value: accessKey.accessKeyId,
-      description: 'Access Key ID for GitHub Actions',
+    new CfnOutput(this, 'GitHubActionsSecretsManagerName', {
+      value: 'github-actions-credentials',
+      description: 'Secrets Manager secret name for GitHub Actions credentials',
     })
 
-    new CfnOutput(this, 'GitHubActionsSecretAccessKey', {
-      value: accessKey.secretAccessKey.unsafeUnwrap(),
-      description: 'Secret Access Key for GitHub Actions (handle securely!)',
-    })
-
-    new CfnOutput(this, 'CDKGitHubActionsAccessKeyId', {
-      value: cdkAccessKey.accessKeyId,
-      description: 'Access Key ID for CDK GitHub Actions',
-    })
-
-    new CfnOutput(this, 'CDKGitHubActionsSecretAccessKey', {
-      value: cdkAccessKey.secretAccessKey.unsafeUnwrap(),
-      description: 'Secret Access Key for CDK GitHub Actions (handle securely!)',
+    new CfnOutput(this, 'CDKGitHubActionsSecretsManagerName', {
+      value: 'cdk-github-actions-credentials',
+      description: 'Secrets Manager secret name for CDK GitHub Actions credentials',
     })
   }
 }
