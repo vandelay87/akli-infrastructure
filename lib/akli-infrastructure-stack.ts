@@ -72,6 +72,17 @@ export class AkliInfrastructureStack extends Stack {
       },
     })
 
+    // Cache policy for images with query string support
+    const imageCachePolicy = new cloudfront.CachePolicy(this, 'ImageCachePolicy', {
+      cachePolicyName: 'ImageOptimizationPolicy',
+      defaultTtl: Duration.days(30),
+      maxTtl: Duration.days(365),
+      minTtl: Duration.seconds(0),
+      queryStringBehavior: cloudfront.CacheQueryStringBehavior.all(), // Allow all query params
+      headerBehavior: cloudfront.CacheHeaderBehavior.allowList('Accept', 'CloudFront-Viewer-Country'),
+      cookieBehavior: cloudfront.CacheCookieBehavior.none(),
+    })
+
     // CloudFront distribution
     const distribution = new cloudfront.Distribution(this, 'SiteDistribution', {
       defaultRootObject: 'index.html',
@@ -86,6 +97,18 @@ export class AkliInfrastructureStack extends Stack {
         cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
         responseHeadersPolicy: securityHeadersPolicy,
         compress: true,
+      },
+      additionalBehaviors: {
+        // Special behavior for images with query string caching
+        'images/*': {
+          origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
+            originAccessControl: originAccessControl,
+          }),
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          cachePolicy: imageCachePolicy, // Use our custom cache policy
+          responseHeadersPolicy: securityHeadersPolicy,
+          compress: true,
+        },
       },
       errorResponses: [
         {
