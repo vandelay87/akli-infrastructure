@@ -5,10 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:  # allows manual triggering
+  workflow_dispatch:  # Allows manual triggering from the GitHub Actions tab
 
 jobs:
-  # Diff job for PRs
+  # 1. Diff Job: Runs on PRs to show you what infrastructure changes will happen
   diff:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -19,25 +19,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 8
-
-      - name: Get pnpm store directory
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
-
-      - name: Setup pnpm cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
@@ -52,9 +39,9 @@ jobs:
       - name: CDK Diff
         run: pnpm cdk diff
 
-  # Deploy job for main branch
+  # 2. Deploy Job: Runs on Push to main to apply changes and clear cache
   deploy:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -63,25 +50,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 8
-
-      - name: Get pnpm store directory
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
-
-      - name: Setup pnpm cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
@@ -99,10 +73,21 @@ jobs:
       - name: CDK Deploy
         run: pnpm cdk deploy --require-approval never
 
-      - name: Get Stack Outputs
-        id: outputs
+      - name: Refresh CloudFront Cache
         run: |
-          BUCKET_NAME=$(aws cloudformation describe-stacks --stack-name AkliInfrastructureStack --query 'Stacks[0].Outputs[?OutputKey==`BucketName`].OutputValue' --output text)
-          DISTRIBUTION_ID=$(aws cloudformation describe-stacks --stack-name AkliInfrastructureStack --query 'Stacks[0].Outputs[?OutputKey==`DistributionId`].OutputValue' --output text)
-          echo "bucket-name=$BUCKET_NAME" >> $GITHUB_OUTPUT
-          echo "distribution-id=$DISTRIBUTION_ID" >> $GITHUB_OUTPUT
+          # Fetch the Distribution ID from the CloudFormation Stack Outputs
+          DIST_ID=$(aws cloudformation describe-stacks \
+            --stack-name AkliInfrastructureStack \
+            --query 'Stacks[0].Outputs[?OutputKey==`DistributionId`].OutputValue' \
+            --output text)
+
+          # Create the invalidation to ensure the new site version is live
+          if [ -n "$DIST_ID" ] && [ "$DIST_ID" != "None" ]; then
+            echo "Invalidating CloudFront Distribution: $DIST_ID"
+            aws cloudfront create-invalidation \
+              --distribution-id "$DIST_ID" \
+              --paths "/*"
+          else
+            echo "Error: Could not find DistributionId in Stack outputs."
+            exit 1
+          fi
