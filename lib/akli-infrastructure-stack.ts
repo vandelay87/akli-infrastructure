@@ -109,6 +109,16 @@ export class AkliInfrastructureStack extends Stack {
           responseHeadersPolicy: securityHeadersPolicy,
           compress: true,
         },
+        // Sand box game
+        'sand-box/*': {
+          origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
+            originAccessControl: originAccessControl,
+          }),
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+          responseHeadersPolicy: securityHeadersPolicy,
+          compress: true,
+        },
       },
       errorResponses: [
         {
@@ -131,8 +141,11 @@ export class AkliInfrastructureStack extends Stack {
       sid: 'AllowCloudFrontServicePrincipal',
       effect: iam.Effect.ALLOW,
       principals: [new iam.ServicePrincipal('cloudfront.amazonaws.com')],
-      actions: ['s3:GetObject'],
-      resources: [`${siteBucket.bucketArn}/*`],
+      actions: ['s3:GetObject', 's3:ListBucket'],
+      resources: [
+        siteBucket.bucketArn,
+        `${siteBucket.bucketArn}/*`,
+      ],
       conditions: {
         StringEquals: {
           'AWS:SourceArn': `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`,
