@@ -83,6 +83,26 @@ export class AkliInfrastructureStack extends Stack {
       cookieBehavior: cloudfront.CacheCookieBehavior.none(),
     })
 
+    const rewriteFunction = new cloudfront.Function(this, 'SubfolderIndexRewrite', {
+      code: cloudfront.FunctionCode.fromInline(`
+      function handler(event) {
+        var request = event.request;
+        var uri = request.uri;
+
+        // If asking for a folder (ends in /), append index.html
+        if (uri.endsWith('/')) {
+          request.uri += 'index.html';
+        }
+        // If asking for a path with no extension (like /sand-box), add /index.html
+        else if (!uri.includes('.')) {
+          request.uri += '/index.html';
+        }
+
+        return request;
+      }
+    `),
+    });
+
     // CloudFront distribution
     const distribution = new cloudfront.Distribution(this, 'SiteDistribution', {
       defaultRootObject: 'index.html',
@@ -118,6 +138,10 @@ export class AkliInfrastructureStack extends Stack {
           cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
           responseHeadersPolicy: securityHeadersPolicy,
           compress: true,
+          functionAssociations: [{
+            function: rewriteFunction,
+            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+          }],
         },
       },
       errorResponses: [
