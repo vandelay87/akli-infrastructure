@@ -83,7 +83,7 @@ export class AkliInfrastructureStack extends Stack {
       cookieBehavior: cloudfront.CacheCookieBehavior.none(),
     })
 
-    const rewriteFunction = new cloudfront.Function(this, 'SubfolderIndexRewrite', {
+    const subdirectoryIndexHandler = new cloudfront.Function(this, 'SubfolderIndexRewrite', {
       code: cloudfront.FunctionCode.fromInline(`
         function handler(event) {
           var request = event.request;
@@ -140,7 +140,7 @@ export class AkliInfrastructureStack extends Stack {
           responseHeadersPolicy: securityHeadersPolicy,
           compress: true,
           functionAssociations: [{
-            function: rewriteFunction,
+            function: subdirectoryIndexHandler,
             eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
           }],
         },
