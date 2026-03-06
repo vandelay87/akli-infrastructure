@@ -85,22 +85,23 @@ export class AkliInfrastructureStack extends Stack {
 
     const rewriteFunction = new cloudfront.Function(this, 'SubfolderIndexRewrite', {
       code: cloudfront.FunctionCode.fromInline(`
-      function handler(event) {
-        var request = event.request;
-        var uri = request.uri;
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
 
-        // If asking for a folder (ends in /), append index.html
-        if (uri.endsWith('/')) {
-          request.uri += 'index.html';
-        }
-        // If asking for a path with no extension (like /sand-box), add /index.html
-        else if (!uri.includes('.')) {
-          request.uri += '/index.html';
-        }
+          // If it ends in a slash, it's a directory; fetch index.html
+          if (uri.endsWith('/')) {
+            request.uri += 'index.html';
+          }
+          // If it DOES NOT have a '.' (e.g., .js, .css, .png)
+          // AND does not end in a slash, it's a "naked" path (e.g., /sand-box)
+          else if (!uri.includes('.')) {
+            request.uri += '/index.html';
+          }
 
-        return request;
-      }
-    `),
+          return request;
+        }
+      `),
     });
 
     // CloudFront distribution
