@@ -131,7 +131,7 @@ export class AkliInfrastructureStack extends Stack {
           compress: true,
         },
         // Sand box game
-        'sand-box*': {
+        'apps/sand-box*': {
           origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
             originAccessControl: originAccessControl,
           }),
