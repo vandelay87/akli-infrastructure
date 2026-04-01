@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
 import { AkliInfrastructureStack } from '../lib/akli-infrastructure-stack';
+import { CertificateStack } from '../lib/certificate-stack';
 
 const app = new cdk.App();
 
@@ -8,22 +9,28 @@ const app = new cdk.App();
 const account = app.node.tryGetContext('account') || process.env.CDK_DEFAULT_ACCOUNT;
 const region = app.node.tryGetContext('region') || process.env.CDK_DEFAULT_REGION;
 
-// Create the stack with proper environment configuration
+// ACM certificate must be in us-east-1 for CloudFront.
+// crossRegionReferences allows the main stack (eu-west-2) to consume outputs
+// from this stack (us-east-1) via SSM Parameter Store.
+const certStack = new CertificateStack(app, 'AkliCertificateStack', {
+  env: { account, region: 'us-east-1' },
+  crossRegionReferences: true,
+  description: 'ACM certificate and Route 53 hosted zone for akli.dev (must be us-east-1)',
+})
+
 new AkliInfrastructureStack(app, 'AkliInfrastructureStack', {
-  env: {
-    account,
-    region
-  },
+  env: { account, region },
+  crossRegionReferences: true,
+  certificate: certStack.certificate,
+  hostedZone: certStack.hostedZone,
   description: 'Static website hosting for akli.dev with CloudFront and S3',
 
-  // Add tags for better resource management
   tags: {
     Project: 'akli-website',
     Environment: 'production',
     ManagedBy: 'CDK',
   },
 
-  // Enable termination protection for production
   terminationProtection: true,
 });
 

@@ -1,0 +1,31 @@
+import { Stack, StackProps } from 'aws-cdk-lib'
+import { Construct } from 'constructs'
+import * as route53 from 'aws-cdk-lib/aws-route53'
+import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
+
+const DOMAIN_NAME = 'akli.dev'
+const WWW_DOMAIN_NAME = `www.${DOMAIN_NAME}`
+
+/**
+ * Separate stack for the ACM certificate and Route 53 hosted zone.
+ * Must be deployed to us-east-1 because CloudFront only accepts certificates
+ * from that region.
+ */
+export class CertificateStack extends Stack {
+  public readonly hostedZone: route53.HostedZone
+  public readonly certificate: certificatemanager.Certificate
+
+  constructor(scope: Construct, id: string, props?: StackProps) {
+    super(scope, id, props)
+
+    this.hostedZone = new route53.HostedZone(this, 'HostedZone', {
+      zoneName: DOMAIN_NAME,
+    })
+
+    this.certificate = new certificatemanager.Certificate(this, 'SiteCert', {
+      domainName: DOMAIN_NAME,
+      subjectAlternativeNames: [WWW_DOMAIN_NAME],
+      validation: certificatemanager.CertificateValidation.fromDns(this.hostedZone),
+    })
+  }
+}

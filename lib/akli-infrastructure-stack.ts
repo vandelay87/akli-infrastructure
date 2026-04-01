@@ -3,16 +3,22 @@ import { Construct } from 'constructs'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
-import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as targets from 'aws-cdk-lib/aws-route53-targets'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager'
 import * as iam from 'aws-cdk-lib/aws-iam'
 
+interface AkliInfrastructureStackProps extends StackProps {
+  hostedZone: route53.IHostedZone
+  certificate: certificatemanager.ICertificate
+}
+
 export class AkliInfrastructureStack extends Stack {
-  constructor(scope: Construct, id: string, props?: StackProps) {
+  constructor(scope: Construct, id: string, props: AkliInfrastructureStackProps) {
     super(scope, id, props)
+
+    const { hostedZone, certificate } = props
 
     // Disable termination protection
     this.terminationProtection = false
@@ -29,19 +35,6 @@ export class AkliInfrastructureStack extends Stack {
       secretName: 'CDK_DEFAULT_REGION',
       secretStringValue: SecretValue.unsafePlainText(process.env.CDK_DEFAULT_REGION || ''),
     });
-
-    // Lookup the Route 53 hosted zone
-    const hostedZone = new route53.HostedZone(this, 'HostedZone', {
-      zoneName: DOMAIN_NAME,
-    })
-
-    // TLS certificate for domain - MUST be in us-east-1 for CloudFront
-    const certificate = new certificatemanager.DnsValidatedCertificate(this, 'SiteCert', {
-      domainName: DOMAIN_NAME,
-      subjectAlternativeNames: [WWW_DOMAIN_NAME],
-      hostedZone,
-      region: 'us-east-1', // Cross-region certificate
-    })
 
     // S3 bucket for everything
     const siteBucket = new s3.Bucket(this, 'SiteBucket', {
