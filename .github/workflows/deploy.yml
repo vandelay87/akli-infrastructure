@@ -37,7 +37,7 @@ jobs:
           aws-region: eu-west-2
 
       - name: CDK Diff
-        run: pnpm cdk diff
+        run: pnpm cdk diff --all
 
   # 2. Deploy Job: Runs on Push to main to apply changes and clear cache
   deploy:
@@ -71,7 +71,7 @@ jobs:
         run: pnpm cdk bootstrap
 
       - name: CDK Deploy
-        run: pnpm cdk deploy --require-approval never
+        run: pnpm cdk deploy --all --require-approval never
 
       - name: Refresh CloudFront Cache
         run: |

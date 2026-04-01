@@ -235,7 +235,7 @@ export class AkliInfrastructureStack extends Stack {
     const cdkUser = new iam.User(this, 'CDKGitHubActionsUser', {
       userName: 'cdk-github-actions',
       managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName('PowerUserAccess'), // For CDK operations
+        iam.ManagedPolicy.fromAwsManagedPolicyName('AdministratorAccess'), // CDK bootstrap requires IAM permissions
       ],
     })
 
