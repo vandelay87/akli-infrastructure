@@ -118,6 +118,8 @@ All resources are added to the existing `AkliInfrastructureStack` in `eu-west-2`
 - [ ] `cdk deploy` completes successfully
 - [ ] Existing static site continues to work during and after deployment (no downtime)
 - [ ] Tags (Owner, CostCenter, Project, Environment, ManagedBy) are applied to all new resources
+- [ ] CDK assertion tests verify the synthesised template contains: Lambda function with correct runtime and memory, HTTP API Gateway, CloudFront origin failover group, SSR cache policy, static asset cache behaviours, and updated IAM policy
+- [ ] All tests pass (`pnpm test`)
 
 ## Open Questions
 

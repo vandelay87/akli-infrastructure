@@ -1,4 +1,4 @@
-import { Stack, StackProps, RemovalPolicy, CfnOutput, Duration, SecretValue } from 'aws-cdk-lib'
+import { Stack, StackProps, RemovalPolicy, CfnOutput, Duration, SecretValue, Fn } from 'aws-cdk-lib'
 import { Construct } from 'constructs'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
@@ -8,6 +8,11 @@ import * as targets from 'aws-cdk-lib/aws-route53-targets'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager'
 import * as iam from 'aws-cdk-lib/aws-iam'
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'
+import * as lambda from 'aws-cdk-lib/aws-lambda'
+import { HttpApi } from 'aws-cdk-lib/aws-apigatewayv2'
+import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations'
+import * as path from 'path'
 
 interface AkliInfrastructureStackProps extends StackProps {
   hostedZone: route53.IHostedZone
@@ -97,61 +102,98 @@ export class AkliInfrastructureStack extends Stack {
       `),
     });
 
+    // ~$0.06/100K requests at 256 MB
+    const ssrFunction = new NodejsFunction(this, 'SsrFunction', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      entry: path.join(__dirname, '..', 'lambda', 'ssr-handler.ts'),
+      handler: 'handler',
+      memorySize: 256,
+      timeout: Duration.seconds(10),
+      description: 'SSR renderer for akli.dev — placeholder handler until the React server bundle is deployed',
+    })
+
+    // $1.00 per 1M requests (API Gateway v2)
+    const ssrIntegration = new HttpLambdaIntegration('SsrIntegration', ssrFunction)
+
+    const httpApi = new HttpApi(this, 'HttpApi', {
+      apiName: 'akli-dev-ssr',
+      description: 'HTTP API Gateway for SSR Lambda — serves as CloudFront origin',
+      defaultIntegration: ssrIntegration,
+    })
+
+    const ssrCachePolicy = new cloudfront.CachePolicy(this, 'SsrCachePolicy', {
+      cachePolicyName: 'SsrCachePolicy',
+      defaultTtl: Duration.seconds(60),
+      maxTtl: Duration.seconds(60),
+      minTtl: Duration.seconds(0),
+      queryStringBehavior: cloudfront.CacheQueryStringBehavior.all(),
+      headerBehavior: cloudfront.CacheHeaderBehavior.none(),
+      cookieBehavior: cloudfront.CacheCookieBehavior.none(),
+    })
+
+    const s3Origin = origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
+      originAccessControl: originAccessControl,
+    })
+
+    // apiEndpoint is "https://xxx.execute-api.region.amazonaws.com" — extract the domain
+    const apiGatewayOrigin = new origins.HttpOrigin(
+      Fn.select(2, Fn.split('/', httpApi.apiEndpoint)),
+    )
+
+    const ssrOriginGroup = new origins.OriginGroup({
+      primaryOrigin: apiGatewayOrigin,
+      fallbackOrigin: s3Origin,
+      fallbackStatusCodes: [500, 502, 503, 504],
+    })
+
+    const staticAssetBehavior: cloudfront.BehaviorOptions = {
+      origin: s3Origin,
+      viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+      cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+      responseHeadersPolicy: securityHeadersPolicy,
+      compress: true,
+    }
+
+    const staticFileExtensions = [
+      '*.js', '*.css', '*.ico', '*.svg', '*.webp',
+      '*.woff2', '*.png', '*.jpg', '*.json', '*.xml', '*.txt', '*.pdf',
+    ]
+
+    const staticAssetBehaviors: Record<string, cloudfront.BehaviorOptions> = {}
+    for (const pattern of staticFileExtensions) {
+      staticAssetBehaviors[pattern] = staticAssetBehavior
+    }
+
     // CloudFront distribution
     const distribution = new cloudfront.Distribution(this, 'SiteDistribution', {
-      defaultRootObject: 'index.html',
-      domainNames: [DOMAIN_NAME, WWW_DOMAIN_NAME], // Add both domains
+      domainNames: [DOMAIN_NAME, WWW_DOMAIN_NAME],
       certificate,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
       defaultBehavior: {
-        origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
-          originAccessControl: originAccessControl,
-        }),
+        origin: ssrOriginGroup,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-        cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+        cachePolicy: ssrCachePolicy,
         responseHeadersPolicy: securityHeadersPolicy,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
         compress: true,
       },
       additionalBehaviors: {
-        // Special behavior for images with query string caching
+        ...staticAssetBehaviors,
         'images/*': {
-          origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
-            originAccessControl: originAccessControl,
-          }),
+          origin: s3Origin,
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-          cachePolicy: imageCachePolicy, // Use our custom cache policy
+          cachePolicy: imageCachePolicy,
           responseHeadersPolicy: securityHeadersPolicy,
           compress: true,
         },
-        // Sand box game
         'apps/sand-box*': {
-          origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
-            originAccessControl: originAccessControl,
-          }),
-          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-          cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
-          responseHeadersPolicy: securityHeadersPolicy,
-          compress: true,
+          ...staticAssetBehavior,
           functionAssociations: [{
             function: subdirectoryIndexHandler,
             eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
           }],
         },
       },
-      errorResponses: [
-        {
-          httpStatus: 404,
-          responseHttpStatus: 200,
-          responsePagePath: '/index.html', // SPA fallback
-          ttl: Duration.minutes(5),
-        },
-        {
-          httpStatus: 403,
-          responseHttpStatus: 200,
-          responsePagePath: '/index.html', // SPA fallback
-          ttl: Duration.minutes(5),
-        },
-      ],
     })
 
     // Grant CloudFront access to S3 bucket
@@ -225,6 +267,11 @@ export class AkliInfrastructureStack extends Stack {
           actions: ['cloudfront:CreateInvalidation'],
           resources: [`arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`],
         }),
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['lambda:UpdateFunctionCode', 'lambda:GetFunction'],
+          resources: [ssrFunction.functionArn],
+        }),
       ],
     })
 
@@ -255,6 +302,21 @@ export class AkliInfrastructureStack extends Stack {
     })
 
     // CloudFormation outputs
+    new CfnOutput(this, 'HttpApiUrl', {
+      value: httpApi.apiEndpoint,
+      description: 'HTTP API Gateway endpoint URL',
+    })
+
+    new CfnOutput(this, 'SsrFunctionName', {
+      value: ssrFunction.functionName,
+      description: 'SSR Lambda function name',
+    })
+
+    new CfnOutput(this, 'SsrFunctionArn', {
+      value: ssrFunction.functionArn,
+      description: 'SSR Lambda function ARN',
+    })
+
     new CfnOutput(this, 'BucketName', {
       value: siteBucket.bucketName,
       description: 'S3 bucket name',
