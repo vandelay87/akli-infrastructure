@@ -142,6 +142,46 @@ describe('AkliInfrastructureStack', () => {
         },
       })
     })
+
+    it('has static asset cache behaviours that route to S3 for each file extension', () => {
+      const staticExtensions = [
+        '*.js', '*.css', '*.ico', '*.svg', '*.webp',
+        '*.woff2', '*.png', '*.jpg', '*.json', '*.xml', '*.txt',
+      ]
+
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: {
+          CacheBehaviors: Match.arrayWith(
+            staticExtensions.map((ext) =>
+              Match.objectLike({
+                PathPattern: ext,
+                Compress: true,
+                ViewerProtocolPolicy: 'redirect-to-https',
+                CachePolicyId: '658327ea-f89d-4fab-a63d-7e88639e58f6', // CACHING_OPTIMIZED managed policy ID
+              }),
+            ),
+          ),
+        },
+      })
+    })
+
+    it('static asset behaviours use S3 origin, not the failover group', () => {
+      const resources = template.toJSON().Resources
+      const distResource = Object.values(resources).find(
+        (r: any) => r.Type === 'AWS::CloudFront::Distribution',
+      ) as any
+
+      const cacheBehaviors = distResource.Properties.DistributionConfig.CacheBehaviors
+      const jsAssetBehavior = cacheBehaviors.find((b: any) => b.PathPattern === '*.js')
+
+      // The S3 origins have S3OriginAccessControlId set; the failover group does not use that origin ID
+      const origins = distResource.Properties.DistributionConfig.Origins
+      const s3OriginIds = origins
+        .filter((o: any) => o.S3OriginConfig !== undefined || o.OriginAccessControlId !== undefined)
+        .map((o: any) => o.Id)
+
+      expect(s3OriginIds).toContain(jsAssetBehavior.TargetOriginId)
+    })
   })
 
   describe('SSR cache policy', () => {
@@ -151,6 +191,24 @@ describe('AkliInfrastructureStack', () => {
           Name: 'SsrCachePolicy',
           DefaultTTL: 60,
           MaxTTL: 60,
+        },
+      })
+    })
+  })
+
+  describe('IAM deploy policy', () => {
+    it('grants lambda:UpdateFunctionCode and lambda:GetFunction scoped to the SSR function', () => {
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        PolicyDocument: {
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: ['lambda:UpdateFunctionCode', 'lambda:GetFunction'],
+              Effect: 'Allow',
+              Resource: Match.objectLike({
+                'Fn::GetAtt': Match.arrayWith([Match.stringLikeRegexp('SsrFunction')]),
+              }),
+            }),
+          ]),
         },
       })
     })

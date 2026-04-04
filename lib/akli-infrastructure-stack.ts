@@ -150,6 +150,25 @@ export class AkliInfrastructureStack extends Stack {
       fallbackStatusCodes: [500, 502, 503, 504],
     })
 
+    // Shared behaviour config for static assets — routes directly to S3, bypassing Lambda
+    const staticAssetBehavior: cloudfront.BehaviorOptions = {
+      origin: s3Origin,
+      viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+      cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+      responseHeadersPolicy: securityHeadersPolicy,
+      compress: true,
+    }
+
+    const staticFileExtensions = [
+      '*.js', '*.css', '*.ico', '*.svg', '*.webp',
+      '*.woff2', '*.png', '*.jpg', '*.json', '*.xml', '*.txt',
+    ]
+
+    const staticAssetBehaviors: Record<string, cloudfront.BehaviorOptions> = {}
+    for (const pattern of staticFileExtensions) {
+      staticAssetBehaviors[pattern] = staticAssetBehavior
+    }
+
     // CloudFront distribution
     const distribution = new cloudfront.Distribution(this, 'SiteDistribution', {
       defaultRootObject: 'index.html',
@@ -165,6 +184,8 @@ export class AkliInfrastructureStack extends Stack {
         compress: true,
       },
       additionalBehaviors: {
+        // Static file extensions — route directly to S3, bypassing Lambda
+        ...staticAssetBehaviors,
         // Special behavior for images with query string caching
         'images/*': {
           origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
@@ -262,6 +283,11 @@ export class AkliInfrastructureStack extends Stack {
           effect: iam.Effect.ALLOW,
           actions: ['cloudfront:CreateInvalidation'],
           resources: [`arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`],
+        }),
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['lambda:UpdateFunctionCode', 'lambda:GetFunction'],
+          resources: [ssrFunction.functionArn],
         }),
       ],
     })
