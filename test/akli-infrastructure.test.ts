@@ -174,9 +174,8 @@ describe('AkliInfrastructureStack', () => {
       const cacheBehaviors = distResource.Properties.DistributionConfig.CacheBehaviors
       const jsAssetBehavior = cacheBehaviors.find((b: any) => b.PathPattern === '*.js')
 
-      // The S3 origins have S3OriginAccessControlId set; the failover group does not use that origin ID
-      const origins = distResource.Properties.DistributionConfig.Origins
-      const s3OriginIds = origins
+      const cfOrigins = distResource.Properties.DistributionConfig.Origins
+      const s3OriginIds = cfOrigins
         .filter((o: any) => o.S3OriginConfig !== undefined || o.OriginAccessControlId !== undefined)
         .map((o: any) => o.Id)
 
