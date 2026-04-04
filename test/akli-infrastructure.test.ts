@@ -1,5 +1,5 @@
 import * as cdk from 'aws-cdk-lib'
-import { Template } from 'aws-cdk-lib/assertions'
+import { Match, Template } from 'aws-cdk-lib/assertions'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import { AkliInfrastructureStack } from '../lib/akli-infrastructure-stack'
@@ -91,6 +91,85 @@ describe('AkliInfrastructureStack', () => {
       template.hasResourceProperties('AWS::CloudFront::Distribution', {
         DistributionConfig: {
           Aliases: ['akli.dev', 'www.akli.dev'],
+        },
+      })
+    })
+
+    it('has the API Gateway as an origin', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: {
+          Origins: Match.arrayWith([
+            Match.objectLike({
+              CustomOriginConfig: Match.objectLike({
+                OriginProtocolPolicy: 'https-only',
+              }),
+            }),
+          ]),
+        },
+      })
+    })
+
+    it('configures an origin failover group', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: {
+          OriginGroups: Match.objectLike({
+            Quantity: 1,
+            Items: Match.arrayWith([
+              Match.objectLike({
+                FailoverCriteria: {
+                  StatusCodes: {
+                    Items: [500, 502, 503, 504],
+                    Quantity: 4,
+                  },
+                },
+                Members: {
+                  Quantity: 2,
+                  Items: Match.arrayWith([
+                    Match.objectLike({ OriginId: Match.anyValue() }),
+                  ]),
+                },
+              }),
+            ]),
+          }),
+        },
+      })
+    })
+
+    it('does not have SPA error responses', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: {
+          CustomErrorResponses: Match.absent(),
+        },
+      })
+    })
+  })
+
+  describe('SSR cache policy', () => {
+    it('creates a cache policy with 60-second TTL', () => {
+      template.hasResourceProperties('AWS::CloudFront::CachePolicy', {
+        CachePolicyConfig: {
+          Name: 'SsrCachePolicy',
+          DefaultTTL: 60,
+          MaxTTL: 60,
+        },
+      })
+    })
+  })
+
+  describe('Security headers', () => {
+    it('applies security headers policy to SSR responses', () => {
+      template.hasResourceProperties('AWS::CloudFront::ResponseHeadersPolicy', {
+        ResponseHeadersPolicyConfig: {
+          SecurityHeadersConfig: {
+            ContentTypeOptions: { Override: true },
+            FrameOptions: { FrameOption: 'DENY', Override: true },
+            StrictTransportSecurity: Match.objectLike({
+              AccessControlMaxAgeSec: 31536000,
+              IncludeSubdomains: true,
+              Preload: true,
+              Override: true,
+            }),
+          },
         },
       })
     })
