@@ -1,14 +1,84 @@
-# Welcome to your CDK TypeScript project
+# akli-infrastructure
 
-This is a blank project for CDK development with TypeScript.
+AWS CDK infrastructure for [akli.dev](https://akli.dev). Manages static site hosting with S3, CloudFront, Route 53, and ACM.
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+## Architecture
 
-## Useful commands
+Two CDK stacks deployed across regions:
 
-* `npm run build`   compile typescript to js
-* `npm run watch`   watch for changes and compile
-* `npm run test`    perform the jest unit tests
-* `npx cdk deploy`  deploy this stack to your default AWS account/region
-* `npx cdk diff`    compare deployed stack with current state
-* `npx cdk synth`   emits the synthesized CloudFormation template
+| Stack | Region | Resources |
+|-------|--------|-----------|
+| CertificateStack | us-east-1 | Route 53 hosted zone, ACM certificate (required by CloudFront) |
+| AkliInfrastructureStack | eu-west-2 | S3 bucket, CloudFront distribution, Route 53 records, IAM users |
+
+```
+Route 53 (akli.dev, www.akli.dev)
+  → CloudFront (HTTPS, compression, security headers)
+    → S3 (private, OAC)
+```
+
+### CloudFront behaviors
+
+- **Default:** Optimized caching, SPA fallback (404/403 → index.html)
+- **images/*:** 30-day default TTL, 365-day max, query string caching
+- **apps/sand-box*:** CloudFront Function for subdirectory index rewriting
+
+### Security
+
+- S3 public access blocked, SSL enforced
+- HTTPS redirect with HSTS (1 year, preload)
+- X-Frame-Options: DENY, X-Content-Type-Options: nosniff
+- Origin Access Control (only CloudFront can reach S3)
+
+## Stack
+
+- AWS CDK 2 + TypeScript
+- pnpm
+
+## Getting started
+
+```bash
+pnpm install
+```
+
+Create a `.env` file:
+
+```
+CDK_DEFAULT_ACCOUNT=<account-id>
+CDK_DEFAULT_REGION=eu-west-2
+```
+
+## Scripts
+
+| Command | Description |
+|---------|-------------|
+| `pnpm build` | Compile TypeScript |
+| `pnpm watch` | Watch mode compilation |
+| `pnpm test` | Run Jest tests |
+| `pnpm cdk diff --all` | Preview infrastructure changes |
+| `pnpm cdk deploy --all` | Deploy all stacks |
+| `pnpm cdk synth` | Generate CloudFormation templates |
+| `pnpm cdk bootstrap` | Bootstrap CDK in the AWS account |
+
+## CI/CD
+
+GitHub Actions workflow on `.github/workflows/deploy.yml`:
+
+- **PRs to main:** runs `cdk diff` to preview changes
+- **Push to main:** bootstraps, deploys all stacks, then invalidates the CloudFront cache
+
+Two IAM users with credentials stored in Secrets Manager:
+- `github-actions-deploy` — S3 sync and CloudFront invalidation
+- `cdk-github-actions` — CDK bootstrap and deploy
+
+## Tags
+
+All resources are tagged with:
+
+| Tag | Value |
+|-----|-------|
+| Owner | Akli |
+| CostCenter | Website |
+| Project | akli-website |
+| Environment | production |
+| ManagedBy | CDK |
