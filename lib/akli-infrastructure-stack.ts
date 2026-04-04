@@ -10,6 +10,8 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager'
 import * as iam from 'aws-cdk-lib/aws-iam'
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'
 import * as lambda from 'aws-cdk-lib/aws-lambda'
+import { HttpApi } from 'aws-cdk-lib/aws-apigatewayv2'
+import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations'
 import * as path from 'path'
 
 interface AkliInfrastructureStackProps extends StackProps {
@@ -268,7 +270,22 @@ export class AkliInfrastructureStack extends Stack {
       description: 'SSR renderer for akli.dev — placeholder handler until the React server bundle is deployed',
     })
 
+    // HTTP API Gateway — routes all requests to the SSR Lambda
+    // $1.00 per 1M requests (API Gateway v2 pricing)
+    const ssrIntegration = new HttpLambdaIntegration('SsrIntegration', ssrFunction)
+
+    const httpApi = new HttpApi(this, 'HttpApi', {
+      apiName: 'akli-dev-ssr',
+      description: 'HTTP API Gateway for SSR Lambda — serves as CloudFront origin',
+      defaultIntegration: ssrIntegration,
+    })
+
     // CloudFormation outputs
+    new CfnOutput(this, 'HttpApiUrl', {
+      value: httpApi.apiEndpoint,
+      description: 'HTTP API Gateway endpoint URL',
+    })
+
     new CfnOutput(this, 'SsrFunctionName', {
       value: ssrFunction.functionName,
       description: 'SSR Lambda function name',
