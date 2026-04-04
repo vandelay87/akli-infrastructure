@@ -8,6 +8,7 @@ import * as targets from 'aws-cdk-lib/aws-route53-targets'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager'
 import * as iam from 'aws-cdk-lib/aws-iam'
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'
 import * as lambda from 'aws-cdk-lib/aws-lambda'
 import * as path from 'path'
 
@@ -258,10 +259,10 @@ export class AkliInfrastructureStack extends Stack {
 
     // Lambda function for SSR
     // 256 MB — sufficient for React SSR, ~$0.06/100K requests
-    const ssrFunction = new lambda.Function(this, 'SsrFunction', {
+    const ssrFunction = new NodejsFunction(this, 'SsrFunction', {
       runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'ssr-handler.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambda')),
+      entry: path.join(__dirname, '..', 'lambda', 'ssr-handler.ts'),
+      handler: 'handler',
       memorySize: 256,
       timeout: Duration.seconds(10),
       description: 'SSR renderer for akli.dev — placeholder handler until the React server bundle is deployed',

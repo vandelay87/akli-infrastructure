@@ -1,15 +1,7 @@
-/**
- * Placeholder SSR handler for akli.dev.
- *
- * Returns a minimal HTML page for any incoming request.
- * This file will be replaced by the pre-built React server bundle
- * deployed from the personal-website CI/CD pipeline.
- *
- * @param {object} event - Lambda event (API Gateway v2 / Function URL payload)
- * @returns {object} Lambda response with HTML body
- */
-exports.handler = async (event) => {
-  const path = event.rawPath || '/';
+import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda'
+
+export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
+  const path = event.rawPath || '/'
 
   return {
     statusCode: 200,
@@ -29,5 +21,5 @@ exports.handler = async (event) => {
   <p>This page will be replaced by the server-rendered React app.</p>
 </body>
 </html>`,
-  };
-};
+  }
+}
