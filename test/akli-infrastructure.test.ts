@@ -146,7 +146,7 @@ describe('AkliInfrastructureStack', () => {
     it('has static asset cache behaviours that route to S3 for each file extension', () => {
       const staticExtensions = [
         '*.js', '*.css', '*.ico', '*.svg', '*.webp',
-        '*.woff2', '*.png', '*.jpg', '*.json', '*.xml', '*.txt',
+        '*.woff2', '*.png', '*.jpg', '*.json', '*.xml', '*.txt', '*.pdf',
       ]
 
       template.hasResourceProperties('AWS::CloudFront::Distribution', {

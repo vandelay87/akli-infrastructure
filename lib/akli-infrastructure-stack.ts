@@ -102,8 +102,7 @@ export class AkliInfrastructureStack extends Stack {
       `),
     });
 
-    // Lambda function for SSR
-    // 256 MB — sufficient for React SSR, ~$0.06/100K requests
+    // ~$0.06/100K requests at 256 MB
     const ssrFunction = new NodejsFunction(this, 'SsrFunction', {
       runtime: lambda.Runtime.NODEJS_20_X,
       entry: path.join(__dirname, '..', 'lambda', 'ssr-handler.ts'),
@@ -113,8 +112,7 @@ export class AkliInfrastructureStack extends Stack {
       description: 'SSR renderer for akli.dev — placeholder handler until the React server bundle is deployed',
     })
 
-    // HTTP API Gateway — routes all requests to the SSR Lambda
-    // $1.00 per 1M requests (API Gateway v2 pricing)
+    // $1.00 per 1M requests (API Gateway v2)
     const ssrIntegration = new HttpLambdaIntegration('SsrIntegration', ssrFunction)
 
     const httpApi = new HttpApi(this, 'HttpApi', {
@@ -123,7 +121,6 @@ export class AkliInfrastructureStack extends Stack {
       defaultIntegration: ssrIntegration,
     })
 
-    // SSR cache policy — 60s TTL, caches on full URI
     const ssrCachePolicy = new cloudfront.CachePolicy(this, 'SsrCachePolicy', {
       cachePolicyName: 'SsrCachePolicy',
       defaultTtl: Duration.seconds(60),
@@ -138,19 +135,17 @@ export class AkliInfrastructureStack extends Stack {
       originAccessControl: originAccessControl,
     })
 
-    // API Gateway origin — extract domain name from the full endpoint URL
+    // apiEndpoint is "https://xxx.execute-api.region.amazonaws.com" — extract the domain
     const apiGatewayOrigin = new origins.HttpOrigin(
       Fn.select(2, Fn.split('/', httpApi.apiEndpoint)),
     )
 
-    // Origin failover group: API Gateway primary, S3 fallback on 5xx
     const ssrOriginGroup = new origins.OriginGroup({
       primaryOrigin: apiGatewayOrigin,
       fallbackOrigin: s3Origin,
       fallbackStatusCodes: [500, 502, 503, 504],
     })
 
-    // Shared behaviour config for static assets — routes directly to S3, bypassing Lambda
     const staticAssetBehavior: cloudfront.BehaviorOptions = {
       origin: s3Origin,
       viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -171,7 +166,6 @@ export class AkliInfrastructureStack extends Stack {
 
     // CloudFront distribution
     const distribution = new cloudfront.Distribution(this, 'SiteDistribution', {
-      defaultRootObject: 'index.html',
       domainNames: [DOMAIN_NAME, WWW_DOMAIN_NAME],
       certificate,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
@@ -184,27 +178,16 @@ export class AkliInfrastructureStack extends Stack {
         compress: true,
       },
       additionalBehaviors: {
-        // Static file extensions — route directly to S3, bypassing Lambda
         ...staticAssetBehaviors,
-        // Special behavior for images with query string caching
         'images/*': {
-          origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
-            originAccessControl: originAccessControl,
-          }),
+          origin: s3Origin,
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           cachePolicy: imageCachePolicy,
           responseHeadersPolicy: securityHeadersPolicy,
           compress: true,
         },
-        // Sand box game
         'apps/sand-box*': {
-          origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
-            originAccessControl: originAccessControl,
-          }),
-          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-          cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
-          responseHeadersPolicy: securityHeadersPolicy,
-          compress: true,
+          ...staticAssetBehavior,
           functionAssociations: [{
             function: subdirectoryIndexHandler,
             eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
