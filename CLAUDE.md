@@ -2,6 +2,10 @@
 
 AWS CDK infrastructure for akli.dev. Manages static site hosting with S3, CloudFront, Route 53, and ACM.
 
+## PRDs
+
+Before implementing any new feature, check `docs/prds/` for a relevant PRD. If one exists, read it fully and follow the spec. Do not add features beyond what the PRD describes.
+
 ## Stack
 
 - AWS CDK 2 + TypeScript
