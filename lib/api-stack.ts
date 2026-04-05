@@ -11,7 +11,7 @@ const API_DOMAIN_NAME = 'api.akli.dev'
 
 interface ApiStackProps extends StackProps {
   hostedZone: route53.IHostedZone
-  certificate: certificatemanager.ICertificate
+  apiCertificate: certificatemanager.ICertificate
   pokedexApiUrl: string
 }
 
@@ -24,7 +24,7 @@ export class ApiStack extends Stack {
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props)
 
-    const { hostedZone, certificate, pokedexApiUrl } = props
+    const { hostedZone, apiCertificate, pokedexApiUrl } = props
 
     // Extract the domain from the API Gateway URL (strip "https://")
     const pokedexApiDomain = Fn.select(2, Fn.split('/', pokedexApiUrl))
@@ -55,7 +55,7 @@ export class ApiStack extends Stack {
     // CloudFront distribution for api.akli.dev
     const distribution = new cloudfront.Distribution(this, 'ApiDistribution', {
       domainNames: [API_DOMAIN_NAME],
-      certificate,
+      certificate: apiCertificate,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
       defaultBehavior: {
         // Default behaviour returns 403 — no default API endpoint

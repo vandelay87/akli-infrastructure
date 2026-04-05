@@ -19,22 +19,19 @@ describe('CertificateStack', () => {
     template = createTestStack()
   })
 
-  describe('ACM Certificate', () => {
+  describe('Site certificate', () => {
     it('creates a certificate for akli.dev', () => {
       template.hasResourceProperties('AWS::CertificateManager::Certificate', {
         DomainName: 'akli.dev',
-      })
-    })
-
-    it('includes www.akli.dev as a subject alternative name', () => {
-      template.hasResourceProperties('AWS::CertificateManager::Certificate', {
         SubjectAlternativeNames: Match.arrayWith(['www.akli.dev']),
       })
     })
+  })
 
-    it('includes api.akli.dev as a subject alternative name', () => {
+  describe('API certificate', () => {
+    it('creates a separate certificate for api.akli.dev', () => {
       template.hasResourceProperties('AWS::CertificateManager::Certificate', {
-        SubjectAlternativeNames: Match.arrayWith(['api.akli.dev']),
+        DomainName: 'api.akli.dev',
       })
     })
   })

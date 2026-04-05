@@ -50,7 +50,7 @@ const pokedexStack = new PokedexStack(app, 'PokedexStack', {
 new ApiStack(app, 'ApiStack', {
   env: { account, region: 'eu-west-2' },
   crossRegionReferences: true,
-  certificate: certStack.certificate,
+  apiCertificate: certStack.apiCertificate,
   hostedZone: certStack.hostedZone,
   pokedexApiUrl: pokedexStack.httpApi.apiEndpoint,
   description: 'Shared API infrastructure for api.akli.dev with CloudFront',

@@ -19,16 +19,15 @@ function createTestStack(): Template {
     zoneName: 'akli.dev',
   })
 
-  const certificate = new certificatemanager.Certificate(mockStack, 'MockCertificate', {
-    domainName: 'akli.dev',
-    subjectAlternativeNames: ['www.akli.dev', 'api.akli.dev'],
+  const apiCertificate = new certificatemanager.Certificate(mockStack, 'MockApiCertificate', {
+    domainName: 'api.akli.dev',
   })
 
   const stack = new ApiStack(app, 'TestApiStack', {
     env: { account: '123456789012', region: 'eu-west-2' },
     crossRegionReferences: true,
     hostedZone,
-    certificate,
+    apiCertificate,
     pokedexApiUrl: 'https://abc123.execute-api.eu-west-2.amazonaws.com',
     tags: {
       Project: 'akli-api',
