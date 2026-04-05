@@ -121,6 +121,38 @@ describe('PokedexStack', () => {
     })
   })
 
+  describe('HTTP API Gateway', () => {
+    it('creates an HTTP API (ApiGatewayV2)', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+        ProtocolType: 'HTTP',
+      })
+    })
+
+    it('configures CORS to allow https://akli.dev', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+        CorsConfiguration: Match.objectLike({
+          AllowOrigins: Match.arrayWith(['https://akli.dev']),
+        }),
+      })
+    })
+
+    it('has a GET /pokedex/pokemon route', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'GET /pokedex/pokemon',
+      })
+    })
+
+    it('has a GET /pokedex/pokemon/{id} route', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'GET /pokedex/pokemon/{id}',
+      })
+    })
+
+    it('exports the API URL as a CloudFormation output', () => {
+      template.hasOutput('PokedexApiUrl', {})
+    })
+  })
+
   describe('Tags', () => {
     it('tags all resources with Owner', () => {
       template.hasResourceProperties('AWS::DynamoDB::Table', {
