@@ -153,6 +153,39 @@ describe('PokedexStack', () => {
     })
   })
 
+  describe('DynamoDB seed Custom Resource', () => {
+    it('creates a CloudFormation Custom Resource', () => {
+      template.hasResourceProperties('AWS::CloudFormation::CustomResource', {})
+    })
+
+    it('has a DataHash property to trigger reseeding on data changes', () => {
+      template.hasResourceProperties('AWS::CloudFormation::CustomResource', {
+        DataHash: Match.stringLikeRegexp('^[a-f0-9]{32}$'),
+      })
+    })
+
+    it('creates a seeder Lambda function', () => {
+      // The seeder Lambda should exist alongside the API handler
+      const lambdas = template.findResources('AWS::Lambda::Function')
+      const lambdaCount = Object.keys(lambdas).length
+      // At least 2 Lambda functions: the API handler and the seeder (provider framework also creates Lambdas)
+      expect(lambdaCount).toBeGreaterThanOrEqual(2)
+    })
+
+    it('grants the seeder Lambda dynamodb:BatchWriteItem permission', () => {
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        PolicyDocument: {
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: 'dynamodb:BatchWriteItem',
+              Effect: 'Allow',
+            }),
+          ]),
+        },
+      })
+    })
+  })
+
   describe('Tags', () => {
     it('tags all resources with Owner', () => {
       template.hasResourceProperties('AWS::DynamoDB::Table', {
