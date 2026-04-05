@@ -39,6 +39,15 @@ export class PokedexStack extends Stack {
       environment: {
         TABLE_NAME: table.tableName,
       },
+      bundling: {
+        commandHooks: {
+          beforeBundling: () => [],
+          beforeInstall: () => [],
+          afterBundling: (inputDir: string, outputDir: string) => [
+            `cp ${inputDir}/data/pokemon.json ${outputDir}/pokemon.json`,
+          ],
+        },
+      },
     })
 
     table.grant(seederFunction, 'dynamodb:BatchWriteItem')

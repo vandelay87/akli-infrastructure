@@ -32,7 +32,9 @@ interface Pokemon {
 }
 
 function loadPokemonData(): Pokemon[] {
-  const dataPath = path.join(__dirname, '..', 'data', 'pokemon.json')
+  // In Lambda: pokemon.json is copied into the bundle via CDK afterBundling hook
+  // In tests: POKEMON_DATA_PATH env var points to the repo's data/pokemon.json
+  const dataPath = process.env.POKEMON_DATA_PATH || path.join(__dirname, 'pokemon.json')
   const raw = fs.readFileSync(dataPath, 'utf-8')
   return JSON.parse(raw) as Pokemon[]
 }

@@ -5,6 +5,7 @@ import type { CloudFormationCustomResourceEvent } from 'aws-lambda'
 const ddbMock = mockClient(DynamoDBClient)
 
 process.env.TABLE_NAME = 'pokedex-pokemon'
+process.env.POKEMON_DATA_PATH = require('path').join(__dirname, '..', '..', 'data', 'pokemon.json')
 
 import { onEvent } from '../../lambda/seed-pokemon'
 
