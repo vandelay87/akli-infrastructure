@@ -166,6 +166,7 @@ export class AkliInfrastructureStack extends Stack {
 
     // CloudFront distribution
     const distribution = new cloudfront.Distribution(this, 'SiteDistribution', {
+      defaultRootObject: 'index.html',
       domainNames: [DOMAIN_NAME, WWW_DOMAIN_NAME],
       certificate,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
