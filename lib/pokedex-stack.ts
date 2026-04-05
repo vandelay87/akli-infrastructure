@@ -12,7 +12,7 @@ export class PokedexStack extends Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
     })
 
-    // Propagate stack-level tags to all resources
+    // StackProps.tags don't auto-propagate to resources — must apply explicitly
     if (props?.tags) {
       for (const [key, value] of Object.entries(props.tags)) {
         Tags.of(this).add(key, value)
