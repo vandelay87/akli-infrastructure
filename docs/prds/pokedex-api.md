@@ -93,7 +93,11 @@ Returns full detail for a single Pokemon. Used when a user clicks into a Pokemon
 
 ### Stack and new resources
 
-Pokedex-specific resources (DynamoDB, Lambda, API Gateway) live in a new `PokedexStack` in `akli-infrastructure`, deployed to `eu-west-2` (consistent with existing stacks). The CloudFront cache behaviour for `/api/pokedex/*` is added to `AkliInfrastructureStack` (which owns the CloudFront distribution), consuming the API Gateway URL via a cross-stack reference exported from `PokedexStack`.
+The infrastructure spans three stacks:
+
+- **`CertificateStack`** (existing, us-east-1) — updated to add `api.akli.dev` as a SAN on the ACM certificate
+- **`ApiStack`** (new, eu-west-2) — shared infrastructure for `api.akli.dev`: a CloudFront distribution, Route 53 alias record, and cache behaviours that route to individual API origins. Decoupled from any specific API — future APIs add their own cache behaviour here.
+- **`PokedexStack`** (new, eu-west-2) — Pokedex-specific resources: DynamoDB table, Lambda function, and HTTP API Gateway. Exports the API Gateway URL so `ApiStack` can add it as a CloudFront origin with a `/pokedex/*` cache behaviour.
 
 #### DynamoDB table
 
@@ -116,16 +120,29 @@ Pokedex-specific resources (DynamoDB, Lambda, API Gateway) live in a new `Pokede
 
 - Separate from the SSR API Gateway — dedicated to the Pokedex API
 - Routes:
-  - `GET /pokemon` → Lambda
-  - `GET /pokemon/{id}` → Lambda
-- CORS enabled for `https://akli.dev`
-- No custom domain for now — CloudFront will proxy to the API Gateway URL
+  - `GET /pokedex/pokemon` → Lambda
+  - `GET /pokedex/pokemon/{id}` → Lambda
+- CORS enabled for `https://akli.dev` (cross-origin: frontend on `akli.dev` calls API on `api.akli.dev`)
+- No API Gateway custom domain mapping needed — CloudFront handles the `api.akli.dev` domain
 
-#### CloudFront
+#### ACM Certificate (CertificateStack update)
 
-- Add a new cache behaviour on the existing akli.dev CloudFront distribution: `/api/pokedex/*` → Pokedex API Gateway origin
-- Cache policy: cache responses for 5 minutes (Pokemon data is static, but keep TTL short enough that reseeding is reflected quickly)
-- The frontend calls `/api/pokedex/pokemon` and `/api/pokedex/pokemon/{id}` — a CloudFront Function on the origin-request event strips the `/api/pokedex` prefix before forwarding to the API Gateway (origin request policies cannot rewrite paths; the existing codebase already uses CloudFront Functions for URL rewriting)
+- Add `api.akli.dev` as a subject alternative name (SAN) to the existing ACM certificate in `CertificateStack` (us-east-1)
+- The existing certificate covers `akli.dev` and `www.akli.dev` — adding `api.akli.dev` extends it
+- DNS validation via the existing Route 53 hosted zone
+
+#### ApiStack (new shared stack)
+
+- New stack in eu-west-2, dedicated to `api.akli.dev` shared infrastructure
+- **CloudFront distribution**: domain name `api.akli.dev`, uses the ACM certificate from `CertificateStack` (cross-stack reference), price class PRICE_CLASS_100
+- **Route 53 alias record**: `api.akli.dev` → the CloudFront distribution, using the hosted zone from `CertificateStack`
+- **Cache behaviours**: each API adds its own behaviour via cross-stack references. For the Pokedex: `/pokedex/*` → Pokedex API Gateway origin, 5-minute cache TTL
+- This stack is API-agnostic — future APIs add their own origins and cache behaviours here without modifying Pokedex infrastructure
+
+#### Frontend integration
+
+- The frontend calls `https://api.akli.dev/pokedex/pokemon` and `https://api.akli.dev/pokedex/pokemon/{id}`
+- CORS headers are required since the frontend is on `akli.dev` (different origin)
 
 ### Data seeding
 
@@ -147,7 +164,7 @@ Pokedex-specific resources (DynamoDB, Lambda, API Gateway) live in a new `Pokede
 
 TDD is the preferred approach. Tests should be written before implementation.
 
-- **CDK assertion tests**: verify the synthesised template contains the DynamoDB table, Lambda function, API Gateway routes, CloudFront cache behaviour, and IAM permissions
+- **CDK assertion tests**: verify the synthesised templates contain the DynamoDB table, Lambda function, API Gateway routes (PokedexStack), CloudFront distribution, Route 53 record, cache behaviours (ApiStack), certificate SAN (CertificateStack), and IAM permissions
 - **Lambda handler unit tests**: test route parsing, DynamoDB response mapping, error handling (404, 500), and response format
 - **Seed script tests**: verify the PokeAPI response is correctly transformed to the expected JSON schema
 
@@ -171,9 +188,10 @@ All new resources tagged with: Owner, CostCenter, Project (`pokedex`), Environme
 - [ ] Lambda has read-only DynamoDB access scoped to the Pokedex table
 - [ ] HTTP API Gateway (v2) is created with `GET /pokemon` and `GET /pokemon/{id}` routes
 - [ ] CORS is configured to allow `https://akli.dev`
-- [ ] CloudFront cache behaviour routes `/api/pokedex/*` to the Pokedex API Gateway origin
-- [ ] A CloudFront Function strips the `/api/pokedex` prefix before forwarding to the API Gateway
-- [ ] Pokedex API responses are cached at CloudFront with a 5-minute TTL
+- [ ] `api.akli.dev` is added as a SAN to the ACM certificate in `CertificateStack`
+- [ ] `ApiStack` is created in `eu-west-2` with a CloudFront distribution for `api.akli.dev`
+- [ ] Route 53 alias record for `api.akli.dev` points to the `ApiStack` CloudFront distribution
+- [ ] CloudFront cache behaviour routes `/pokedex/*` to the Pokedex API Gateway origin with a 5-minute cache TTL
 - [ ] `scripts/fetch-pokemon-data.ts` fetches Gen 1 data from PokeAPI and outputs `data/pokemon.json`
 - [ ] `data/pokemon.json` contains all 151 Gen 1 Pokemon with the correct schema
 - [ ] CDK Custom Resource seeds DynamoDB from `data/pokemon.json` on deploy
@@ -185,12 +203,11 @@ All new resources tagged with: Owner, CostCenter, Project (`pokedex`), Environme
 - [ ] Lambda handler unit tests cover happy path, 404, and 500 scenarios
 - [ ] CDK Custom Resource includes a hash of `data/pokemon.json` to trigger reseeding on data changes
 - [ ] Seeder Lambda handles `UnprocessedItems` from `BatchWriteItem` with retries
-- [ ] CloudFront cache behaviour is added to `AkliInfrastructureStack` via cross-stack reference from `PokedexStack`
+- [ ] `ApiStack` consumes the Pokedex API Gateway URL via cross-stack reference from `PokedexStack`
 - [ ] All tests pass (`pnpm test`)
-- [ ] `cdk diff` shows no unintended modifications to existing resources (only the new CloudFront cache behaviour on the existing distribution)
+- [ ] `cdk diff` shows no unintended modifications to existing resources (only the certificate SAN addition in `CertificateStack`)
 
 ## Open Questions
 
-- Should the Pokedex API Gateway have its own custom subdomain (e.g., `api.akli.dev/pokedex`) or is the CloudFront path-based routing (`akli.dev/api/pokedex/*`) sufficient?
 - Should the `genderRate` field be exposed as a raw number (from PokeAPI: 0–8 scale where 0 = always male, 8 = always female) or converted to percentages?
 - Should we include the shiny sprite URL as well, for potential future use?
