@@ -66,6 +66,61 @@ describe('PokedexStack', () => {
     })
   })
 
+  describe('Lambda function', () => {
+    it('creates a Lambda function with Node.js 22 runtime', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Runtime: 'nodejs22.x',
+      })
+    })
+
+    it('configures 256 MB memory', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        MemorySize: 256,
+      })
+    })
+
+    it('configures 10 second timeout', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Timeout: 10,
+      })
+    })
+  })
+
+  describe('Lambda IAM permissions', () => {
+    it('grants dynamodb:GetItem and dynamodb:Scan actions', () => {
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        PolicyDocument: {
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: Match.arrayWith([
+                'dynamodb:GetItem',
+                'dynamodb:Scan',
+              ]),
+              Effect: 'Allow',
+            }),
+          ]),
+        },
+      })
+    })
+
+    it('scopes DynamoDB access to the Pokedex table ARN (not wildcard)', () => {
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        PolicyDocument: {
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: Match.arrayWith([
+                'dynamodb:GetItem',
+                'dynamodb:Scan',
+              ]),
+              Effect: 'Allow',
+              Resource: Match.not('*'),
+            }),
+          ]),
+        },
+      })
+    })
+  })
+
   describe('Tags', () => {
     it('tags all resources with Owner', () => {
       template.hasResourceProperties('AWS::DynamoDB::Table', {
