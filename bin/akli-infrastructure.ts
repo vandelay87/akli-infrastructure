@@ -2,6 +2,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { AkliInfrastructureStack } from '../lib/akli-infrastructure-stack';
 import { CertificateStack } from '../lib/certificate-stack';
+import { PokedexStack } from '../lib/pokedex-stack';
 
 const app = new cdk.App();
 
@@ -32,6 +33,17 @@ new AkliInfrastructureStack(app, 'AkliInfrastructureStack', {
   },
 
   terminationProtection: true,
+});
+
+new PokedexStack(app, 'PokedexStack', {
+  env: { account, region: 'eu-west-2' },
+  description: 'Pokedex API backend resources (DynamoDB)',
+
+  tags: {
+    Project: 'pokedex',
+    Environment: 'production',
+    ManagedBy: 'cdk',
+  },
 });
 
 // Add stack-level tags
