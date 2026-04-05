@@ -194,6 +194,13 @@ export class AkliInfrastructureStack extends Stack {
             eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
           }],
         },
+        'apps/pokedex*': {
+          ...staticAssetBehavior,
+          functionAssociations: [{
+            function: subdirectoryIndexHandler,
+            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+          }],
+        },
       },
     })
 
