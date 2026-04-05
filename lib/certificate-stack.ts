@@ -5,6 +5,7 @@ import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 
 const DOMAIN_NAME = 'akli.dev'
 const WWW_DOMAIN_NAME = `www.${DOMAIN_NAME}`
+const API_DOMAIN_NAME = `api.${DOMAIN_NAME}`
 
 /**
  * Separate stack for the ACM certificate and Route 53 hosted zone.
@@ -24,7 +25,7 @@ export class CertificateStack extends Stack {
 
     this.certificate = new certificatemanager.Certificate(this, 'SiteCert', {
       domainName: DOMAIN_NAME,
-      subjectAlternativeNames: [WWW_DOMAIN_NAME],
+      subjectAlternativeNames: [WWW_DOMAIN_NAME, API_DOMAIN_NAME],
       validation: certificatemanager.CertificateValidation.fromDns(this.hostedZone),
     })
   }
