@@ -1,4 +1,4 @@
-import { CfnOutput, CustomResource, Duration, Stack, StackProps, Tags } from 'aws-cdk-lib'
+import { CfnOutput, CustomResource, Duration, Stack, StackProps } from 'aws-cdk-lib'
 import { Construct } from 'constructs'
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb'
 import * as lambda from 'aws-cdk-lib/aws-lambda'
@@ -9,9 +9,9 @@ import { Provider } from 'aws-cdk-lib/custom-resources'
 import * as crypto from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
+import { applyStackTags } from './utils'
 
 export class PokedexStack extends Stack {
-  public readonly pokemonFunction: NodejsFunction
   public readonly httpApi: HttpApi
 
   constructor(scope: Construct, id: string, props?: StackProps) {
@@ -54,7 +54,7 @@ export class PokedexStack extends Stack {
       },
     })
 
-    this.pokemonFunction = new NodejsFunction(this, 'PokemonHandler', {
+    const pokemonFunction = new NodejsFunction(this, 'PokemonHandler', {
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 256,
       timeout: Duration.seconds(10),
@@ -65,10 +65,10 @@ export class PokedexStack extends Stack {
       },
     })
 
-    table.grantReadData(this.pokemonFunction)
+    table.grantReadData(pokemonFunction)
 
     // HTTP API Gateway (v2) for the Pokedex API
-    const pokemonIntegration = new HttpLambdaIntegration('PokemonIntegration', this.pokemonFunction)
+    const pokemonIntegration = new HttpLambdaIntegration('PokemonIntegration', pokemonFunction)
 
     this.httpApi = new HttpApi(this, 'PokedexHttpApi', {
       apiName: 'pokedex-api',
@@ -97,11 +97,6 @@ export class PokedexStack extends Stack {
       description: 'Pokedex HTTP API Gateway endpoint URL',
     })
 
-    // StackProps.tags don't auto-propagate to resources — must apply explicitly
-    if (props?.tags) {
-      for (const [key, value] of Object.entries(props.tags)) {
-        Tags.of(this).add(key, value)
-      }
-    }
+    applyStackTags(this, props)
   }
 }

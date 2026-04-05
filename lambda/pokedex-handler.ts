@@ -3,9 +3,11 @@ import { DynamoDBClient, ScanCommand, GetItemCommand } from '@aws-sdk/client-dyn
 import { unmarshall } from '@aws-sdk/util-dynamodb'
 
 const client = new DynamoDBClient({})
-const TABLE_NAME = process.env.TABLE_NAME || 'pokedex-pokemon'
+const TABLE_NAME = process.env.TABLE_NAME!
 
-// Helper to create JSON response
+const ROUTE_LIST = 'GET /pokedex/pokemon'
+const ROUTE_DETAIL = 'GET /pokedex/pokemon/{id}'
+
 function jsonResponse(statusCode: number, body: unknown): APIGatewayProxyStructuredResultV2 {
   return {
     statusCode,
@@ -18,17 +20,17 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
   try {
     const routeKey = event.routeKey
 
-    if (routeKey === 'GET /pokedex/pokemon') {
-      // List all Pokemon — summary fields only
-      const result = await client.send(new ScanCommand({ TableName: TABLE_NAME }))
-      const items = (result.Items || []).map(item => {
-        const pokemon = unmarshall(item)
-        return { id: pokemon.id, name: pokemon.name, types: pokemon.types, sprite: pokemon.sprite }
-      })
+    if (routeKey === ROUTE_LIST) {
+      const result = await client.send(new ScanCommand({
+        TableName: TABLE_NAME,
+        ProjectionExpression: 'id, #n, types, sprite',
+        ExpressionAttributeNames: { '#n': 'name' },
+      }))
+      const items = (result.Items || []).map(item => unmarshall(item))
       return jsonResponse(200, { pokemon: items, count: items.length, nextToken: null })
     }
 
-    if (routeKey === 'GET /pokedex/pokemon/{id}') {
+    if (routeKey === ROUTE_DETAIL) {
       const idParam = event.pathParameters?.id
       const id = Number(idParam)
       if (!idParam || isNaN(id)) {

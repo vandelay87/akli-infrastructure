@@ -59,7 +59,8 @@ const samplePokemonItem = {
   },
 }
 
-const samplePokemonSummaryItem = {
+// DynamoDB returns only projected fields for Scan (ProjectionExpression: id, name, types, sprite)
+const samplePokemonScanItem = {
   id: { N: '1' },
   name: { S: 'Bulbasaur' },
   types: { L: [{ S: 'Grass' }, { S: 'Poison' }] },
@@ -74,7 +75,7 @@ describe('Pokedex Lambda handler', () => {
   describe('GET /pokedex/pokemon', () => {
     it('returns 200 with pokemon array, count, and nextToken', async () => {
       ddbMock.on(ScanCommand).resolves({
-        Items: [samplePokemonSummaryItem],
+        Items: [samplePokemonScanItem],
         Count: 1,
         ScannedCount: 1,
       })
@@ -104,7 +105,7 @@ describe('Pokedex Lambda handler', () => {
 
     it('returns summary fields only (id, name, types, sprite)', async () => {
       ddbMock.on(ScanCommand).resolves({
-        Items: [samplePokemonItem],
+        Items: [samplePokemonScanItem],
         Count: 1,
         ScannedCount: 1,
       })
