@@ -23,13 +23,11 @@ export class AkliInfrastructureStack extends Stack {
 
     const { hostedZone, certificate } = props
 
-    // Disable termination protection
     this.terminationProtection = false
 
     const DOMAIN_NAME = 'akli.dev'
     const WWW_DOMAIN_NAME = `www.${DOMAIN_NAME}`
 
-    // Add secrets
     new secretsmanager.Secret(this, 'CdkDefaultAccount', {
       secretName: 'CDK_DEFAULT_ACCOUNT',
       secretStringValue: SecretValue.unsafePlainText(process.env.CDK_DEFAULT_ACCOUNT || ''),
@@ -39,7 +37,6 @@ export class AkliInfrastructureStack extends Stack {
       secretStringValue: SecretValue.unsafePlainText(process.env.CDK_DEFAULT_REGION || ''),
     });
 
-    // S3 bucket for everything
     const siteBucket = new s3.Bucket(this, 'SiteBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       removalPolicy: RemovalPolicy.DESTROY,
@@ -48,12 +45,10 @@ export class AkliInfrastructureStack extends Stack {
       enforceSSL: true,
     })
 
-    // Origin Access Control
     const originAccessControl = new cloudfront.S3OriginAccessControl(this, 'SiteOAC', {
       description: `OAC for ${DOMAIN_NAME}`,
     })
 
-    // Security headers
     const securityHeadersPolicy = new cloudfront.ResponseHeadersPolicy(this, 'SecurityHeaders', {
       securityHeadersBehavior: {
         contentTypeOptions: { override: true },
@@ -169,7 +164,6 @@ export class AkliInfrastructureStack extends Stack {
       staticAssetBehaviors[pattern] = staticAssetBehavior
     }
 
-    // CloudFront distribution
     const distribution = new cloudfront.Distribution(this, 'SiteDistribution', {
       defaultRootObject: 'index.html',
       domainNames: [DOMAIN_NAME, WWW_DOMAIN_NAME],
@@ -190,22 +184,16 @@ export class AkliInfrastructureStack extends Stack {
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           cachePolicy: imageCachePolicy,
           responseHeadersPolicy: securityHeadersPolicy,
-          compress: true,
         },
-        'apps/sand-box*': {
-          ...staticAssetBehavior,
-          functionAssociations: [{
-            function: subdirectoryIndexHandler,
-            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
-          }],
-        },
-        'apps/pokedex*': {
-          ...staticAssetBehavior,
-          functionAssociations: [{
-            function: subdirectoryIndexHandler,
-            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
-          }],
-        },
+        ...Object.fromEntries(
+          ['apps/sand-box*', 'apps/pokedex*'].map((pattern) => [pattern, {
+            ...staticAssetBehavior,
+            functionAssociations: [{
+              function: subdirectoryIndexHandler,
+              eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+            }],
+          }]),
+        ),
       },
     })
 
@@ -219,9 +207,14 @@ export class AkliInfrastructureStack extends Stack {
     )
 
     // Grant CloudFront access to Lambda Function URL via OAC
-    ssrFunction.addPermission('CloudFrontOACInvoke', {
+    ssrFunction.addPermission('CloudFrontOACInvokeFunctionUrl', {
       principal: new iam.ServicePrincipal('cloudfront.amazonaws.com'),
       action: 'lambda:InvokeFunctionUrl',
+      sourceArn: `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`,
+    })
+    ssrFunction.addPermission('CloudFrontOACInvokeFunction', {
+      principal: new iam.ServicePrincipal('cloudfront.amazonaws.com'),
+      action: 'lambda:InvokeFunction',
       sourceArn: `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`,
     })
 
@@ -330,7 +323,6 @@ export class AkliInfrastructureStack extends Stack {
       description: 'CDK GitHub Actions credentials',
     })
 
-    // CloudFormation outputs
     new CfnOutput(this, 'FunctionUrl', {
       value: ssrFunctionUrl.url,
       description: 'Lambda Function URL for SSR streaming',
