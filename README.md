@@ -14,14 +14,16 @@ Two CDK stacks deployed across regions:
 ```
 Route 53 (akli.dev, www.akli.dev)
   → CloudFront (HTTPS, compression, security headers)
-    → S3 (private, OAC)
+    → Lambda Function URL (SSR, RESPONSE_STREAM) with S3 failover on 5xx
+    → S3 (private, OAC) for static assets
 ```
 
-### CloudFront behaviors
+### CloudFront behaviours
 
-- **Default:** Optimized caching, SPA fallback (404/403 → index.html)
-- **images/*:** 30-day default TTL, 365-day max, query string caching
-- **apps/sand-box*:** CloudFront Function for subdirectory index rewriting
+- **Default (SSR):** Lambda Function URL origin with S3 failover (OriginGroup, 5xx), 60s TTL, query string forwarding
+- **Static assets (*.js, *.css, etc.):** S3 origin, optimised caching
+- **images/*:** S3 origin, 30-day default TTL, 365-day max, query string caching
+- **apps/sand-box*, apps/pokedex*:** S3 origin, CloudFront Function for subdirectory index rewriting
 
 ### Security
 
