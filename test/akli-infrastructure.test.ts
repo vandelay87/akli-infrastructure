@@ -95,7 +95,7 @@ describe('AkliInfrastructureStack', () => {
       })
     })
 
-    it('has the API Gateway as an origin', () => {
+    it('has the Lambda Function URL as an origin', () => {
       template.hasResourceProperties('AWS::CloudFront::Distribution', {
         DistributionConfig: {
           Origins: Match.arrayWith([

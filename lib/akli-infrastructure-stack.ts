@@ -141,13 +141,13 @@ export class AkliInfrastructureStack extends Stack {
       originAccessControl: originAccessControl,
     })
 
-    // apiEndpoint is "https://xxx.execute-api.region.amazonaws.com" — extract the domain
-    const apiGatewayOrigin = new origins.HttpOrigin(
-      Fn.select(2, Fn.split('/', httpApi.apiEndpoint)),
+    // Function URL is "https://xxx.lambda-url.region.on.aws/" — extract the domain
+    const functionUrlOrigin = new origins.HttpOrigin(
+      Fn.select(2, Fn.split('/', ssrFunctionUrl.url)),
     )
 
     const ssrOriginGroup = new origins.OriginGroup({
-      primaryOrigin: apiGatewayOrigin,
+      primaryOrigin: functionUrlOrigin,
       fallbackOrigin: s3Origin,
       fallbackStatusCodes: [500, 502, 503, 504],
     })
