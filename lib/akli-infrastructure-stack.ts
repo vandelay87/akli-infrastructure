@@ -197,6 +197,13 @@ export class AkliInfrastructureStack extends Stack {
       },
     })
 
+    // Grant CloudFront access to Lambda Function URL via OAC
+    ssrFunction.addPermission('CloudFrontOACInvoke', {
+      principal: new iam.ServicePrincipal('cloudfront.amazonaws.com'),
+      action: 'lambda:InvokeFunctionUrl',
+      sourceArn: `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`,
+    })
+
     // Grant CloudFront access to S3 bucket
     siteBucket.addToResourcePolicy(new iam.PolicyStatement({
       sid: 'AllowCloudFrontServicePrincipal',
