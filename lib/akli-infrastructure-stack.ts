@@ -112,6 +112,12 @@ export class AkliInfrastructureStack extends Stack {
       description: 'SSR renderer for akli.dev — placeholder handler until the React server bundle is deployed',
     })
 
+    // Lambda Function URL — no additional cost (included in Lambda pricing)
+    const ssrFunctionUrl = ssrFunction.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.NONE,
+      invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
+    })
+
     // $1.00 per 1M requests (API Gateway v2)
     const ssrIntegration = new HttpLambdaIntegration('SsrIntegration', ssrFunction)
 
@@ -310,6 +316,11 @@ export class AkliInfrastructureStack extends Stack {
     })
 
     // CloudFormation outputs
+    new CfnOutput(this, 'FunctionUrl', {
+      value: ssrFunctionUrl.url,
+      description: 'Lambda Function URL for SSR streaming',
+    })
+
     new CfnOutput(this, 'HttpApiUrl', {
       value: httpApi.apiEndpoint,
       description: 'HTTP API Gateway endpoint URL',
