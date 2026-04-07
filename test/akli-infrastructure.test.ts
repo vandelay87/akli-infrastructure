@@ -190,6 +190,12 @@ describe('AkliInfrastructureStack', () => {
       })
     })
 
+    it('uses NONE auth type (CloudFront handles protection)', () => {
+      template.hasResourceProperties('AWS::Lambda::Url', {
+        AuthType: 'NONE',
+      })
+    })
+
     it('associates the Function URL with the SSR Lambda', () => {
       template.hasResourceProperties('AWS::Lambda::Url', {
         TargetFunctionArn: Match.objectLike({
@@ -200,6 +206,9 @@ describe('AkliInfrastructureStack', () => {
 
     it('exports the Function URL as a CloudFormation output', () => {
       template.hasOutput('FunctionUrl', {
+        Value: Match.objectLike({
+          'Fn::GetAtt': Match.arrayWith([Match.stringLikeRegexp('SsrFunctionFunctionUrl')]),
+        }),
         Description: Match.stringLikeRegexp('Function URL'),
       })
     })

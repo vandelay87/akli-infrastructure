@@ -112,7 +112,7 @@ export class AkliInfrastructureStack extends Stack {
       description: 'SSR renderer for akli.dev — placeholder handler until the React server bundle is deployed',
     })
 
-    // Lambda Function URL — no additional cost (included in Lambda pricing)
+    // Lambda Function URL — NONE auth (CloudFront handles protection), no additional cost
     const ssrFunctionUrl = ssrFunction.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.NONE,
       invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
