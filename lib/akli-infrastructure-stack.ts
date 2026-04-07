@@ -10,8 +10,6 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager'
 import * as iam from 'aws-cdk-lib/aws-iam'
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'
 import * as lambda from 'aws-cdk-lib/aws-lambda'
-import { HttpApi } from 'aws-cdk-lib/aws-apigatewayv2'
-import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations'
 import * as path from 'path'
 
 interface AkliInfrastructureStackProps extends StackProps {
@@ -112,13 +110,10 @@ export class AkliInfrastructureStack extends Stack {
       description: 'SSR renderer for akli.dev — placeholder handler until the React server bundle is deployed',
     })
 
-    // $1.00 per 1M requests (API Gateway v2)
-    const ssrIntegration = new HttpLambdaIntegration('SsrIntegration', ssrFunction)
-
-    const httpApi = new HttpApi(this, 'HttpApi', {
-      apiName: 'akli-dev-ssr',
-      description: 'HTTP API Gateway for SSR Lambda — serves as CloudFront origin',
-      defaultIntegration: ssrIntegration,
+    // Lambda Function URL — NONE auth (CloudFront handles protection), no additional cost
+    const ssrFunctionUrl = ssrFunction.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.NONE,
+      invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
     })
 
     const ssrCachePolicy = new cloudfront.CachePolicy(this, 'SsrCachePolicy', {
@@ -135,13 +130,13 @@ export class AkliInfrastructureStack extends Stack {
       originAccessControl: originAccessControl,
     })
 
-    // apiEndpoint is "https://xxx.execute-api.region.amazonaws.com" — extract the domain
-    const apiGatewayOrigin = new origins.HttpOrigin(
-      Fn.select(2, Fn.split('/', httpApi.apiEndpoint)),
+    // Function URL is "https://xxx.lambda-url.region.on.aws/" — extract the domain
+    const functionUrlOrigin = new origins.HttpOrigin(
+      Fn.select(2, Fn.split('/', ssrFunctionUrl.url)),
     )
 
     const ssrOriginGroup = new origins.OriginGroup({
-      primaryOrigin: apiGatewayOrigin,
+      primaryOrigin: functionUrlOrigin,
       fallbackOrigin: s3Origin,
       fallbackStatusCodes: [500, 502, 503, 504],
     })
@@ -310,9 +305,9 @@ export class AkliInfrastructureStack extends Stack {
     })
 
     // CloudFormation outputs
-    new CfnOutput(this, 'HttpApiUrl', {
-      value: httpApi.apiEndpoint,
-      description: 'HTTP API Gateway endpoint URL',
+    new CfnOutput(this, 'FunctionUrl', {
+      value: ssrFunctionUrl.url,
+      description: 'Lambda Function URL for SSR streaming',
     })
 
     new CfnOutput(this, 'SsrFunctionName', {

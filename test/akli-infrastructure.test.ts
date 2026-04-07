@@ -57,22 +57,6 @@ describe('AkliInfrastructureStack', () => {
     })
   })
 
-  describe('HTTP API Gateway', () => {
-    it('creates an HTTP API with the correct name', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
-        Name: 'akli-dev-ssr',
-        ProtocolType: 'HTTP',
-      })
-    })
-
-    it('creates a Lambda integration', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Integration', {
-        IntegrationType: 'AWS_PROXY',
-        PayloadFormatVersion: '2.0',
-      })
-    })
-  })
-
   describe('S3 bucket', () => {
     it('blocks all public access', () => {
       template.hasResourceProperties('AWS::S3::Bucket', {
@@ -91,20 +75,6 @@ describe('AkliInfrastructureStack', () => {
       template.hasResourceProperties('AWS::CloudFront::Distribution', {
         DistributionConfig: {
           Aliases: ['akli.dev', 'www.akli.dev'],
-        },
-      })
-    })
-
-    it('has the API Gateway as an origin', () => {
-      template.hasResourceProperties('AWS::CloudFront::Distribution', {
-        DistributionConfig: {
-          Origins: Match.arrayWith([
-            Match.objectLike({
-              CustomOriginConfig: Match.objectLike({
-                OriginProtocolPolicy: 'https-only',
-              }),
-            }),
-          ]),
         },
       })
     })
@@ -183,6 +153,37 @@ describe('AkliInfrastructureStack', () => {
     })
   })
 
+  describe('Lambda Function URL', () => {
+    it('creates a Function URL with RESPONSE_STREAM invoke mode', () => {
+      template.hasResourceProperties('AWS::Lambda::Url', {
+        InvokeMode: 'RESPONSE_STREAM',
+      })
+    })
+
+    it('uses NONE auth type (CloudFront handles protection)', () => {
+      template.hasResourceProperties('AWS::Lambda::Url', {
+        AuthType: 'NONE',
+      })
+    })
+
+    it('associates the Function URL with the SSR Lambda', () => {
+      template.hasResourceProperties('AWS::Lambda::Url', {
+        TargetFunctionArn: Match.objectLike({
+          'Fn::GetAtt': Match.arrayWith([Match.stringLikeRegexp('SsrFunction')]),
+        }),
+      })
+    })
+
+    it('exports the Function URL as a CloudFormation output', () => {
+      template.hasOutput('FunctionUrl', {
+        Value: Match.objectLike({
+          'Fn::GetAtt': Match.arrayWith([Match.stringLikeRegexp('SsrFunctionFunctionUrl')]),
+        }),
+        Description: Match.stringLikeRegexp('Function URL'),
+      })
+    })
+  })
+
   describe('SSR cache policy', () => {
     it('creates a cache policy with 60-second TTL', () => {
       template.hasResourceProperties('AWS::CloudFront::CachePolicy', {
@@ -210,6 +211,49 @@ describe('AkliInfrastructureStack', () => {
           ]),
         },
       })
+    })
+  })
+
+  describe('CloudFront Function URL origin', () => {
+    it('has the Lambda Function URL as a CloudFront origin', () => {
+      const resources = template.toJSON().Resources
+      const dist = Object.values(resources).find(
+        (r: any) => r.Type === 'AWS::CloudFront::Distribution',
+      ) as any
+
+      const origins = dist.Properties.DistributionConfig.Origins
+      const customOrigin = origins.find((o: any) => o.CustomOriginConfig !== undefined)
+
+      const domainName = customOrigin.DomainName
+      const fnGetAtt = domainName?.['Fn::Select']?.[1]?.['Fn::Split']?.[1]?.['Fn::GetAtt']
+
+      expect(fnGetAtt).toBeDefined()
+      expect(fnGetAtt[0]).toMatch(/SsrFunctionFunctionUrl/)
+      expect(fnGetAtt[1]).toBe('FunctionUrl')
+    })
+
+    it('uses the Function URL origin as the primary in the OriginGroup failover', () => {
+      const resources = template.toJSON().Resources
+      const dist = Object.values(resources).find(
+        (r: any) => r.Type === 'AWS::CloudFront::Distribution',
+      ) as any
+
+      const origins = dist.Properties.DistributionConfig.Origins
+      const originGroups = dist.Properties.DistributionConfig.OriginGroups
+
+      const functionUrlOrigin = origins.find((o: any) => {
+        const fnGetAtt = o.DomainName?.['Fn::Select']?.[1]?.['Fn::Split']?.[1]?.['Fn::GetAtt']
+        return fnGetAtt && fnGetAtt[0]?.match(/SsrFunctionFunctionUrl/)
+      })
+
+      expect(functionUrlOrigin).toBeDefined()
+
+      const primaryMemberId = originGroups.Items[0].Members.Items[0].OriginId
+      expect(primaryMemberId).toBe(functionUrlOrigin.Id)
+
+      const fallbackMemberId = originGroups.Items[0].Members.Items[1].OriginId
+      const s3Origin = origins.find((o: any) => o.S3OriginConfig !== undefined)
+      expect(fallbackMemberId).toBe(s3Origin.Id)
     })
   })
 
