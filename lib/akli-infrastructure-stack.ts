@@ -1,4 +1,4 @@
-import { Stack, StackProps, RemovalPolicy, CfnOutput, Duration, SecretValue } from 'aws-cdk-lib'
+import { Stack, StackProps, RemovalPolicy, CfnOutput, Duration, SecretValue, Fn } from 'aws-cdk-lib'
 import { Construct } from 'constructs'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
@@ -140,7 +140,10 @@ export class AkliInfrastructureStack extends Stack {
       },
     })
 
-    const functionUrlOrigin = new origins.FunctionUrlOrigin(ssrFunctionUrl)
+    // Use HttpOrigin for the Function URL domain — OAC is attached via L1 override below
+    const functionUrlOrigin = new origins.HttpOrigin(
+      Fn.select(2, Fn.split('/', ssrFunctionUrl.url)),
+    )
 
     const ssrOriginGroup = new origins.OriginGroup({
       primaryOrigin: functionUrlOrigin,
@@ -213,11 +216,6 @@ export class AkliInfrastructureStack extends Stack {
     cfnDistribution.addPropertyOverride(
       'DistributionConfig.Origins.0.OriginAccessControlId',
       lambdaOac.attrId,
-    )
-    // Lambda OAC requires no CustomOriginConfig — CloudFront must treat it
-    // as a managed origin (like S3) for SigV4 signing to work correctly.
-    cfnDistribution.addPropertyDeletionOverride(
-      'DistributionConfig.Origins.0.CustomOriginConfig',
     )
 
     // Grant CloudFront access to Lambda Function URL via OAC

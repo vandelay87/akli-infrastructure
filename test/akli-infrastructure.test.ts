@@ -230,7 +230,7 @@ describe('AkliInfrastructureStack', () => {
 
       expect(lambdaOrigin).toBeDefined()
       expect(lambdaOrigin.OriginAccessControlId).toBeDefined()
-      expect(lambdaOrigin.CustomOriginConfig).toBeUndefined()
+      expect(lambdaOrigin.CustomOriginConfig).toBeDefined()
     })
 
     it('uses the Function URL origin as the primary in the OriginGroup failover', () => {
