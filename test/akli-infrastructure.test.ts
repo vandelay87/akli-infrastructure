@@ -183,6 +183,28 @@ describe('AkliInfrastructureStack', () => {
     })
   })
 
+  describe('Lambda Function URL', () => {
+    it('creates a Function URL with RESPONSE_STREAM invoke mode', () => {
+      template.hasResourceProperties('AWS::Lambda::Url', {
+        InvokeMode: 'RESPONSE_STREAM',
+      })
+    })
+
+    it('associates the Function URL with the SSR Lambda', () => {
+      template.hasResourceProperties('AWS::Lambda::Url', {
+        TargetFunctionArn: Match.objectLike({
+          'Fn::GetAtt': Match.arrayWith([Match.stringLikeRegexp('SsrFunction')]),
+        }),
+      })
+    })
+
+    it('exports the Function URL as a CloudFormation output', () => {
+      template.hasOutput('FunctionUrl', {
+        Description: Match.stringLikeRegexp('Function URL'),
+      })
+    })
+  })
+
   describe('SSR cache policy', () => {
     it('creates a cache policy with 60-second TTL', () => {
       template.hasResourceProperties('AWS::CloudFront::CachePolicy', {
