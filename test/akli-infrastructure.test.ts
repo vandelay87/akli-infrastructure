@@ -57,22 +57,6 @@ describe('AkliInfrastructureStack', () => {
     })
   })
 
-  describe('HTTP API Gateway', () => {
-    it('creates an HTTP API with the correct name', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
-        Name: 'akli-dev-ssr',
-        ProtocolType: 'HTTP',
-      })
-    })
-
-    it('creates a Lambda integration', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Integration', {
-        IntegrationType: 'AWS_PROXY',
-        PayloadFormatVersion: '2.0',
-      })
-    })
-  })
-
   describe('S3 bucket', () => {
     it('blocks all public access', () => {
       template.hasResourceProperties('AWS::S3::Bucket', {
@@ -91,20 +75,6 @@ describe('AkliInfrastructureStack', () => {
       template.hasResourceProperties('AWS::CloudFront::Distribution', {
         DistributionConfig: {
           Aliases: ['akli.dev', 'www.akli.dev'],
-        },
-      })
-    })
-
-    it('has the Lambda Function URL as an origin', () => {
-      template.hasResourceProperties('AWS::CloudFront::Distribution', {
-        DistributionConfig: {
-          Origins: Match.arrayWith([
-            Match.objectLike({
-              CustomOriginConfig: Match.objectLike({
-                OriginProtocolPolicy: 'https-only',
-              }),
-            }),
-          ]),
         },
       })
     })
@@ -244,11 +214,8 @@ describe('AkliInfrastructureStack', () => {
     })
   })
 
-  describe('CloudFront Function URL origin (issue #28)', () => {
+  describe('CloudFront Function URL origin', () => {
     it('has the Lambda Function URL as a CloudFront origin', () => {
-      // After issue #28, the primary custom origin domain should be derived
-      // from the Lambda Function URL (Fn::GetAtt on the FunctionUrl resource),
-      // not from the API Gateway endpoint.
       const resources = template.toJSON().Resources
       const dist = Object.values(resources).find(
         (r: any) => r.Type === 'AWS::CloudFront::Distribution',
@@ -257,7 +224,6 @@ describe('AkliInfrastructureStack', () => {
       const origins = dist.Properties.DistributionConfig.Origins
       const customOrigin = origins.find((o: any) => o.CustomOriginConfig !== undefined)
 
-      // The domain should reference the Function URL resource, not the HttpApi
       const domainName = customOrigin.DomainName
       const fnGetAtt = domainName?.['Fn::Select']?.[1]?.['Fn::Split']?.[1]?.['Fn::GetAtt']
 
@@ -267,8 +233,6 @@ describe('AkliInfrastructureStack', () => {
     })
 
     it('uses the Function URL origin as the primary in the OriginGroup failover', () => {
-      // The OriginGroup must have the Function URL origin as the primary member
-      // and the S3 origin as the fallback, preserving 5xx failover.
       const resources = template.toJSON().Resources
       const dist = Object.values(resources).find(
         (r: any) => r.Type === 'AWS::CloudFront::Distribution',
@@ -277,8 +241,6 @@ describe('AkliInfrastructureStack', () => {
       const origins = dist.Properties.DistributionConfig.Origins
       const originGroups = dist.Properties.DistributionConfig.OriginGroups
 
-      // Find the Function URL origin (custom origin whose domain references
-      // SsrFunctionFunctionUrl, not HttpApi)
       const functionUrlOrigin = origins.find((o: any) => {
         const fnGetAtt = o.DomainName?.['Fn::Select']?.[1]?.['Fn::Split']?.[1]?.['Fn::GetAtt']
         return fnGetAtt && fnGetAtt[0]?.match(/SsrFunctionFunctionUrl/)
@@ -286,11 +248,9 @@ describe('AkliInfrastructureStack', () => {
 
       expect(functionUrlOrigin).toBeDefined()
 
-      // The first member of the origin group should be the Function URL origin
       const primaryMemberId = originGroups.Items[0].Members.Items[0].OriginId
       expect(primaryMemberId).toBe(functionUrlOrigin.Id)
 
-      // The second member should be an S3 origin
       const fallbackMemberId = originGroups.Items[0].Members.Items[1].OriginId
       const s3Origin = origins.find((o: any) => o.S3OriginConfig !== undefined)
       expect(fallbackMemberId).toBe(s3Origin.Id)
