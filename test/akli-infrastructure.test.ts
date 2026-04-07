@@ -215,21 +215,22 @@ describe('AkliInfrastructureStack', () => {
   })
 
   describe('CloudFront Function URL origin', () => {
-    it('has the Lambda Function URL as a CloudFront origin', () => {
+    it('has the Lambda Function URL as a CloudFront origin with OAC', () => {
       const resources = template.toJSON().Resources
       const dist = Object.values(resources).find(
         (r: any) => r.Type === 'AWS::CloudFront::Distribution',
       ) as any
 
       const origins = dist.Properties.DistributionConfig.Origins
-      const customOrigin = origins.find((o: any) => o.CustomOriginConfig !== undefined)
+      // Find the Lambda origin by its domain (derived from the Function URL)
+      const lambdaOrigin = origins.find((o: any) => {
+        const fnGetAtt = o.DomainName?.['Fn::Select']?.[1]?.['Fn::Split']?.[1]?.['Fn::GetAtt']
+        return fnGetAtt && fnGetAtt[0]?.match(/SsrFunctionFunctionUrl/)
+      })
 
-      const domainName = customOrigin.DomainName
-      const fnGetAtt = domainName?.['Fn::Select']?.[1]?.['Fn::Split']?.[1]?.['Fn::GetAtt']
-
-      expect(fnGetAtt).toBeDefined()
-      expect(fnGetAtt[0]).toMatch(/SsrFunctionFunctionUrl/)
-      expect(fnGetAtt[1]).toBe('FunctionUrl')
+      expect(lambdaOrigin).toBeDefined()
+      expect(lambdaOrigin.OriginAccessControlId).toBeDefined()
+      expect(lambdaOrigin.CustomOriginConfig).toBeUndefined()
     })
 
     it('uses the Function URL origin as the primary in the OriginGroup failover', () => {
