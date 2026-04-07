@@ -219,9 +219,14 @@ export class AkliInfrastructureStack extends Stack {
     )
 
     // Grant CloudFront access to Lambda Function URL via OAC
-    ssrFunction.addPermission('CloudFrontOACInvoke', {
+    ssrFunction.addPermission('CloudFrontOACInvokeFunctionUrl', {
       principal: new iam.ServicePrincipal('cloudfront.amazonaws.com'),
       action: 'lambda:InvokeFunctionUrl',
+      sourceArn: `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`,
+    })
+    ssrFunction.addPermission('CloudFrontOACInvokeFunction', {
+      principal: new iam.ServicePrincipal('cloudfront.amazonaws.com'),
+      action: 'lambda:InvokeFunction',
       sourceArn: `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`,
     })
 
