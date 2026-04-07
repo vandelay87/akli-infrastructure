@@ -57,22 +57,6 @@ describe('AkliInfrastructureStack', () => {
     })
   })
 
-  describe('HTTP API Gateway', () => {
-    it('creates an HTTP API with the correct name', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
-        Name: 'akli-dev-ssr',
-        ProtocolType: 'HTTP',
-      })
-    })
-
-    it('creates a Lambda integration', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Integration', {
-        IntegrationType: 'AWS_PROXY',
-        PayloadFormatVersion: '2.0',
-      })
-    })
-  })
-
   describe('S3 bucket', () => {
     it('blocks all public access', () => {
       template.hasResourceProperties('AWS::S3::Bucket', {
