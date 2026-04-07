@@ -214,6 +214,11 @@ export class AkliInfrastructureStack extends Stack {
       'DistributionConfig.Origins.0.OriginAccessControlId',
       lambdaOac.attrId,
     )
+    // Lambda OAC requires no CustomOriginConfig — CloudFront must treat it
+    // as a managed origin (like S3) for SigV4 signing to work correctly.
+    cfnDistribution.addPropertyDeletionOverride(
+      'DistributionConfig.Origins.0.CustomOriginConfig',
+    )
 
     // Grant CloudFront access to Lambda Function URL via OAC
     ssrFunction.addPermission('CloudFrontOACInvoke', {
