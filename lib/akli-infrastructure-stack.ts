@@ -1,4 +1,4 @@
-import { Stack, StackProps, RemovalPolicy, CfnOutput, Duration, SecretValue, Fn } from 'aws-cdk-lib'
+import { Stack, StackProps, RemovalPolicy, CfnOutput, Duration, SecretValue } from 'aws-cdk-lib'
 import { Construct } from 'constructs'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
@@ -110,9 +110,9 @@ export class AkliInfrastructureStack extends Stack {
       description: 'SSR renderer for akli.dev — placeholder handler until the React server bundle is deployed',
     })
 
-    // Lambda Function URL — NONE auth (CloudFront handles protection), no additional cost
+    // Lambda Function URL — AWS_IAM auth, CloudFront signs requests via OAC
     const ssrFunctionUrl = ssrFunction.addFunctionUrl({
-      authType: lambda.FunctionUrlAuthType.NONE,
+      authType: lambda.FunctionUrlAuthType.AWS_IAM,
       invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
     })
 
@@ -130,10 +130,8 @@ export class AkliInfrastructureStack extends Stack {
       originAccessControl: originAccessControl,
     })
 
-    // Function URL is "https://xxx.lambda-url.region.on.aws/" — extract the domain
-    const functionUrlOrigin = new origins.HttpOrigin(
-      Fn.select(2, Fn.split('/', ssrFunctionUrl.url)),
-    )
+    // CloudFront OAC for Lambda — signs requests so AWS_IAM auth passes
+    const functionUrlOrigin = new origins.FunctionUrlOrigin(ssrFunctionUrl)
 
     const ssrOriginGroup = new origins.OriginGroup({
       primaryOrigin: functionUrlOrigin,

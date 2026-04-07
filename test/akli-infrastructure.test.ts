@@ -160,9 +160,9 @@ describe('AkliInfrastructureStack', () => {
       })
     })
 
-    it('uses NONE auth type (CloudFront handles protection)', () => {
+    it('uses AWS_IAM auth type (CloudFront signs via OAC)', () => {
       template.hasResourceProperties('AWS::Lambda::Url', {
-        AuthType: 'NONE',
+        AuthType: 'AWS_IAM',
       })
     })
 
