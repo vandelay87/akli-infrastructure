@@ -130,7 +130,16 @@ export class AkliInfrastructureStack extends Stack {
       originAccessControl: originAccessControl,
     })
 
-    // CloudFront OAC for Lambda — signs requests so AWS_IAM auth passes
+    // OAC for Lambda — CloudFront signs requests so AWS_IAM auth passes
+    const lambdaOac = new cloudfront.CfnOriginAccessControl(this, 'LambdaOAC', {
+      originAccessControlConfig: {
+        name: 'LambdaFunctionUrlOAC',
+        originAccessControlOriginType: 'lambda',
+        signingBehavior: 'always',
+        signingProtocol: 'sigv4',
+      },
+    })
+
     const functionUrlOrigin = new origins.FunctionUrlOrigin(ssrFunctionUrl)
 
     const ssrOriginGroup = new origins.OriginGroup({
@@ -196,6 +205,15 @@ export class AkliInfrastructureStack extends Stack {
         },
       },
     })
+
+    // Attach Lambda OAC to the Function URL origin via L1 escape hatch.
+    // FunctionUrlOrigin + OriginGroup doesn't propagate OAC to CloudFormation.
+    // Origin index 0 is the Lambda Function URL (primary in the OriginGroup).
+    const cfnDistribution = distribution.node.defaultChild as cloudfront.CfnDistribution
+    cfnDistribution.addPropertyOverride(
+      'DistributionConfig.Origins.0.OriginAccessControlId',
+      lambdaOac.attrId,
+    )
 
     // Grant CloudFront access to Lambda Function URL via OAC
     ssrFunction.addPermission('CloudFrontOACInvoke', {
