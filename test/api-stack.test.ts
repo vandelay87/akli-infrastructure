@@ -208,9 +208,7 @@ describe('ApiStack', () => {
       template.hasResourceProperties('AWS::CloudFront::OriginRequestPolicy', {
         OriginRequestPolicyConfig: Match.objectLike({
           HeadersConfig: Match.objectLike({
-            Headers: Match.objectLike({
-              Items: Match.arrayWith(['Authorization']),
-            }),
+            Headers: Match.arrayWith(['Authorization']),
           }),
         }),
       })

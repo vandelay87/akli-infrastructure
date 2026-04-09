@@ -53,8 +53,7 @@ export class ApiStack extends Stack {
     })
 
     // Origin request policy for auth API — forwards Authorization header.
-    // Uses raw CfnResource because the L2 construct blocks Authorization in allowList,
-    // and the L1 CfnOriginRequestPolicy doesn't produce the correct { Items: [...] } shape.
+    // Uses raw CfnResource because the L2 construct blocks Authorization in allowList.
     const cfnAuthOriginRequestPolicy = new CfnResource(this, 'AuthOriginRequestPolicy', {
       type: 'AWS::CloudFront::OriginRequestPolicy',
       properties: {
@@ -62,7 +61,7 @@ export class ApiStack extends Stack {
           Name: 'AuthOriginRequestPolicy',
           HeadersConfig: {
             HeaderBehavior: 'whitelist',
-            Headers: { Items: ['Authorization'] },
+            Headers: ['Authorization'],
           },
           QueryStringsConfig: {
             QueryStringBehavior: 'all',
