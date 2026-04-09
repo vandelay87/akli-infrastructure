@@ -14,6 +14,9 @@ import { applyStackTags } from './utils'
 
 export class AuthStack extends Stack {
   public readonly httpApi: HttpApi
+  public readonly userPoolId: string
+  public readonly userPoolClientId: string
+  public readonly userPoolArn: string
 
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props)
@@ -38,6 +41,9 @@ export class AuthStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
     })
 
+    this.userPoolId = userPool.userPoolId
+    this.userPoolArn = userPool.userPoolArn
+
     // User Pool Client
     const userPoolClient = new cognito.CfnUserPoolClient(this, 'AuthUserPoolClient', {
       userPoolId: userPool.userPoolId,
@@ -50,6 +56,8 @@ export class AuthStack extends Stack {
         refreshToken: 'days',
       },
     })
+
+    this.userPoolClientId = userPoolClient.ref
 
     // Cognito Groups
     new cognito.CfnUserPoolGroup(this, 'AdminGroup', {
