@@ -144,7 +144,7 @@ export class AuthStack extends Stack {
       resources: [userPool.userPoolArn],
     }))
 
-    // JWT Authoriser
+    // JWT Authoriser — IdentitySource must be an array for CFN early validation
     const jwtAuthorizer = new apigwv2.CfnAuthorizer(this, 'JwtAuthorizer', {
       apiId: this.httpApi.httpApiId,
       authorizerType: 'JWT',
@@ -155,9 +155,6 @@ export class AuthStack extends Stack {
         audience: [userPoolClient.ref],
       },
     })
-    // HTTP API JWT authorisers use a single string IdentitySource, not a list.
-    // The CDK L1 types it as string[] but CFN expects a string for HTTP APIs.
-    jwtAuthorizer.addPropertyOverride('IdentitySource', '$request.header.Authorization')
 
     // API Gateway Integrations
     const authIntegration = new apigwv2.CfnIntegration(this, 'AuthHandlerIntegration', {

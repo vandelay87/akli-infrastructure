@@ -262,7 +262,7 @@ describe('AuthStack', () => {
     it('creates a JWT authoriser linked to the Cognito User Pool', () => {
       template.hasResourceProperties('AWS::ApiGatewayV2::Authorizer', {
         AuthorizerType: 'JWT',
-        IdentitySource: '$request.header.Authorization',
+        IdentitySource: Match.arrayWith(['$request.header.Authorization']),
       })
     })
 
