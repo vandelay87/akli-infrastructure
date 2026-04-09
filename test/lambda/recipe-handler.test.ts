@@ -730,6 +730,100 @@ describe('Recipe Lambda handler', () => {
     })
   })
 
+  // ─── GET /recipes/tags — public tag aggregation ─────────────────────
+  describe('GET /recipes/tags — list tags with counts', () => {
+    it('returns 200 with tags sorted alphabetically with counts', async () => {
+      ddbMock.on(ScanCommand).resolves({
+        Items: [
+          { tags: { wrapperName: 'Set', values: ['Italian', 'Slow Cook'], type: 'String' }, status: 'published' },
+          { tags: { wrapperName: 'Set', values: ['Italian', 'Vegetarian'], type: 'String' }, status: 'published' },
+        ],
+      })
+
+      const event = makeEvent({
+        routeKey: 'GET /recipes/tags',
+        rawPath: '/recipes/tags',
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(Array.isArray(body)).toBe(true)
+      expect(body).toEqual([
+        { tag: 'Italian', count: 2 },
+        { tag: 'Slow Cook', count: 1 },
+        { tag: 'Vegetarian', count: 1 },
+      ])
+    })
+
+    it('aggregates tag counts across multiple published recipes', async () => {
+      ddbMock.on(ScanCommand).resolves({
+        Items: [
+          { tags: { wrapperName: 'Set', values: ['Italian', 'Pasta'], type: 'String' }, status: 'published' },
+          { tags: { wrapperName: 'Set', values: ['Italian', 'Slow Cook'], type: 'String' }, status: 'published' },
+          { tags: { wrapperName: 'Set', values: ['Italian', 'Pasta', 'Vegetarian'], type: 'String' }, status: 'published' },
+        ],
+      })
+
+      const event = makeEvent({
+        routeKey: 'GET /recipes/tags',
+        rawPath: '/recipes/tags',
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      // Italian appears in all 3 recipes
+      expect(body.find((t: { tag: string }) => t.tag === 'Italian')).toEqual({ tag: 'Italian', count: 3 })
+      // Pasta appears in 2 recipes
+      expect(body.find((t: { tag: string }) => t.tag === 'Pasta')).toEqual({ tag: 'Pasta', count: 2 })
+      // Slow Cook and Vegetarian appear in 1 recipe each
+      expect(body.find((t: { tag: string }) => t.tag === 'Slow Cook')).toEqual({ tag: 'Slow Cook', count: 1 })
+      expect(body.find((t: { tag: string }) => t.tag === 'Vegetarian')).toEqual({ tag: 'Vegetarian', count: 1 })
+    })
+
+    it('excludes tags from draft recipes', async () => {
+      // The ScanCommand should filter on status = 'published', so drafts should not appear
+      ddbMock.on(ScanCommand).resolves({
+        Items: [
+          { tags: { wrapperName: 'Set', values: ['Italian'], type: 'String' }, status: 'published' },
+        ],
+      })
+
+      const event = makeEvent({
+        routeKey: 'GET /recipes/tags',
+        rawPath: '/recipes/tags',
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body).toEqual([{ tag: 'Italian', count: 1 }])
+      // Draft tags must not be included — the scan should only return published recipes
+    })
+
+    it('returns empty array when no published recipes exist', async () => {
+      ddbMock.on(ScanCommand).resolves({
+        Items: [],
+      })
+
+      const event = makeEvent({
+        routeKey: 'GET /recipes/tags',
+        rawPath: '/recipes/tags',
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(Array.isArray(body)).toBe(true)
+      expect(body).toEqual([])
+    })
+  })
+
   // ─── Unknown route ──────────────────────────────────────────────────
   describe('Unknown route', () => {
     it('returns 404 for unmatched route', async () => {
