@@ -4,6 +4,7 @@ import { AkliInfrastructureStack } from '../lib/akli-infrastructure-stack';
 import { CertificateStack } from '../lib/certificate-stack';
 import { PokedexStack } from '../lib/pokedex-stack';
 import { ApiStack } from '../lib/api-stack';
+import { AuthStack } from '../lib/auth-stack';
 
 const app = new cdk.App();
 
@@ -47,12 +48,24 @@ const pokedexStack = new PokedexStack(app, 'PokedexStack', {
   },
 });
 
+const authStack = new AuthStack(app, 'AuthStack', {
+  env: { account, region: 'eu-west-2' },
+  description: 'Authentication and user management infrastructure',
+  terminationProtection: true,
+  tags: {
+    Project: 'auth',
+    Environment: 'production',
+    ManagedBy: 'cdk',
+  },
+})
+
 new ApiStack(app, 'ApiStack', {
   env: { account, region: 'eu-west-2' },
   crossRegionReferences: true,
   apiCertificate: certStack.apiCertificate,
   hostedZone: certStack.hostedZone,
   pokedexApiUrl: pokedexStack.httpApi.apiEndpoint,
+  authApiUrl: authStack.httpApi.apiEndpoint,
   description: 'Shared API infrastructure for api.akli.dev with CloudFront',
 
   tags: {

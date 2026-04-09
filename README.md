@@ -4,12 +4,15 @@ AWS CDK infrastructure for [akli.dev](https://akli.dev). Manages static site hos
 
 ## Architecture
 
-Two CDK stacks deployed across regions:
+Five CDK stacks deployed across regions:
 
 | Stack | Region | Resources |
 |-------|--------|-----------|
-| CertificateStack | us-east-1 | Route 53 hosted zone, ACM certificate (required by CloudFront) |
+| CertificateStack | us-east-1 | Route 53 hosted zone, ACM certificates (required by CloudFront) |
 | AkliInfrastructureStack | eu-west-2 | S3 bucket, CloudFront distribution, Route 53 records, IAM users |
+| PokedexStack | eu-west-2 | DynamoDB table, HTTP API Gateway, Lambda handlers |
+| AuthStack | eu-west-2 | Cognito user pool, HTTP API Gateway, Lambda handlers, JWT authoriser, CloudWatch alarms |
+| ApiStack | eu-west-2 | CloudFront distribution for api.akli.dev, routes to Pokedex and Auth APIs |
 
 ```
 Route 53 (akli.dev, www.akli.dev)

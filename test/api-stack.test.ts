@@ -29,6 +29,7 @@ function createTestStack(): Template {
     hostedZone,
     apiCertificate,
     pokedexApiUrl: 'https://abc123.execute-api.eu-west-2.amazonaws.com',
+    authApiUrl: 'https://xyz789.execute-api.eu-west-2.amazonaws.com',
     tags: {
       Project: 'akli-api',
       Environment: 'production',
@@ -106,6 +107,68 @@ describe('ApiStack', () => {
       })
     })
 
+    it('has the auth API Gateway as an origin', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({
+          Origins: Match.arrayWith([
+            Match.objectLike({
+              DomainName: 'xyz789.execute-api.eu-west-2.amazonaws.com',
+              CustomOriginConfig: Match.objectLike({
+                OriginProtocolPolicy: 'https-only',
+              }),
+            }),
+          ]),
+        }),
+      })
+    })
+
+    it('has an /auth/* cache behaviour with caching disabled', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({
+              PathPattern: '/auth/*',
+              CachePolicyId: '4135ea2d-6df8-44a3-9df3-4b5a84be39ad',
+            }),
+          ]),
+        }),
+      })
+    })
+
+    it('has an /auth/* cache behaviour with AllowedMethods.ALLOW_ALL', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({
+              PathPattern: '/auth/*',
+              AllowedMethods: [
+                'GET',
+                'HEAD',
+                'OPTIONS',
+                'PUT',
+                'PATCH',
+                'POST',
+                'DELETE',
+              ],
+            }),
+          ]),
+        }),
+      })
+    })
+
+    it('has an /auth/* cache behaviour that forwards Authorization header', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({
+              PathPattern: '/auth/*',
+              OriginRequestPolicyId: Match.anyValue(),
+            }),
+          ]),
+        }),
+      })
+    })
+
     it('configures the certificate from CertificateStack', () => {
       template.hasResourceProperties('AWS::CloudFront::Distribution', {
         DistributionConfig: Match.objectLike({
@@ -134,6 +197,20 @@ describe('ApiStack', () => {
             QueryStringsConfig: {
               QueryStringBehavior: 'all',
             },
+          }),
+        }),
+      })
+    })
+  })
+
+  describe('Auth origin request policy', () => {
+    it('creates an origin request policy that forwards Authorization header', () => {
+      template.hasResourceProperties('AWS::CloudFront::OriginRequestPolicy', {
+        OriginRequestPolicyConfig: Match.objectLike({
+          HeadersConfig: Match.objectLike({
+            Headers: Match.objectLike({
+              Items: Match.arrayWith(['Authorization']),
+            }),
           }),
         }),
       })
