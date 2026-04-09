@@ -10,6 +10,9 @@ function createTestStack(): Template {
 
   const stack = new RecipeStack(app, 'TestRecipeStack', {
     env: { account: '123456789012', region: 'eu-west-2' },
+    userPoolId: 'eu-west-2_TestPool123',
+    userPoolClientId: 'test-client-id-abc',
+    userPoolArn: 'arn:aws:cognito-idp:eu-west-2:123456789012:userpool/eu-west-2_TestPool123',
     tags: {
       Project: 'recipes',
       Environment: 'production',
@@ -191,6 +194,130 @@ describe('RecipeStack', () => {
             }),
           ]),
         },
+      })
+    })
+  })
+
+  describe('HTTP API Gateway', () => {
+    it('creates an HTTP API (ApiGatewayV2)', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+        ProtocolType: 'HTTP',
+      })
+    })
+  })
+
+  describe('CORS', () => {
+    it('configures CORS to allow https://akli.dev', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+        CorsConfiguration: Match.objectLike({
+          AllowOrigins: Match.arrayWith(['https://akli.dev']),
+        }),
+      })
+    })
+
+    it('allows GET, POST, PUT, PATCH, and DELETE methods', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+        CorsConfiguration: Match.objectLike({
+          AllowMethods: Match.arrayWith(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']),
+        }),
+      })
+    })
+
+    it('allows Content-Type and Authorization headers', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+        CorsConfiguration: Match.objectLike({
+          AllowHeaders: Match.arrayWith(['Content-Type', 'Authorization']),
+        }),
+      })
+    })
+  })
+
+  describe('Routes', () => {
+    it('has a GET /recipes route (public)', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'GET /recipes',
+        AuthorizationType: 'NONE',
+      })
+    })
+
+    it('has a GET /recipes/{slug} route (public)', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'GET /recipes/{slug}',
+        AuthorizationType: 'NONE',
+      })
+    })
+
+    it('has a GET /recipes/tags route (public)', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'GET /recipes/tags',
+        AuthorizationType: 'NONE',
+      })
+    })
+
+    it('has a GET /me/recipes route (protected)', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'GET /me/recipes',
+        AuthorizationType: 'JWT',
+      })
+    })
+
+    it('has a POST /recipes route (protected)', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'POST /recipes',
+        AuthorizationType: 'JWT',
+      })
+    })
+
+    it('has a PUT /recipes/{id} route (protected)', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'PUT /recipes/{id}',
+        AuthorizationType: 'JWT',
+      })
+    })
+
+    it('has a PATCH /recipes/{id}/publish route (protected)', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'PATCH /recipes/{id}/publish',
+        AuthorizationType: 'JWT',
+      })
+    })
+
+    it('has a PATCH /recipes/{id}/unpublish route (protected)', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'PATCH /recipes/{id}/unpublish',
+        AuthorizationType: 'JWT',
+      })
+    })
+
+    it('has a DELETE /recipes/{id} route (protected)', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'DELETE /recipes/{id}',
+        AuthorizationType: 'JWT',
+      })
+    })
+
+    it('has a POST /recipes/images/upload-url route (protected)', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'POST /recipes/images/upload-url',
+        AuthorizationType: 'JWT',
+      })
+    })
+  })
+
+  describe('JWT Authoriser', () => {
+    it('creates a JWT authoriser', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Authorizer', {
+        AuthorizerType: 'JWT',
+        IdentitySource: Match.arrayWith(['$request.header.Authorization']),
+      })
+    })
+
+    it('configures the JWT authoriser with Issuer and Audience', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Authorizer', {
+        JwtConfiguration: Match.objectLike({
+          Issuer: Match.anyValue(),
+          Audience: Match.anyValue(),
+        }),
       })
     })
   })
