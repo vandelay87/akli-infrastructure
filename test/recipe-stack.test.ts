@@ -148,6 +148,53 @@ describe('RecipeStack', () => {
     })
   })
 
+  describe('S3 image bucket', () => {
+    it('creates an S3 bucket named akli-recipe-images-{account-id}-eu-west-2', () => {
+      template.hasResourceProperties('AWS::S3::Bucket', {
+        BucketName: 'akli-recipe-images-123456789012-eu-west-2',
+      })
+    })
+
+    it('blocks all public access', () => {
+      template.hasResourceProperties('AWS::S3::Bucket', {
+        PublicAccessBlockConfiguration: {
+          BlockPublicAcls: true,
+          BlockPublicPolicy: true,
+          IgnorePublicAcls: true,
+          RestrictPublicBuckets: true,
+        },
+      })
+    })
+
+    it('has a lifecycle rule to abort incomplete multipart uploads after 1 day', () => {
+      template.hasResourceProperties('AWS::S3::Bucket', {
+        LifecycleConfiguration: {
+          Rules: Match.arrayWith([
+            Match.objectLike({
+              AbortIncompleteMultipartUpload: {
+                DaysAfterInitiation: 1,
+              },
+              Status: 'Enabled',
+            }),
+          ]),
+        },
+      })
+    })
+
+    it('allows PUT from https://akli.dev via CORS', () => {
+      template.hasResourceProperties('AWS::S3::Bucket', {
+        CorsConfiguration: {
+          CorsRules: Match.arrayWith([
+            Match.objectLike({
+              AllowedMethods: Match.arrayWith(['PUT']),
+              AllowedOrigins: Match.arrayWith(['https://akli.dev']),
+            }),
+          ]),
+        },
+      })
+    })
+  })
+
   describe('Tags', () => {
     it('tags the table with Owner', () => {
       template.hasResourceProperties('AWS::DynamoDB::Table', {
