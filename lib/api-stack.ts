@@ -14,6 +14,7 @@ interface ApiStackProps extends StackProps {
   apiCertificate: certificatemanager.ICertificate
   pokedexApiUrl: string
   authApiUrl: string
+  recipeApiUrl: string
 }
 
 /**
@@ -25,7 +26,7 @@ export class ApiStack extends Stack {
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props)
 
-    const { hostedZone, apiCertificate, pokedexApiUrl, authApiUrl } = props
+    const { hostedZone, apiCertificate, pokedexApiUrl, authApiUrl, recipeApiUrl } = props
 
     // Extract the domain from the API Gateway URL (strip "https://")
     const pokedexApiDomain = Fn.select(2, Fn.split('/', pokedexApiUrl))
@@ -38,6 +39,13 @@ export class ApiStack extends Stack {
     const authApiDomain = Fn.select(2, Fn.split('/', authApiUrl))
 
     const authOrigin = new origins.HttpOrigin(authApiDomain, {
+      protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+    })
+
+    // Recipe API origin
+    const recipeApiDomain = Fn.select(2, Fn.split('/', recipeApiUrl))
+
+    const recipeOrigin = new origins.HttpOrigin(recipeApiDomain, {
       protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
     })
 
@@ -86,6 +94,14 @@ export class ApiStack extends Stack {
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
           // AllViewerExceptHostHeader forwards all viewer headers (including Authorization) except Host
+          originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+          compress: true,
+        },
+        '/recipes/*': {
+          origin: recipeOrigin,
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
           originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
           compress: true,

@@ -30,6 +30,7 @@ function createTestStack(): Template {
     apiCertificate,
     pokedexApiUrl: 'https://abc123.execute-api.eu-west-2.amazonaws.com',
     authApiUrl: 'https://xyz789.execute-api.eu-west-2.amazonaws.com',
+    recipeApiUrl: 'https://recipe123.execute-api.eu-west-2.amazonaws.com',
     tags: {
       Project: 'akli-api',
       Environment: 'production',
@@ -162,6 +163,68 @@ describe('ApiStack', () => {
           CacheBehaviors: Match.arrayWith([
             Match.objectLike({
               PathPattern: '/auth/*',
+              OriginRequestPolicyId: Match.anyValue(),
+            }),
+          ]),
+        }),
+      })
+    })
+
+    it('has the recipe API Gateway as an origin', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({
+          Origins: Match.arrayWith([
+            Match.objectLike({
+              DomainName: 'recipe123.execute-api.eu-west-2.amazonaws.com',
+              CustomOriginConfig: Match.objectLike({
+                OriginProtocolPolicy: 'https-only',
+              }),
+            }),
+          ]),
+        }),
+      })
+    })
+
+    it('has a /recipes/* cache behaviour with caching disabled', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({
+              PathPattern: '/recipes/*',
+              CachePolicyId: '4135ea2d-6df8-44a3-9df3-4b5a84be39ad',
+            }),
+          ]),
+        }),
+      })
+    })
+
+    it('has a /recipes/* cache behaviour with AllowedMethods.ALLOW_ALL', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({
+              PathPattern: '/recipes/*',
+              AllowedMethods: [
+                'GET',
+                'HEAD',
+                'OPTIONS',
+                'PUT',
+                'PATCH',
+                'POST',
+                'DELETE',
+              ],
+            }),
+          ]),
+        }),
+      })
+    })
+
+    it('has a /recipes/* cache behaviour that forwards Authorization header', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({
+              PathPattern: '/recipes/*',
               OriginRequestPolicyId: Match.anyValue(),
             }),
           ]),

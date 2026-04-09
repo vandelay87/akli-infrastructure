@@ -5,6 +5,7 @@ import { CertificateStack } from '../lib/certificate-stack';
 import { PokedexStack } from '../lib/pokedex-stack';
 import { ApiStack } from '../lib/api-stack';
 import { AuthStack } from '../lib/auth-stack';
+import { RecipeStack } from '../lib/recipe-stack';
 
 const app = new cdk.App();
 
@@ -59,6 +60,20 @@ const authStack = new AuthStack(app, 'AuthStack', {
   },
 })
 
+const recipeStack = new RecipeStack(app, 'RecipeStack', {
+  env: { account, region: 'eu-west-2' },
+  description: 'Recipe API backend resources (DynamoDB, S3, Lambda, API Gateway)',
+  terminationProtection: true,
+  userPoolId: authStack.userPoolId,
+  userPoolClientId: authStack.userPoolClientId,
+  userPoolArn: authStack.userPoolArn,
+  tags: {
+    Project: 'recipes',
+    Environment: 'production',
+    ManagedBy: 'cdk',
+  },
+})
+
 new ApiStack(app, 'ApiStack', {
   env: { account, region: 'eu-west-2' },
   crossRegionReferences: true,
@@ -66,6 +81,7 @@ new ApiStack(app, 'ApiStack', {
   hostedZone: certStack.hostedZone,
   pokedexApiUrl: pokedexStack.httpApi.apiEndpoint,
   authApiUrl: authStack.httpApi.apiEndpoint,
+  recipeApiUrl: recipeStack.httpApi.apiEndpoint,
   description: 'Shared API infrastructure for api.akli.dev with CloudFront',
 
   tags: {
