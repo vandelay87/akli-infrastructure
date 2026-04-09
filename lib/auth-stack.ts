@@ -42,7 +42,7 @@ export class AuthStack extends Stack {
     const userPoolClient = new cognito.CfnUserPoolClient(this, 'AuthUserPoolClient', {
       userPoolId: userPool.userPoolId,
       clientName: 'akli-auth-client',
-      explicitAuthFlows: ['ALLOW_USER_SRP_AUTH', 'ALLOW_REFRESH_TOKEN_AUTH'],
+      explicitAuthFlows: ['ALLOW_USER_SRP_AUTH', 'ALLOW_USER_PASSWORD_AUTH', 'ALLOW_REFRESH_TOKEN_AUTH'],
       accessTokenValidity: 1,
       refreshTokenValidity: 30,
       tokenValidityUnits: {
