@@ -51,6 +51,7 @@ const pokedexStack = new PokedexStack(app, 'PokedexStack', {
 const authStack = new AuthStack(app, 'AuthStack', {
   env: { account, region: 'eu-west-2' },
   description: 'Authentication and user management infrastructure',
+  terminationProtection: true,
   tags: {
     Project: 'auth',
     Environment: 'production',

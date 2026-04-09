@@ -111,6 +111,7 @@ export class ApiStack extends Stack {
             this, 'AuthOriginRequestPolicyRef', cfnAuthOriginRequestPolicy.getAtt('Id').toString(),
           ),
           allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+          compress: true,
         },
       },
     })

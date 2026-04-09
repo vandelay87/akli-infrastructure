@@ -14,10 +14,13 @@ Before implementing any new feature, check `docs/prds/` for a relevant PRD. If o
 
 ## Architecture
 
-Two stacks deployed across regions:
+Five stacks deployed across regions:
 
-- **CertificateStack** (us-east-1): Route 53 hosted zone + ACM certificate (CloudFront requires us-east-1)
+- **CertificateStack** (us-east-1): Route 53 hosted zone + ACM certificates (CloudFront requires us-east-1)
 - **AkliInfrastructureStack** (eu-west-2): S3, CloudFront, Route 53 records, IAM users, Secrets Manager
+- **PokedexStack** (eu-west-2): DynamoDB table, HTTP API Gateway, Lambda handlers
+- **AuthStack** (eu-west-2): Cognito user pool, HTTP API Gateway, Lambda handlers, JWT authoriser, CloudWatch alarms
+- **ApiStack** (eu-west-2): CloudFront distribution for api.akli.dev, routes to Pokedex and Auth APIs
 
 Cross-region references are enabled so the main stack can consume the certificate.
 

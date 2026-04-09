@@ -1,4 +1,4 @@
-import { CfnOutput, CustomResource, Duration, Stack, StackProps } from 'aws-cdk-lib'
+import { CfnOutput, CustomResource, Duration, RemovalPolicy, Stack, StackProps } from 'aws-cdk-lib'
 import { Construct } from 'constructs'
 import { CorsHttpMethod, HttpApi } from 'aws-cdk-lib/aws-apigatewayv2'
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2'
@@ -35,6 +35,7 @@ export class AuthStack extends Stack {
         emailBody:
           'Hello {username}, you have been invited to join akli.dev. Your temporary password is {####}.',
       },
+      removalPolicy: RemovalPolicy.RETAIN,
     })
 
     // User Pool Client
@@ -250,8 +251,15 @@ export class AuthStack extends Stack {
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
     })
 
-    new cloudwatch.Alarm(this, 'LambdaErrorAlarm', {
+    new cloudwatch.Alarm(this, 'AuthHandlerErrorAlarm', {
       metric: authHandler.metricErrors(),
+      threshold: 5,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+    })
+
+    new cloudwatch.Alarm(this, 'AuthAdminHandlerErrorAlarm', {
+      metric: authAdminHandler.metricErrors(),
       threshold: 5,
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
