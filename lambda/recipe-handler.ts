@@ -130,6 +130,8 @@ function lightweightRecipe(recipe: Record<string, unknown>): Record<string, unkn
 export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
   try {
     switch (event.routeKey) {
+      case 'GET /recipes/tags':
+        return await handleListTags()
       case 'GET /recipes':
         return await handleListPublished()
       case 'GET /recipes/{slug}':
@@ -152,6 +154,32 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   } catch {
     return json(500, { error: 'Internal server error' })
   }
+}
+
+async function handleListTags(): Promise<APIGatewayProxyStructuredResultV2> {
+  const result = await docClient.send(
+    new ScanCommand({
+      TableName: TABLE_NAME,
+      FilterExpression: '#status = :status',
+      ExpressionAttributeNames: { '#status': 'status' },
+      ExpressionAttributeValues: { ':status': 'published' },
+      ProjectionExpression: 'tags',
+    }),
+  )
+
+  const countMap: Record<string, number> = {}
+  for (const item of result.Items ?? []) {
+    const tags = tagsToArray(item.tags)
+    for (const tag of tags) {
+      countMap[tag] = (countMap[tag] ?? 0) + 1
+    }
+  }
+
+  const sorted = Object.entries(countMap)
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => a.tag.localeCompare(b.tag))
+
+  return json(200, sorted)
 }
 
 async function handleListPublished(): Promise<APIGatewayProxyStructuredResultV2> {
