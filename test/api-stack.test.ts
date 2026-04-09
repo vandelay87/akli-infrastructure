@@ -203,18 +203,6 @@ describe('ApiStack', () => {
     })
   })
 
-  describe('Auth origin request policy', () => {
-    it('creates an origin request policy that forwards Authorization header', () => {
-      template.hasResourceProperties('AWS::CloudFront::OriginRequestPolicy', {
-        OriginRequestPolicyConfig: Match.objectLike({
-          HeadersConfig: Match.objectLike({
-            Headers: Match.arrayWith(['Authorization']),
-          }),
-        }),
-      })
-    })
-  })
-
   describe('Route 53 record', () => {
     it('creates an A record for api.akli.dev', () => {
       template.hasResourceProperties('AWS::Route53::RecordSet', {

@@ -1,4 +1,4 @@
-import { CfnOutput, CfnResource, Duration, Fn, Stack, StackProps } from 'aws-cdk-lib'
+import { CfnOutput, Duration, Fn, Stack, StackProps } from 'aws-cdk-lib'
 import { Construct } from 'constructs'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
@@ -52,27 +52,6 @@ export class ApiStack extends Stack {
       cookieBehavior: cloudfront.CacheCookieBehavior.none(),
     })
 
-    // Origin request policy for auth API — forwards Authorization header.
-    // Uses raw CfnResource because the L2 construct blocks Authorization in allowList.
-    const cfnAuthOriginRequestPolicy = new CfnResource(this, 'AuthOriginRequestPolicy', {
-      type: 'AWS::CloudFront::OriginRequestPolicy',
-      properties: {
-        OriginRequestPolicyConfig: {
-          Name: 'AuthOriginRequestPolicy',
-          HeadersConfig: {
-            HeaderBehavior: 'whitelist',
-            Headers: ['Authorization'],
-          },
-          QueryStringsConfig: {
-            QueryStringBehavior: 'all',
-          },
-          CookiesConfig: {
-            CookieBehavior: 'none',
-          },
-        },
-      },
-    })
-
     // Origin request policy to forward Host header to API Gateway
     const apiOriginRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'ApiOriginRequestPolicy', {
       originRequestPolicyName: 'ApiOriginRequestPolicy',
@@ -106,9 +85,8 @@ export class ApiStack extends Stack {
           origin: authOrigin,
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
-          originRequestPolicy: cloudfront.OriginRequestPolicy.fromOriginRequestPolicyId(
-            this, 'AuthOriginRequestPolicyRef', cfnAuthOriginRequestPolicy.getAtt('Id').toString(),
-          ),
+          // AllViewerExceptHostHeader forwards all viewer headers (including Authorization) except Host
+          originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
           compress: true,
         },
