@@ -1,5 +1,108 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
+import {
+  CognitoIdentityProviderClient,
+  AdminCreateUserCommand,
+  AdminAddUserToGroupCommand,
+  AdminDeleteUserCommand,
+  ListUsersCommand,
+} from '@aws-sdk/client-cognito-identity-provider'
+
+const cognito = new CognitoIdentityProviderClient({})
+const USER_POOL_ID = process.env.USER_POOL_ID ?? ''
+
+function json(statusCode: number, body: Record<string, unknown> | readonly Record<string, unknown>[]): APIGatewayProxyStructuredResultV2 {
+  return { statusCode, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+}
+
+function isAdmin(event: APIGatewayProxyEventV2): boolean {
+  const authHeader = event.headers.authorization
+  if (!authHeader) return false
+
+  const token = authHeader.replace(/^bearer\s+/i, '')
+  if (!token) return false
+
+  try {
+    const parts = token.split('.')
+    if (parts.length < 2) return false
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString()) as Record<string, unknown>
+    const groups = payload['cognito:groups']
+    return Array.isArray(groups) && groups.includes('admin')
+  } catch {
+    return false
+  }
+}
 
 export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
-  return { statusCode: 501, body: JSON.stringify({ error: 'Not implemented' }) }
+  try {
+    if (!isAdmin(event)) {
+      return json(403, { error: 'Forbidden' })
+    }
+
+    switch (event.routeKey) {
+      case 'GET /auth/users':
+        return await handleListUsers()
+      case 'POST /auth/users':
+        return await handleCreateUser(event)
+      case 'DELETE /auth/users/{userId}':
+        return await handleDeleteUser(event)
+      default:
+        return json(404, { error: 'Not found' })
+    }
+  } catch {
+    return json(500, { error: 'Internal server error' })
+  }
+}
+
+async function handleListUsers(): Promise<APIGatewayProxyStructuredResultV2> {
+  const response = await cognito.send(new ListUsersCommand({ UserPoolId: USER_POOL_ID }))
+
+  const users = (response.Users ?? []).map((user) => ({
+    email: user.Attributes?.find((attr) => attr.Name === 'email')?.Value ?? '',
+    userId: user.Username ?? '',
+    role: user.Attributes?.find((attr) => attr.Name === 'custom:role')?.Value ?? 'unknown',
+    status: user.UserStatus ?? '',
+  }))
+
+  return json(200, users)
+}
+
+async function handleCreateUser(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
+  const { email, role } = JSON.parse(event.body ?? '{}') as { email?: string; role?: string }
+  if (!email || !role) return json(400, { error: 'email and role are required' })
+
+  const response = await cognito.send(
+    new AdminCreateUserCommand({
+      UserPoolId: USER_POOL_ID,
+      Username: email,
+      UserAttributes: [{ Name: 'email', Value: email }],
+    }),
+  )
+
+  await cognito.send(
+    new AdminAddUserToGroupCommand({
+      UserPoolId: USER_POOL_ID,
+      Username: email,
+      GroupName: role,
+    }),
+  )
+
+  return json(201, {
+    userId: response.User?.Username ?? '',
+    email,
+    status: response.User?.UserStatus ?? '',
+  })
+}
+
+async function handleDeleteUser(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
+  const userId = event.pathParameters?.userId
+  if (!userId) return json(400, { error: 'userId is required' })
+
+  await cognito.send(
+    new AdminDeleteUserCommand({
+      UserPoolId: USER_POOL_ID,
+      Username: userId,
+    }),
+  )
+
+  return json(200, { message: 'User deleted successfully' })
 }
