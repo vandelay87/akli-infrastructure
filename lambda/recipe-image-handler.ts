@@ -50,6 +50,7 @@ async function handleUploadUrl(event: APIGatewayProxyEventV2): Promise<APIGatewa
 
   const { recipeId, imageType, stepOrder } = JSON.parse(event.body ?? '{}') as UploadUrlBody
   if (!recipeId || !imageType) return json(400, { error: 'recipeId and imageType are required' })
+  if (imageType !== 'cover' && !stepOrder) return json(400, { error: 'stepOrder is required for step images' })
 
   const key = imageType === 'cover'
     ? `uploads/recipes/${recipeId}/cover`

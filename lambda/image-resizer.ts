@@ -18,6 +18,7 @@ const VARIANTS: readonly ImageVariant[] = [
 
 export async function handler(event: S3Event): Promise<void> {
   const bucketName = process.env.IMAGE_BUCKET_NAME
+  if (!bucketName) throw new Error('IMAGE_BUCKET_NAME not set')
 
   for (const record of event.Records) {
     const key = record.s3.object.key
@@ -32,21 +33,23 @@ export async function handler(event: S3Event): Promise<void> {
 
     const processedKey = key.replace('uploads/', 'processed/')
 
-    for (const variant of VARIANTS) {
-      const variantBuffer = await sharp(imageBuffer)
-        .resize(variant.width)
-        .webp({ quality: variant.quality })
-        .toBuffer()
+    await Promise.all(
+      VARIANTS.map(async (variant) => {
+        const variantBuffer = await sharp(imageBuffer)
+          .resize(variant.width)
+          .webp({ quality: variant.quality })
+          .toBuffer()
 
-      await s3.send(
-        new PutObjectCommand({
-          Bucket: bucketName,
-          Key: `${processedKey}-${variant.suffix}.webp`,
-          ContentType: 'image/webp',
-          Body: variantBuffer,
-        }),
-      )
-    }
+        await s3.send(
+          new PutObjectCommand({
+            Bucket: bucketName,
+            Key: `${processedKey}-${variant.suffix}.webp`,
+            ContentType: 'image/webp',
+            Body: variantBuffer,
+          }),
+        )
+      }),
+    )
 
     await s3.send(
       new DeleteObjectCommand({ Bucket: sourceBucket, Key: key }),

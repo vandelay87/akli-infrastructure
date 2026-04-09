@@ -63,6 +63,7 @@ const authStack = new AuthStack(app, 'AuthStack', {
 const recipeStack = new RecipeStack(app, 'RecipeStack', {
   env: { account, region: 'eu-west-2' },
   description: 'Recipe API backend resources (DynamoDB, S3, Lambda, API Gateway)',
+  terminationProtection: true,
   userPoolId: authStack.userPoolId,
   userPoolClientId: authStack.userPoolClientId,
   userPoolArn: authStack.userPoolArn,
