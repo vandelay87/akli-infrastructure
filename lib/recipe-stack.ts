@@ -30,6 +30,8 @@ export class RecipeStack extends Stack {
     new s3.Bucket(this, 'RecipeImagesBucket', {
       bucketName: `akli-recipe-images-${this.account}-${this.region}`,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
       removalPolicy: RemovalPolicy.RETAIN,
       autoDeleteObjects: false,
       lifecycleRules: [
@@ -41,6 +43,7 @@ export class RecipeStack extends Stack {
         {
           allowedMethods: [s3.HttpMethods.PUT],
           allowedOrigins: ['https://akli.dev'],
+          allowedHeaders: ['*'],
         },
       ],
     })
