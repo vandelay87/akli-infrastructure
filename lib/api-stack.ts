@@ -1,4 +1,4 @@
-import { CfnOutput, Duration, Fn, Stack, StackProps } from 'aws-cdk-lib'
+import { CfnOutput, CfnResource, Duration, Fn, Stack, StackProps } from 'aws-cdk-lib'
 import { Construct } from 'constructs'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
@@ -13,6 +13,7 @@ interface ApiStackProps extends StackProps {
   hostedZone: route53.IHostedZone
   apiCertificate: certificatemanager.ICertificate
   pokedexApiUrl: string
+  authApiUrl: string
 }
 
 /**
@@ -24,12 +25,19 @@ export class ApiStack extends Stack {
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props)
 
-    const { hostedZone, apiCertificate, pokedexApiUrl } = props
+    const { hostedZone, apiCertificate, pokedexApiUrl, authApiUrl } = props
 
     // Extract the domain from the API Gateway URL (strip "https://")
     const pokedexApiDomain = Fn.select(2, Fn.split('/', pokedexApiUrl))
 
     const pokedexOrigin = new origins.HttpOrigin(pokedexApiDomain, {
+      protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+    })
+
+    // Auth API origin
+    const authApiDomain = Fn.select(2, Fn.split('/', authApiUrl))
+
+    const authOrigin = new origins.HttpOrigin(authApiDomain, {
       protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
     })
 
@@ -42,6 +50,28 @@ export class ApiStack extends Stack {
       queryStringBehavior: cloudfront.CacheQueryStringBehavior.all(),
       headerBehavior: cloudfront.CacheHeaderBehavior.none(),
       cookieBehavior: cloudfront.CacheCookieBehavior.none(),
+    })
+
+    // Origin request policy for auth API — forwards Authorization header.
+    // Uses raw CfnResource because the L2 construct blocks Authorization in allowList,
+    // and the L1 CfnOriginRequestPolicy doesn't produce the correct { Items: [...] } shape.
+    const cfnAuthOriginRequestPolicy = new CfnResource(this, 'AuthOriginRequestPolicy', {
+      type: 'AWS::CloudFront::OriginRequestPolicy',
+      properties: {
+        OriginRequestPolicyConfig: {
+          Name: 'AuthOriginRequestPolicy',
+          HeadersConfig: {
+            HeaderBehavior: 'whitelist',
+            Headers: { Items: ['Authorization'] },
+          },
+          QueryStringsConfig: {
+            QueryStringBehavior: 'all',
+          },
+          CookiesConfig: {
+            CookieBehavior: 'none',
+          },
+        },
+      },
     })
 
     // Origin request policy to forward Host header to API Gateway
@@ -72,6 +102,15 @@ export class ApiStack extends Stack {
           originRequestPolicy: apiOriginRequestPolicy,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
           compress: true,
+        },
+        '/auth/*': {
+          origin: authOrigin,
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+          originRequestPolicy: cloudfront.OriginRequestPolicy.fromOriginRequestPolicyId(
+            this, 'AuthOriginRequestPolicyRef', cfnAuthOriginRequestPolicy.getAtt('Id').toString(),
+          ),
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
         },
       },
     })
