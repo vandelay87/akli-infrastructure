@@ -98,6 +98,14 @@ export class ApiStack extends Stack {
           allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
           compress: true,
         },
+        '/recipes': {
+          origin: recipeOrigin,
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+          originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+          compress: true,
+        },
         '/recipes/*': {
           origin: recipeOrigin,
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
