@@ -57,7 +57,8 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       default:
         return json(404, { error: 'Not found' })
     }
-  } catch {
+  } catch (err) {
+    console.error('auth-admin handler error:', err)
     return json(500, { error: 'Internal server error' })
   }
 }

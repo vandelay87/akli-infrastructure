@@ -208,6 +208,26 @@ describe('AuthStack', () => {
     })
   })
 
+  describe('auth-admin-handler IAM policy', () => {
+    it('grants the Cognito actions the handler needs', () => {
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        PolicyDocument: Match.objectLike({
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: Match.arrayWith([
+                'cognito-idp:AdminCreateUser',
+                'cognito-idp:AdminDeleteUser',
+                'cognito-idp:AdminAddUserToGroup',
+                'cognito-idp:ListUsers',
+                'cognito-idp:ListUsersInGroup',
+              ]),
+            }),
+          ]),
+        }),
+      })
+    })
+  })
+
   describe('HTTP API Gateway', () => {
     it('creates an HTTP API (ApiGatewayV2)', () => {
       template.hasResourceProperties('AWS::ApiGatewayV2::Api', {

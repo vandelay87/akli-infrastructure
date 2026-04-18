@@ -343,4 +343,24 @@ describe('Auth Admin Lambda handler', () => {
       expect(body).toHaveProperty('error')
     })
   })
+
+  describe('Error logging', () => {
+    it('logs caught errors before returning 500', async () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+      const cognitoError = new Error('AccessDeniedException: not authorised to ListUsersInGroup')
+      cognitoMock.on(ListUsersCommand).rejects(cognitoError)
+
+      const event = makeEvent({
+        routeKey: 'GET /auth/users',
+        rawPath: '/auth/users',
+        headers: { authorization: `Bearer ${adminToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(500)
+      expect(consoleSpy).toHaveBeenCalledWith(expect.anything(), cognitoError)
+      consoleSpy.mockRestore()
+    })
+  })
 })
