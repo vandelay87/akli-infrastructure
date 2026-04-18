@@ -206,6 +206,83 @@ describe('Auth Admin Lambda handler', () => {
       ])
     })
 
+    it('paginates ListUsers and ListUsersInGroup so users and admins beyond page 1 are not lost', async () => {
+      // Cognito's default page size is 60 for both APIs. If the handler only reads
+      // page 1, anyone on page 2 of the admin group is silently mis-classified as
+      // a contributor. Exercise both loops by returning two pages for each command.
+      const page1Users = Array.from({ length: 60 }, (_, i) => ({
+        Username: `user-${i + 1}`,
+        Attributes: [{ Name: 'email', Value: `user${i + 1}@example.com` }],
+        UserStatus: 'CONFIRMED' as const,
+        Enabled: true,
+      }))
+      const page2Users = [
+        {
+          Username: 'user-61',
+          Attributes: [{ Name: 'email', Value: 'user61@example.com' }],
+          UserStatus: 'CONFIRMED' as const,
+          Enabled: true,
+        },
+        {
+          Username: 'late-admin',
+          Attributes: [{ Name: 'email', Value: 'late-admin@example.com' }],
+          UserStatus: 'CONFIRMED' as const,
+          Enabled: true,
+        },
+        {
+          Username: 'user-63',
+          Attributes: [{ Name: 'email', Value: 'user63@example.com' }],
+          UserStatus: 'CONFIRMED' as const,
+          Enabled: true,
+        },
+      ]
+
+      cognitoMock
+        .on(ListUsersCommand)
+        .resolvesOnce({ Users: page1Users, PaginationToken: 'users-next-page' })
+        .resolvesOnce({ Users: page2Users })
+
+      // `user-1` is admin on page 1; `late-admin` is admin on page 2.
+      const adminPage1 = Array.from({ length: 60 }, (_, i) => ({ Username: `admin-page1-${i + 1}` }))
+      adminPage1[0] = { Username: 'user-1' }
+      const adminPage2 = [{ Username: 'late-admin' }, { Username: 'admin-page2-extra' }]
+
+      // Cognito's ListUsersInGroup uses NextToken (not PaginationToken) for pagination.
+      cognitoMock
+        .on(ListUsersInGroupCommand, { GroupName: 'admin' })
+        .resolvesOnce({ Users: adminPage1, NextToken: 'admins-next-page' })
+        .resolvesOnce({ Users: adminPage2 })
+
+      const event = makeEvent({
+        routeKey: 'GET /auth/users',
+        rawPath: '/auth/users',
+        headers: { authorization: `Bearer ${adminToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string) as Array<{ userId: string; role: string }>
+
+      // All 63 users across both pages are in the response.
+      expect(body).toHaveLength(63)
+      expect(body.map((u) => u.userId)).toEqual(
+        expect.arrayContaining(['user-1', 'user-60', 'user-61', 'late-admin', 'user-63']),
+      )
+
+      // Admin on page 2 of the admin group is still classified as admin.
+      const lateAdmin = body.find((u) => u.userId === 'late-admin')
+      expect(lateAdmin?.role).toBe('admin')
+
+      // Admin on page 1 of the admin group remains admin.
+      const earlyAdmin = body.find((u) => u.userId === 'user-1')
+      expect(earlyAdmin?.role).toBe('admin')
+
+      // A user on neither admin page is a contributor.
+      const contributor = body.find((u) => u.userId === 'user-61')
+      expect(contributor?.role).toBe('contributor')
+    })
+
     it('returns contributor when no users are in the admin group', async () => {
       cognitoMock.on(ListUsersCommand).resolves({
         Users: [
