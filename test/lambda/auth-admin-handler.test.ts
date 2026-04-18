@@ -3,6 +3,7 @@ import {
   CognitoIdentityProviderClient,
   AdminCreateUserCommand,
   ListUsersCommand,
+  ListUsersInGroupCommand,
   AdminDeleteUserCommand,
   AdminAddUserToGroupCommand,
 } from '@aws-sdk/client-cognito-identity-provider'
@@ -158,28 +159,25 @@ describe('Auth Admin Lambda handler', () => {
   })
 
   describe('GET /auth/users — list users', () => {
-    it('returns 200 with array of users containing email, userId, role, and status', async () => {
+    it('classifies users as admin when they are in the admin Cognito group, contributor otherwise', async () => {
       cognitoMock.on(ListUsersCommand).resolves({
         Users: [
           {
             Username: 'user-id-1',
-            Attributes: [
-              { Name: 'email', Value: 'alice@example.com' },
-              { Name: 'custom:role', Value: 'admin' },
-            ],
+            Attributes: [{ Name: 'email', Value: 'alice@example.com' }],
             UserStatus: 'CONFIRMED',
             Enabled: true,
           },
           {
             Username: 'user-id-2',
-            Attributes: [
-              { Name: 'email', Value: 'bob@example.com' },
-              { Name: 'custom:role', Value: 'user' },
-            ],
+            Attributes: [{ Name: 'email', Value: 'bob@example.com' }],
             UserStatus: 'FORCE_CHANGE_PASSWORD',
             Enabled: true,
           },
         ],
+      })
+      cognitoMock.on(ListUsersInGroupCommand, { GroupName: 'admin' }).resolves({
+        Users: [{ Username: 'user-id-1' }],
       })
 
       const event = makeEvent({
@@ -192,20 +190,55 @@ describe('Auth Admin Lambda handler', () => {
 
       expect(result.statusCode).toBe(200)
       const body = JSON.parse(result.body as string)
-      expect(Array.isArray(body)).toBe(true)
-      expect(body).toHaveLength(2)
-      expect(body[0]).toEqual({
-        email: 'alice@example.com',
-        userId: 'user-id-1',
-        role: 'admin',
-        status: 'CONFIRMED',
+      expect(body).toEqual([
+        {
+          email: 'alice@example.com',
+          userId: 'user-id-1',
+          role: 'admin',
+          status: 'CONFIRMED',
+        },
+        {
+          email: 'bob@example.com',
+          userId: 'user-id-2',
+          role: 'contributor',
+          status: 'FORCE_CHANGE_PASSWORD',
+        },
+      ])
+    })
+
+    it('returns contributor when no users are in the admin group', async () => {
+      cognitoMock.on(ListUsersCommand).resolves({
+        Users: [
+          {
+            Username: 'user-id-1',
+            Attributes: [{ Name: 'email', Value: 'alice@example.com' }],
+            UserStatus: 'CONFIRMED',
+            Enabled: true,
+          },
+        ],
       })
-      expect(body[1]).toEqual({
-        email: 'bob@example.com',
-        userId: 'user-id-2',
-        role: 'user',
-        status: 'FORCE_CHANGE_PASSWORD',
+      cognitoMock.on(ListUsersInGroupCommand, { GroupName: 'admin' }).resolves({
+        Users: [],
       })
+
+      const event = makeEvent({
+        routeKey: 'GET /auth/users',
+        rawPath: '/auth/users',
+        headers: { authorization: `Bearer ${adminToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body).toEqual([
+        {
+          email: 'alice@example.com',
+          userId: 'user-id-1',
+          role: 'contributor',
+          status: 'CONFIRMED',
+        },
+      ])
     })
   })
 
