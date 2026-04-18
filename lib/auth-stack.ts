@@ -148,6 +148,7 @@ export class AuthStack extends Stack {
         'cognito-idp:AdminDeleteUser',
         'cognito-idp:AdminAddUserToGroup',
         'cognito-idp:ListUsers',
+        'cognito-idp:ListUsersInGroup',
       ],
       resources: [userPool.userPoolArn],
     }))
