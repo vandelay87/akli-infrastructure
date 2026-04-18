@@ -6,6 +6,7 @@ import {
   AdminDeleteUserCommand,
   ListUsersCommand,
   ListUsersInGroupCommand,
+  type UserType,
 } from '@aws-sdk/client-cognito-identity-provider'
 
 const cognito = new CognitoIdentityProviderClient({})
@@ -63,19 +64,45 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   }
 }
 
+async function listAllUsers(): Promise<UserType[]> {
+  const users: UserType[] = []
+  let paginationToken: string | undefined
+  do {
+    const page = await cognito.send(
+      new ListUsersCommand({ UserPoolId: USER_POOL_ID, PaginationToken: paginationToken }),
+    )
+    if (page.Users) users.push(...page.Users)
+    paginationToken = page.PaginationToken
+  } while (paginationToken)
+  return users
+}
+
+async function listAllUsersInGroup(groupName: string): Promise<UserType[]> {
+  const users: UserType[] = []
+  let nextToken: string | undefined
+  do {
+    const page = await cognito.send(
+      new ListUsersInGroupCommand({ UserPoolId: USER_POOL_ID, GroupName: groupName, NextToken: nextToken }),
+    )
+    if (page.Users) users.push(...page.Users)
+    nextToken = page.NextToken
+  } while (nextToken)
+  return users
+}
+
 async function handleListUsers(): Promise<APIGatewayProxyStructuredResultV2> {
-  const [allUsers, adminGroup] = await Promise.all([
-    cognito.send(new ListUsersCommand({ UserPoolId: USER_POOL_ID })),
-    cognito.send(new ListUsersInGroupCommand({ UserPoolId: USER_POOL_ID, GroupName: ADMIN_GROUP })),
+  const [allUsers, adminGroupUsers] = await Promise.all([
+    listAllUsers(),
+    listAllUsersInGroup(ADMIN_GROUP),
   ])
 
   const adminUsernames = new Set(
-    (adminGroup.Users ?? [])
+    adminGroupUsers
       .map((u) => u.Username)
       .filter((name): name is string => Boolean(name))
   )
 
-  const users: AdminUser[] = (allUsers.Users ?? []).map((user) => ({
+  const users: AdminUser[] = allUsers.map((user) => ({
     email: user.Attributes?.find((attr) => attr.Name === 'email')?.Value ?? '',
     userId: user.Username ?? '',
     role: user.Username && adminUsernames.has(user.Username) ? 'admin' : 'contributor',
