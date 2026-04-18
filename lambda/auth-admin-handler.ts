@@ -5,10 +5,19 @@ import {
   AdminAddUserToGroupCommand,
   AdminDeleteUserCommand,
   ListUsersCommand,
+  ListUsersInGroupCommand,
 } from '@aws-sdk/client-cognito-identity-provider'
 
 const cognito = new CognitoIdentityProviderClient({})
 const USER_POOL_ID = process.env.USER_POOL_ID ?? ''
+const ADMIN_GROUP = 'admin'
+
+type AdminUser = {
+  email: string
+  userId: string
+  role: 'admin' | 'contributor'
+  status: string
+}
 
 function json(statusCode: number, body: Record<string, unknown> | readonly Record<string, unknown>[]): APIGatewayProxyStructuredResultV2 {
   return { statusCode, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
@@ -26,7 +35,7 @@ function isAdmin(event: APIGatewayProxyEventV2): boolean {
     if (parts.length < 2) return false
     const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString()) as Record<string, unknown>
     const groups = payload['cognito:groups']
-    return Array.isArray(groups) && groups.includes('admin')
+    return Array.isArray(groups) && groups.includes(ADMIN_GROUP)
   } catch {
     return false
   }
@@ -54,12 +63,21 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 }
 
 async function handleListUsers(): Promise<APIGatewayProxyStructuredResultV2> {
-  const response = await cognito.send(new ListUsersCommand({ UserPoolId: USER_POOL_ID }))
+  const [allUsers, adminGroup] = await Promise.all([
+    cognito.send(new ListUsersCommand({ UserPoolId: USER_POOL_ID })),
+    cognito.send(new ListUsersInGroupCommand({ UserPoolId: USER_POOL_ID, GroupName: ADMIN_GROUP })),
+  ])
 
-  const users = (response.Users ?? []).map((user) => ({
+  const adminUsernames = new Set(
+    (adminGroup.Users ?? [])
+      .map((u) => u.Username)
+      .filter((name): name is string => Boolean(name))
+  )
+
+  const users: AdminUser[] = (allUsers.Users ?? []).map((user) => ({
     email: user.Attributes?.find((attr) => attr.Name === 'email')?.Value ?? '',
     userId: user.Username ?? '',
-    role: user.Attributes?.find((attr) => attr.Name === 'custom:role')?.Value ?? 'unknown',
+    role: user.Username && adminUsernames.has(user.Username) ? 'admin' : 'contributor',
     status: user.UserStatus ?? '',
   }))
 
