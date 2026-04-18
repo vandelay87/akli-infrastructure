@@ -264,21 +264,17 @@ describe('Auth Admin Lambda handler', () => {
       expect(result.statusCode).toBe(200)
       const body = JSON.parse(result.body as string) as Array<{ userId: string; role: string }>
 
-      // All 63 users across both pages are in the response.
       expect(body).toHaveLength(63)
       expect(body.map((u) => u.userId)).toEqual(
         expect.arrayContaining(['user-1', 'user-60', 'user-61', 'late-admin', 'user-63']),
       )
 
-      // Admin on page 2 of the admin group is still classified as admin.
       const lateAdmin = body.find((u) => u.userId === 'late-admin')
       expect(lateAdmin?.role).toBe('admin')
 
-      // Admin on page 1 of the admin group remains admin.
       const earlyAdmin = body.find((u) => u.userId === 'user-1')
       expect(earlyAdmin?.role).toBe('admin')
 
-      // A user on neither admin page is a contributor.
       const contributor = body.find((u) => u.userId === 'user-61')
       expect(contributor?.role).toBe('contributor')
     })
