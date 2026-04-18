@@ -195,13 +195,13 @@ describe('Auth Admin Lambda handler', () => {
           email: 'alice@example.com',
           userId: 'user-id-1',
           role: 'admin',
-          status: 'CONFIRMED',
+          status: 'confirmed',
         },
         {
           email: 'bob@example.com',
           userId: 'user-id-2',
           role: 'contributor',
-          status: 'FORCE_CHANGE_PASSWORD',
+          status: 'pending',
         },
       ])
     })
@@ -309,7 +309,7 @@ describe('Auth Admin Lambda handler', () => {
           email: 'alice@example.com',
           userId: 'user-id-1',
           role: 'contributor',
-          status: 'CONFIRMED',
+          status: 'confirmed',
         },
       ])
     })
@@ -360,7 +360,7 @@ describe('Auth Admin Lambda handler', () => {
       const body = JSON.parse(result.body as string)
       expect(body).toHaveProperty('userId', 'new-user-id')
       expect(body).toHaveProperty('email', 'new@example.com')
-      expect(body).toHaveProperty('status', 'FORCE_CHANGE_PASSWORD')
+      expect(body).toHaveProperty('status', 'pending')
     })
   })
 

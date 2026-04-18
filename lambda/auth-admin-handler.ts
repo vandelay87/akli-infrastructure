@@ -13,11 +13,17 @@ const cognito = new CognitoIdentityProviderClient({})
 const USER_POOL_ID = process.env.USER_POOL_ID ?? ''
 const ADMIN_GROUP = 'admin'
 
+type AdminUserStatus = 'confirmed' | 'pending'
+
 type AdminUser = {
   email: string
   userId: string
   role: 'admin' | 'contributor'
-  status: string
+  status: AdminUserStatus
+}
+
+function normaliseStatus(cognitoStatus: string | undefined): AdminUserStatus {
+  return cognitoStatus === 'CONFIRMED' ? 'confirmed' : 'pending'
 }
 
 function json(statusCode: number, body: Record<string, unknown> | readonly Record<string, unknown>[]): APIGatewayProxyStructuredResultV2 {
@@ -106,7 +112,7 @@ async function handleListUsers(): Promise<APIGatewayProxyStructuredResultV2> {
     email: user.Attributes?.find((attr) => attr.Name === 'email')?.Value ?? '',
     userId: user.Username ?? '',
     role: user.Username && adminUsernames.has(user.Username) ? 'admin' : 'contributor',
-    status: user.UserStatus ?? '',
+    status: normaliseStatus(user.UserStatus),
   }))
 
   return json(200, users)
@@ -135,7 +141,7 @@ async function handleCreateUser(event: APIGatewayProxyEventV2): Promise<APIGatew
   return json(201, {
     userId: response.User?.Username ?? '',
     email,
-    status: response.User?.UserStatus ?? '',
+    status: normaliseStatus(response.User?.UserStatus),
   })
 }
 
