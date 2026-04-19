@@ -522,6 +522,128 @@ describe('Recipe Lambda handler', () => {
     })
   })
 
+  // ─── POST /recipes/drafts — create draft ────────────────────────────
+  describe('POST /recipes/drafts — create draft', () => {
+    beforeEach(() => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-04-19T12:00:00Z'))
+    })
+
+    afterEach(() => {
+      jest.useRealTimers()
+    })
+
+    it('returns 401 without a valid token', async () => {
+      const event = makeEvent({
+        routeKey: 'POST /recipes/drafts',
+        rawPath: '/recipes/drafts',
+        headers: {},
+        body: '{}',
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(401)
+      const body = JSON.parse(result.body as string)
+      expect(body).toHaveProperty('error')
+    })
+
+    it('returns 403 when the caller is not an admin', async () => {
+      const event = makeEvent({
+        routeKey: 'POST /recipes/drafts',
+        rawPath: '/recipes/drafts',
+        headers: { authorization: `Bearer ${contributorToken}` },
+        body: '{}',
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(403)
+      const body = JSON.parse(result.body as string)
+      expect(body).toHaveProperty('error')
+    })
+
+    it('returns 201 with { id, slug } in the body on success', async () => {
+      ddbMock.on(ScanCommand).resolves({ Items: [] })
+      ddbMock.on(PutCommand).resolves({})
+
+      const event = makeEvent({
+        routeKey: 'POST /recipes/drafts',
+        rawPath: '/recipes/drafts',
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: '{}',
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(201)
+      const body = JSON.parse(result.body as string)
+      expect(typeof body.id).toBe('string')
+      expect(body.id).toMatch(/^[0-9a-f-]+$/i)
+      expect(typeof body.slug).toBe('string')
+    })
+
+    it('writes status=draft and ttl=now+30d to DynamoDB', async () => {
+      ddbMock.on(ScanCommand).resolves({ Items: [] })
+      ddbMock.on(PutCommand).resolves({})
+
+      const event = makeEvent({
+        routeKey: 'POST /recipes/drafts',
+        rawPath: '/recipes/drafts',
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: '{}',
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(201)
+
+      const putCalls = ddbMock.commandCalls(PutCommand)
+      expect(putCalls).toHaveLength(1)
+      const item = putCalls[0].args[0].input.Item as Record<string, unknown>
+      expect(item.status).toBe('draft')
+
+      const expectedTtl = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60
+      expect(typeof item.ttl).toBe('number')
+      expect(item.ttl).toBe(expectedTtl)
+    })
+
+    it('defaults slug to draft-<uuid> when no title is provided', async () => {
+      ddbMock.on(ScanCommand).resolves({ Items: [] })
+      ddbMock.on(PutCommand).resolves({})
+
+      const event = makeEvent({
+        routeKey: 'POST /recipes/drafts',
+        rawPath: '/recipes/drafts',
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: '{}',
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(201)
+      const body = JSON.parse(result.body as string)
+      expect(body.slug).toMatch(/^draft-/)
+    })
+
+    it('derives slug from the title when one is provided', async () => {
+      ddbMock.on(ScanCommand).resolves({ Items: [] })
+      ddbMock.on(PutCommand).resolves({})
+
+      const event = makeEvent({
+        routeKey: 'POST /recipes/drafts',
+        rawPath: '/recipes/drafts',
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ title: 'My New Recipe' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(201)
+      const body = JSON.parse(result.body as string)
+      expect(body.slug).toBe('my-new-recipe')
+    })
+  })
+
   // ─── PUT /recipes/{id} — update recipe ──────────────────────────────
   describe('PUT /recipes/{id} — update recipe', () => {
     it('returns 200 when contributor updates their own recipe', async () => {
