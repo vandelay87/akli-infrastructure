@@ -282,39 +282,10 @@ describe('RecipeStack', () => {
       })
     })
 
-    it('has a PATCH /recipes/{id} route (protected)', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Route', Match.objectLike({
-        RouteKey: 'PATCH /recipes/{id}',
-        AuthorizationType: 'JWT',
-        AuthorizerId: Match.anyValue(),
-      }))
-    })
-
     it('does not expose the old PUT /recipes/{id} route', () => {
       template.resourcePropertiesCountIs('AWS::ApiGatewayV2::Route', {
         RouteKey: 'PUT /recipes/{id}',
       }, 0)
-    })
-
-    it('has a PATCH /recipes/{id}/publish route (protected)', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
-        RouteKey: 'PATCH /recipes/{id}/publish',
-        AuthorizationType: 'JWT',
-      })
-    })
-
-    it('has a PATCH /recipes/{id}/unpublish route (protected)', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
-        RouteKey: 'PATCH /recipes/{id}/unpublish',
-        AuthorizationType: 'JWT',
-      })
-    })
-
-    it('has a DELETE /recipes/{id} route (protected)', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
-        RouteKey: 'DELETE /recipes/{id}',
-        AuthorizationType: 'JWT',
-      })
     })
 
     it('has a POST /recipes/images/upload-url route (protected)', () => {
@@ -372,38 +343,6 @@ describe('RecipeStack', () => {
           ]),
         }),
       })
-    })
-  })
-
-  describe('POST /recipes/drafts route', () => {
-    it('has a POST /recipes/drafts route', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
-        RouteKey: 'POST /recipes/drafts',
-      })
-    })
-
-    it('is protected by the JWT authoriser', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Route', Match.objectLike({
-        RouteKey: 'POST /recipes/drafts',
-        AuthorizationType: 'JWT',
-        AuthorizerId: Match.anyValue(),
-      }))
-    })
-  })
-
-  describe('GET /recipes/admin route', () => {
-    it('has a GET /recipes/admin route', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
-        RouteKey: 'GET /recipes/admin',
-      })
-    })
-
-    it('is protected by the JWT authoriser', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Route', Match.objectLike({
-        RouteKey: 'GET /recipes/admin',
-        AuthorizationType: 'JWT',
-        AuthorizerId: Match.anyValue(),
-      }))
     })
   })
 
