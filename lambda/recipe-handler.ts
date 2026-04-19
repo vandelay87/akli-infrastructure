@@ -1,8 +1,8 @@
-import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
-import { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb'
-import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3'
 import { randomUUID } from 'node:crypto'
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3'
+import { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb'
+import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 import { VARIANT_SUFFIXES } from './image-variants'
 
 const ddbClient = new DynamoDBClient({})
@@ -12,6 +12,10 @@ const s3Client = new S3Client({})
 const TABLE_NAME = process.env.TABLE_NAME ?? ''
 const IMAGE_BUCKET_NAME = process.env.IMAGE_BUCKET_NAME ?? ''
 const DRAFT_TTL_SECONDS = 30 * 24 * 60 * 60
+
+type RecipeStatus = 'draft' | 'published'
+const DRAFT: RecipeStatus = 'draft'
+const PUBLISHED: RecipeStatus = 'published'
 
 interface JwtPayload {
   readonly sub: string
@@ -145,7 +149,7 @@ async function handleListTags(): Promise<APIGatewayProxyStructuredResultV2> {
       TableName: TABLE_NAME,
       FilterExpression: '#status = :status',
       ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: { ':status': 'published' },
+      ExpressionAttributeValues: { ':status': PUBLISHED },
       ProjectionExpression: 'tags',
     }),
   )
@@ -165,7 +169,7 @@ async function handleListTags(): Promise<APIGatewayProxyStructuredResultV2> {
   return json(200, sorted)
 }
 
-function queryRecipesByStatus(status: string) {
+function queryRecipesByStatus(status: RecipeStatus) {
   return docClient.send(
     new QueryCommand({
       TableName: TABLE_NAME,
@@ -179,7 +183,7 @@ function queryRecipesByStatus(status: string) {
 }
 
 async function handleListPublished(): Promise<APIGatewayProxyStructuredResultV2> {
-  const result = await queryRecipesByStatus('published')
+  const result = await queryRecipesByStatus(PUBLISHED)
 
   const recipes = (result.Items ?? []).map((item) => lightweightRecipe(item as Record<string, unknown>))
   return json(200, recipes)
@@ -189,7 +193,7 @@ async function handleListForAdmin(event: APIGatewayProxyEventV2): Promise<APIGat
   if (!decodeJwt(event)) return json(401, { error: 'Unauthorised' })
   if (!isAdmin(event)) return json(403, { error: 'Forbidden' })
 
-  const [publishedResult, draftResult] = await Promise.all([queryRecipesByStatus('published'), queryRecipesByStatus('draft')])
+  const [publishedResult, draftResult] = await Promise.all([queryRecipesByStatus(PUBLISHED), queryRecipesByStatus(DRAFT)])
 
   const nowSeconds = Math.floor(Date.now() / 1000)
   const merged = [...(publishedResult.Items ?? []), ...(draftResult.Items ?? [])] as Record<string, unknown>[]
@@ -215,7 +219,7 @@ async function handleGetBySlug(event: APIGatewayProxyEventV2): Promise<APIGatewa
   }
 
   const recipe = result.Items[0] as Record<string, unknown>
-  if (recipe.status !== 'published') {
+  if (recipe.status !== PUBLISHED) {
     return json(404, { error: 'Recipe not found' })
   }
 
@@ -256,7 +260,7 @@ async function handleCreateDraft(event: APIGatewayProxyEventV2): Promise<APIGate
   const item: Record<string, unknown> = {
     id,
     slug,
-    status: 'draft',
+    status: DRAFT,
     ttl,
     title,
     intro: '',
@@ -352,7 +356,7 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
   expressionNames['#updatedAt'] = 'updatedAt'
   expressionValues[':updatedAt'] = now
 
-  const isDraft = existing.status === 'draft'
+  const isDraft = existing.status === DRAFT
   const refreshedTtl = Math.floor(Date.now() / 1000) + DRAFT_TTL_SECONDS
   if (isDraft) {
     expressionParts.push('#ttl = :ttl')
@@ -466,7 +470,7 @@ async function handlePublish(event: APIGatewayProxyEventV2): Promise<APIGatewayP
   const errors = validatePublishInput(existing)
   if (Object.keys(errors).length > 0) return json(400, { errors })
 
-  if (existing.status === 'published') {
+  if (existing.status === PUBLISHED) {
     return json(200, convertRecipeTags(existing))
   }
 
@@ -477,7 +481,7 @@ async function handlePublish(event: APIGatewayProxyEventV2): Promise<APIGatewayP
       Key: { id },
       UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt REMOVE #ttl',
       ExpressionAttributeNames: { '#status': 'status', '#updatedAt': 'updatedAt', '#ttl': 'ttl' },
-      ExpressionAttributeValues: { ':status': 'published', ':updatedAt': now },
+      ExpressionAttributeValues: { ':status': PUBLISHED, ':updatedAt': now },
       ReturnValues: 'ALL_NEW',
     }),
   )
@@ -496,7 +500,7 @@ async function handleUnpublish(event: APIGatewayProxyEventV2): Promise<APIGatewa
   const existing = await getRecipeById(id)
   if (!existing) return json(404, { error: 'Recipe not found' })
 
-  if (existing.status === 'draft') {
+  if (existing.status === DRAFT) {
     return json(200, convertRecipeTags(existing))
   }
 
@@ -508,7 +512,7 @@ async function handleUnpublish(event: APIGatewayProxyEventV2): Promise<APIGatewa
       Key: { id },
       UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt, #ttl = :ttl',
       ExpressionAttributeNames: { '#status': 'status', '#updatedAt': 'updatedAt', '#ttl': 'ttl' },
-      ExpressionAttributeValues: { ':status': 'draft', ':updatedAt': now, ':ttl': ttl },
+      ExpressionAttributeValues: { ':status': DRAFT, ':updatedAt': now, ':ttl': ttl },
       ReturnValues: 'ALL_NEW',
     }),
   )

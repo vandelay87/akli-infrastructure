@@ -1,16 +1,15 @@
+import * as path from 'node:path'
 import { DynamoDBClient, BatchWriteItemCommand } from '@aws-sdk/client-dynamodb'
-import { mockClient } from 'aws-sdk-client-mock'
 import type { CloudFormationCustomResourceEvent } from 'aws-lambda'
+import { mockClient } from 'aws-sdk-client-mock'
+import pokemonData from '../../data/pokemon.json'
 
 const ddbMock = mockClient(DynamoDBClient)
 
 process.env.TABLE_NAME = 'pokedex-pokemon'
-process.env.POKEMON_DATA_PATH = require('path').join(__dirname, '..', '..', 'data', 'pokemon.json')
+process.env.POKEMON_DATA_PATH = path.join(__dirname, '..', '..', 'data', 'pokemon.json')
 
 import { onEvent } from '../../lambda/seed-pokemon'
-
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const pokemonData: unknown[] = require('../../data/pokemon.json')
 
 function makeEvent(
   requestType: 'Create' | 'Update' | 'Delete',

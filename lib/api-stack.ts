@@ -1,10 +1,11 @@
-import { CfnOutput, Duration, Fn, Stack, StackProps } from 'aws-cdk-lib'
-import { Construct } from 'constructs'
+import type { StackProps } from 'aws-cdk-lib';
+import { CfnOutput, Duration, Fn, Stack } from 'aws-cdk-lib'
+import type * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as targets from 'aws-cdk-lib/aws-route53-targets'
-import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
+import type { Construct } from 'constructs'
 import { applyStackTags } from './utils'
 
 const API_DOMAIN_NAME = 'api.akli.dev'

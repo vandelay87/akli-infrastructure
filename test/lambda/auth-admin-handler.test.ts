@@ -1,4 +1,3 @@
-import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 import {
   CognitoIdentityProviderClient,
   AdminCreateUserCommand,
@@ -7,6 +6,7 @@ import {
   AdminDeleteUserCommand,
   AdminAddUserToGroupCommand,
 } from '@aws-sdk/client-cognito-identity-provider'
+import type { APIGatewayProxyEventV2 } from 'aws-lambda'
 import { mockClient } from 'aws-sdk-client-mock'
 
 const cognitoMock = mockClient(CognitoIdentityProviderClient)

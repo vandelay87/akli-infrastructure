@@ -1,6 +1,6 @@
-import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 
 const s3 = new S3Client({})
 const IMAGE_BUCKET_NAME = process.env.IMAGE_BUCKET_NAME ?? ''

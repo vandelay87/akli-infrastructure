@@ -1,8 +1,29 @@
 import * as cdk from 'aws-cdk-lib'
 import { Match, Template } from 'aws-cdk-lib/assertions'
-import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
+import * as route53 from 'aws-cdk-lib/aws-route53'
 import { AkliInfrastructureStack } from '../lib/akli-infrastructure-stack'
+
+type CfnResource = { Type: string; Properties: Record<string, unknown> }
+type CfnOrigin = { Id: string; S3OriginConfig?: unknown; OriginAccessControlId?: unknown; DomainName?: Record<string, unknown>; CustomOriginConfig?: unknown }
+type CfnCacheBehavior = { PathPattern: string; TargetOriginId: string }
+
+function cfnDistribution(template: Template): CfnResource {
+  const resources = template.toJSON().Resources as Record<string, CfnResource>
+  const dist = Object.values(resources).find((r) => r.Type === 'AWS::CloudFront::Distribution')
+  if (!dist) throw new Error('CloudFront::Distribution not found in template')
+  return dist
+}
+
+function distributionConfig(dist: CfnResource): Record<string, unknown> {
+  return dist.Properties.DistributionConfig as Record<string, unknown>
+}
+
+function isFunctionUrlOrigin(origin: CfnOrigin): boolean {
+  const fnSelect = origin.DomainName?.['Fn::Select'] as [number, { 'Fn::Split': [string, { 'Fn::GetAtt': [string, string] }] }] | undefined
+  const fnGetAtt = fnSelect?.[1]?.['Fn::Split']?.[1]?.['Fn::GetAtt']
+  return Boolean(fnGetAtt && /SsrFunctionFunctionUrl/.test(fnGetAtt[0]))
+}
 
 function createTestStack(): Template {
   const app = new cdk.App()
@@ -136,20 +157,16 @@ describe('AkliInfrastructureStack', () => {
     })
 
     it('static asset behaviours use S3 origin, not the failover group', () => {
-      const resources = template.toJSON().Resources
-      const distResource = Object.values(resources).find(
-        (r: any) => r.Type === 'AWS::CloudFront::Distribution',
-      ) as any
+      const config = distributionConfig(cfnDistribution(template))
+      const cacheBehaviors = config.CacheBehaviors as CfnCacheBehavior[]
+      const jsAssetBehavior = cacheBehaviors.find((b) => b.PathPattern === '*.js')
 
-      const cacheBehaviors = distResource.Properties.DistributionConfig.CacheBehaviors
-      const jsAssetBehavior = cacheBehaviors.find((b: any) => b.PathPattern === '*.js')
+      const origins = config.Origins as CfnOrigin[]
+      const s3OriginIds = origins
+        .filter((o) => o.S3OriginConfig !== undefined || o.OriginAccessControlId !== undefined)
+        .map((o) => o.Id)
 
-      const cfOrigins = distResource.Properties.DistributionConfig.Origins
-      const s3OriginIds = cfOrigins
-        .filter((o: any) => o.S3OriginConfig !== undefined || o.OriginAccessControlId !== undefined)
-        .map((o: any) => o.Id)
-
-      expect(s3OriginIds).toContain(jsAssetBehavior.TargetOriginId)
+      expect(s3OriginIds).toContain(jsAssetBehavior?.TargetOriginId)
     })
   })
 
@@ -216,45 +233,28 @@ describe('AkliInfrastructureStack', () => {
 
   describe('CloudFront Function URL origin', () => {
     it('has the Lambda Function URL as a CloudFront origin with OAC', () => {
-      const resources = template.toJSON().Resources
-      const dist = Object.values(resources).find(
-        (r: any) => r.Type === 'AWS::CloudFront::Distribution',
-      ) as any
-
-      const origins = dist.Properties.DistributionConfig.Origins
-      // Find the Lambda origin by its domain (derived from the Function URL)
-      const lambdaOrigin = origins.find((o: any) => {
-        const fnGetAtt = o.DomainName?.['Fn::Select']?.[1]?.['Fn::Split']?.[1]?.['Fn::GetAtt']
-        return fnGetAtt && fnGetAtt[0]?.match(/SsrFunctionFunctionUrl/)
-      })
+      const origins = distributionConfig(cfnDistribution(template)).Origins as CfnOrigin[]
+      const lambdaOrigin = origins.find(isFunctionUrlOrigin)
 
       expect(lambdaOrigin).toBeDefined()
-      expect(lambdaOrigin.OriginAccessControlId).toBeDefined()
-      expect(lambdaOrigin.CustomOriginConfig).toBeDefined()
+      expect(lambdaOrigin?.OriginAccessControlId).toBeDefined()
+      expect(lambdaOrigin?.CustomOriginConfig).toBeDefined()
     })
 
     it('uses the Function URL origin as the primary in the OriginGroup failover', () => {
-      const resources = template.toJSON().Resources
-      const dist = Object.values(resources).find(
-        (r: any) => r.Type === 'AWS::CloudFront::Distribution',
-      ) as any
+      const config = distributionConfig(cfnDistribution(template))
+      const origins = config.Origins as CfnOrigin[]
+      const originGroups = config.OriginGroups as { Items: [{ Members: { Items: [{ OriginId: string }, { OriginId: string }] } }] }
 
-      const origins = dist.Properties.DistributionConfig.Origins
-      const originGroups = dist.Properties.DistributionConfig.OriginGroups
-
-      const functionUrlOrigin = origins.find((o: any) => {
-        const fnGetAtt = o.DomainName?.['Fn::Select']?.[1]?.['Fn::Split']?.[1]?.['Fn::GetAtt']
-        return fnGetAtt && fnGetAtt[0]?.match(/SsrFunctionFunctionUrl/)
-      })
-
+      const functionUrlOrigin = origins.find(isFunctionUrlOrigin)
       expect(functionUrlOrigin).toBeDefined()
 
       const primaryMemberId = originGroups.Items[0].Members.Items[0].OriginId
-      expect(primaryMemberId).toBe(functionUrlOrigin.Id)
+      expect(primaryMemberId).toBe(functionUrlOrigin?.Id)
 
       const fallbackMemberId = originGroups.Items[0].Members.Items[1].OriginId
-      const s3Origin = origins.find((o: any) => o.S3OriginConfig !== undefined)
-      expect(fallbackMemberId).toBe(s3Origin.Id)
+      const s3Origin = origins.find((o) => o.S3OriginConfig !== undefined)
+      expect(fallbackMemberId).toBe(s3Origin?.Id)
     })
   })
 

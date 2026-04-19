@@ -7,8 +7,8 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager'
-import { mockClient } from 'aws-sdk-client-mock'
 import type { CloudFormationCustomResourceEvent } from 'aws-lambda'
+import { mockClient } from 'aws-sdk-client-mock'
 
 const cognitoMock = mockClient(CognitoIdentityProviderClient)
 const secretsMock = mockClient(SecretsManagerClient)

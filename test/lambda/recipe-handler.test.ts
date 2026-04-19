@@ -1,6 +1,6 @@
-import type { APIGatewayProxyEventV2 } from 'aws-lambda'
-import { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb'
 import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3'
+import { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb'
+import type { APIGatewayProxyEventV2 } from 'aws-lambda'
 import { mockClient } from 'aws-sdk-client-mock'
 
 const ddbMock = mockClient(DynamoDBDocumentClient)
@@ -23,7 +23,6 @@ function fakeJwt(payload: Record<string, unknown>): string {
 
 const contributorToken = fakeJwt({ 'cognito:groups': ['contributor'], sub: 'contributor-user-id', email: 'contributor@example.com', name: 'Test Contributor' })
 const adminToken = fakeJwt({ 'cognito:groups': ['admin'], sub: 'admin-user-id', email: 'admin@example.com', name: 'Admin User' })
-const otherContributorToken = fakeJwt({ 'cognito:groups': ['contributor'], sub: 'other-contributor-id', email: 'other@example.com', name: 'Other Contributor' })
 
 function makeEvent(overrides: Partial<APIGatewayProxyEventV2> = {}): APIGatewayProxyEventV2 {
   return {

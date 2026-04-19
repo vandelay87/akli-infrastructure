@@ -1,8 +1,9 @@
-import { DynamoDBClient, BatchWriteItemCommand, BatchWriteItemCommandOutput, WriteRequest } from '@aws-sdk/client-dynamodb'
-import { marshall } from '@aws-sdk/util-dynamodb'
-import type { CloudFormationCustomResourceEvent, CloudFormationCustomResourceResponse } from 'aws-lambda'
 import * as fs from 'fs'
 import * as path from 'path'
+import type { BatchWriteItemCommandOutput, WriteRequest } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, BatchWriteItemCommand } from '@aws-sdk/client-dynamodb'
+import { marshall } from '@aws-sdk/util-dynamodb'
+import type { CloudFormationCustomResourceEvent, CloudFormationCustomResourceResponse } from 'aws-lambda'
 
 const client = new DynamoDBClient({})
 const TABLE_NAME = process.env.TABLE_NAME!

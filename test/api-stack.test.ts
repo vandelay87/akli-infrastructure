@@ -1,7 +1,7 @@
 import * as cdk from 'aws-cdk-lib'
 import { Match, Template } from 'aws-cdk-lib/assertions'
-import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
+import * as route53 from 'aws-cdk-lib/aws-route53'
 import { ApiStack } from '../lib/api-stack'
 
 function createTestStack(): Template {
