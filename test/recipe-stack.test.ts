@@ -349,13 +349,25 @@ describe('RecipeStack', () => {
   })
 
   describe('IAM — recipe handler role', () => {
-    it('grants s3:DeleteObject on the image bucket', () => {
+    it('grants s3:DeleteObject on the image bucket ARN', () => {
       template.hasResourceProperties('AWS::IAM::Policy', {
+        Roles: Match.arrayWith([
+          { Ref: Match.stringLikeRegexp('^RecipeHandlerServiceRole.*') },
+        ]),
         PolicyDocument: Match.objectLike({
           Statement: Match.arrayWith([
             Match.objectLike({
-              Action: Match.arrayWith(['s3:DeleteObject*']),
+              Action: 's3:DeleteObject*',
               Effect: 'Allow',
+              Resource: {
+                'Fn::Join': [
+                  '',
+                  [
+                    { 'Fn::GetAtt': [Match.stringLikeRegexp('^RecipeImagesBucket.*'), 'Arn'] },
+                    '/*',
+                  ],
+                ],
+              },
             }),
           ]),
         }),
