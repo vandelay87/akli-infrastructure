@@ -20,35 +20,6 @@ interface JwtPayload {
   readonly 'cognito:groups'?: readonly string[]
 }
 
-interface CoverImage {
-  readonly key: string
-  readonly alt: string
-}
-
-interface Ingredient {
-  readonly item: string
-  readonly quantity: string
-  readonly unit: string
-}
-
-interface Step {
-  readonly order: number
-  readonly text: string
-  readonly image?: { readonly key: string; readonly alt: string }
-}
-
-interface CreateRecipeInput {
-  readonly title?: string
-  readonly coverImage?: Partial<CoverImage>
-  readonly intro?: string
-  readonly ingredients?: readonly Ingredient[]
-  readonly steps?: readonly Step[]
-  readonly tags?: readonly string[]
-  readonly prepTime?: number
-  readonly cookTime?: number
-  readonly servings?: number
-}
-
 function json(statusCode: number, body: unknown): APIGatewayProxyStructuredResultV2 {
   return { statusCode, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
 }
@@ -150,8 +121,6 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         return await handleGetBySlug(event)
       case 'GET /me/recipes':
         return await handleListUserRecipes(event)
-      case 'POST /recipes':
-        return await handleCreateRecipe(event)
       case 'POST /recipes/drafts':
         return await handleCreateDraft(event)
       case 'PATCH /recipes/{id}':
@@ -269,60 +238,6 @@ async function handleListUserRecipes(event: APIGatewayProxyEventV2): Promise<API
 
   const recipes = (result.Items ?? []).map((item) => convertRecipeTags(item as Record<string, unknown>))
   return json(200, recipes)
-}
-
-async function handleCreateRecipe(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
-  const payload = decodeJwt(event)
-  if (!payload) return json(401, { error: 'Unauthorised' })
-
-  const input = JSON.parse(event.body ?? '{}') as CreateRecipeInput
-  const errors = validateCreateInput(input)
-  if (errors.length > 0) return json(400, { error: errors.join(', ') })
-
-  const id = randomUUID()
-  const baseSlug = generateSlug(input.title as string)
-  const slug = await findUniqueSlug(baseSlug)
-  const now = new Date().toISOString()
-
-  const item: Record<string, unknown> = {
-    id,
-    slug,
-    title: input.title,
-    intro: input.intro,
-    coverImage: input.coverImage,
-    ingredients: input.ingredients,
-    steps: input.steps,
-    prepTime: input.prepTime,
-    cookTime: input.cookTime,
-    servings: input.servings,
-    status: 'draft',
-    authorId: payload.sub,
-    authorName: payload.name ?? payload.email ?? '',
-    createdAt: now,
-    updatedAt: now,
-  }
-
-  if (input.tags && input.tags.length > 0) {
-    item.tags = new Set(input.tags)
-  }
-
-  await docClient.send(new PutCommand({ TableName: TABLE_NAME, Item: item }))
-
-  return json(201, { ...item, tags: input.tags ?? [] })
-}
-
-function validateCreateInput(input: CreateRecipeInput): string[] {
-  const errors: string[] = []
-  if (!input.title) errors.push('title is required')
-  if (!input.coverImage) {
-    errors.push('coverImage is required')
-  } else {
-    if (!input.coverImage.key) errors.push('coverImage.key is required')
-    if (!input.coverImage.alt) errors.push('coverImage.alt is required')
-  }
-  if (!input.ingredients || input.ingredients.length === 0) errors.push('At least one ingredient is required')
-  if (!input.steps || input.steps.length === 0) errors.push('At least one step is required')
-  return errors
 }
 
 async function handleCreateDraft(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {

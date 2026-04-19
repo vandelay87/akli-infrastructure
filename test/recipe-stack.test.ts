@@ -282,13 +282,6 @@ describe('RecipeStack', () => {
       })
     })
 
-    it('has a POST /recipes route (protected)', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
-        RouteKey: 'POST /recipes',
-        AuthorizationType: 'JWT',
-      })
-    })
-
     it('has a PATCH /recipes/{id} route (protected)', () => {
       template.hasResourceProperties('AWS::ApiGatewayV2::Route', Match.objectLike({
         RouteKey: 'PATCH /recipes/{id}',
@@ -328,6 +321,44 @@ describe('RecipeStack', () => {
       template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
         RouteKey: 'POST /recipes/images/upload-url',
         AuthorizationType: 'JWT',
+      })
+    })
+
+    const adminRoutes = [
+      'POST /recipes/drafts',
+      'GET /recipes/admin',
+      'PATCH /recipes/{id}',
+      'PATCH /recipes/{id}/publish',
+      'PATCH /recipes/{id}/unpublish',
+      'DELETE /recipes/{id}',
+    ]
+
+    it.each(adminRoutes)('route %s has AuthorizationType: JWT', (routeKey) => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', Match.objectLike({
+        RouteKey: routeKey,
+        AuthorizationType: 'JWT',
+        AuthorizerId: Match.anyValue(),
+      }))
+    })
+
+    it('does not expose the old POST /recipes route', () => {
+      template.resourcePropertiesCountIs('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'POST /recipes',
+      }, 0)
+    })
+  })
+
+  describe('IAM — recipe handler role', () => {
+    it('grants s3:DeleteObject on the image bucket', () => {
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        PolicyDocument: Match.objectLike({
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: Match.arrayWith(['s3:DeleteObject*']),
+              Effect: 'Allow',
+            }),
+          ]),
+        }),
       })
     })
   })
