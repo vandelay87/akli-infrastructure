@@ -234,7 +234,6 @@ describe('Recipe Lambda handler', () => {
       const result = await handler(event)
 
       expect(result.statusCode).toBe(404)
-      expect(result.statusCode).not.toBe(200)
       const body = JSON.parse(result.body as string)
       expect(body).toHaveProperty('error')
       // Must not leak any of the draft's contents in the response body.
@@ -266,7 +265,7 @@ describe('Recipe Lambda handler', () => {
   })
 
   // ─── Public endpoints do not leak drafts (integration-style) ────────
-  describe('public endpoints do not leak drafts (integration-style)', () => {
+  describe('public endpoints do not leak drafts (coordinated scenario)', () => {
     it('hides drafts from both GET /recipes and GET /recipes/{slug} when a draft and a published item coexist', async () => {
       // Seed: one published, one draft — the "datastore" has both.
       const published = publishedRecipeItem({
