@@ -10,6 +10,7 @@ const s3Client = new S3Client({})
 
 const TABLE_NAME = process.env.TABLE_NAME ?? ''
 const IMAGE_BUCKET_NAME = process.env.IMAGE_BUCKET_NAME ?? ''
+const DRAFT_TTL_SECONDS = 30 * 24 * 60 * 60
 
 interface JwtPayload {
   readonly sub: string
@@ -306,7 +307,7 @@ async function handleCreateDraft(event: APIGatewayProxyEventV2): Promise<APIGate
 
   const id = randomUUID()
   const slug = title.length > 0 ? await findUniqueSlug(generateSlug(title)) : `draft-${id}`
-  const ttl = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60
+  const ttl = Math.floor(Date.now() / 1000) + DRAFT_TTL_SECONDS
   const now = new Date().toISOString()
 
   const item: Record<string, unknown> = {
