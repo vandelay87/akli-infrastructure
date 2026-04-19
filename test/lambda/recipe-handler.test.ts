@@ -1292,8 +1292,8 @@ describe('Recipe Lambda handler', () => {
   })
 
   // ─── PATCH /recipes/{id}/publish ────────────────────────────────────
-  describe('PATCH /recipes/{id}/publish — publish recipe', () => {
-    it('returns 200 and sets status to published', async () => {
+  describe('PATCH /recipes/{id}/publish — publish recipe (admin-only)', () => {
+    it('returns 200 and sets status to published when admin publishes a valid draft', async () => {
       ddbMock.on(GetCommand).resolves({
         Item: draftRecipeItem({ authorId: 'contributor-user-id' }),
       })
@@ -1305,7 +1305,7 @@ describe('Recipe Lambda handler', () => {
         routeKey: 'PATCH /recipes/{id}/publish',
         rawPath: '/recipes/recipe-uuid-1/publish',
         pathParameters: { id: 'recipe-uuid-1' },
-        headers: { authorization: `Bearer ${contributorToken}` },
+        headers: { authorization: `Bearer ${adminToken}` },
       })
 
       const result = await handler(event)
@@ -1315,9 +1315,184 @@ describe('Recipe Lambda handler', () => {
       expect(body.status).toBe('published')
     })
 
-    it('returns 403 when contributor publishes another user\'s recipe', async () => {
+    it('removes ttl via UpdateExpression REMOVE (not SET ttl = null) on publish', async () => {
       ddbMock.on(GetCommand).resolves({
-        Item: draftRecipeItem({ authorId: 'other-contributor-id' }),
+        Item: draftRecipeItem({ authorId: 'contributor-user-id' }),
+      })
+      ddbMock.on(UpdateCommand).resolves({
+        Attributes: publishedRecipeItem({ authorId: 'contributor-user-id' }),
+      })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}/publish',
+        rawPath: '/recipes/recipe-uuid-1/publish',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      expect(updateCalls).toHaveLength(1)
+      const input = updateCalls[0].args[0].input
+      const updateExpression = input.UpdateExpression as string
+      // The UpdateExpression must REMOVE ttl (either `REMOVE ttl` or `REMOVE #ttl`).
+      expect(updateExpression).toMatch(/REMOVE\s+(#ttl|ttl)/)
+      // It must NOT SET a ttl value (no `:ttl` placeholder, no `ttl = :` pattern).
+      const values = (input.ExpressionAttributeValues ?? {}) as Record<string, unknown>
+      expect(values[':ttl']).toBeUndefined()
+    })
+
+    describe('server-side validation — returns 400 with field-level errors', () => {
+      function publishEvent() {
+        return makeEvent({
+          routeKey: 'PATCH /recipes/{id}/publish',
+          rawPath: '/recipes/recipe-uuid-1/publish',
+          pathParameters: { id: 'recipe-uuid-1' },
+          headers: { authorization: `Bearer ${adminToken}` },
+        })
+      }
+
+      it('returns 400 with a `title` error when title is missing', async () => {
+        ddbMock.on(GetCommand).resolves({
+          Item: draftRecipeItem({ authorId: 'contributor-user-id', title: '' }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(400)
+        const body = JSON.parse(result.body as string)
+        expect(body.errors).toBeDefined()
+        expect(body.errors).toHaveProperty('title')
+      })
+
+      it('returns 400 with an `intro` error when intro is missing', async () => {
+        ddbMock.on(GetCommand).resolves({
+          Item: draftRecipeItem({ authorId: 'contributor-user-id', intro: '' }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(400)
+        const body = JSON.parse(result.body as string)
+        expect(body.errors).toHaveProperty('intro')
+      })
+
+      it('returns 400 with a `coverImage.key` error when cover key is missing', async () => {
+        ddbMock.on(GetCommand).resolves({
+          Item: draftRecipeItem({
+            authorId: 'contributor-user-id',
+            coverImage: { key: '', alt: 'alt' },
+          }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(400)
+        const body = JSON.parse(result.body as string)
+        expect(body.errors).toHaveProperty('coverImage.key')
+      })
+
+      it('returns 400 with a `coverImage.alt` error when cover alt is missing', async () => {
+        ddbMock.on(GetCommand).resolves({
+          Item: draftRecipeItem({
+            authorId: 'contributor-user-id',
+            coverImage: { key: 'recipes/images/recipe-uuid-1/cover', alt: '' },
+          }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(400)
+        const body = JSON.parse(result.body as string)
+        expect(body.errors).toHaveProperty('coverImage.alt')
+      })
+
+      it('returns 400 with an `ingredients` error when ingredients list is empty', async () => {
+        ddbMock.on(GetCommand).resolves({
+          Item: draftRecipeItem({ authorId: 'contributor-user-id', ingredients: [] }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(400)
+        const body = JSON.parse(result.body as string)
+        expect(body.errors).toHaveProperty('ingredients')
+      })
+
+      it('returns 400 with a `steps` error when steps is missing', async () => {
+        ddbMock.on(GetCommand).resolves({
+          Item: draftRecipeItem({ authorId: 'contributor-user-id', steps: [] }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(400)
+        const body = JSON.parse(result.body as string)
+        expect(body.errors).toHaveProperty('steps')
+      })
+
+      it('returns 400 with a `steps` error when all steps have empty text', async () => {
+        ddbMock.on(GetCommand).resolves({
+          Item: draftRecipeItem({
+            authorId: 'contributor-user-id',
+            steps: [{ order: 1, text: '' }, { order: 2, text: '   ' }],
+          }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(400)
+        const body = JSON.parse(result.body as string)
+        expect(body.errors).toHaveProperty('steps')
+      })
+    })
+
+    it('returns 200 (no-op) when publishing an already-published recipe that still passes validation', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: publishedRecipeItem({ authorId: 'contributor-user-id' }),
+      })
+      ddbMock.on(UpdateCommand).resolves({
+        Attributes: publishedRecipeItem({ authorId: 'contributor-user-id' }),
+      })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}/publish',
+        rawPath: '/recipes/recipe-uuid-1/publish',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body.status).toBe('published')
+    })
+
+    it('returns 400 when re-publishing an already-published recipe that now fails validation', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: publishedRecipeItem({ authorId: 'contributor-user-id', title: '' }),
+      })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}/publish',
+        rawPath: '/recipes/recipe-uuid-1/publish',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(400)
+      const body = JSON.parse(result.body as string)
+      expect(body.errors).toHaveProperty('title')
+    })
+
+    it('returns 403 when a contributor (even the owner) publishes — admin-only', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: draftRecipeItem({ authorId: 'contributor-user-id' }),
       })
 
       const event = makeEvent({
@@ -1333,13 +1508,65 @@ describe('Recipe Lambda handler', () => {
       const body = JSON.parse(result.body as string)
       expect(body).toHaveProperty('error')
     })
+
+    it('returns 401 without a valid token', async () => {
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}/publish',
+        rawPath: '/recipes/recipe-uuid-1/publish',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: {},
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(401)
+    })
   })
 
   // ─── PATCH /recipes/{id}/unpublish ──────────────────────────────────
-  describe('PATCH /recipes/{id}/unpublish — unpublish recipe', () => {
-    it('returns 200 and sets status to draft', async () => {
+  describe('PATCH /recipes/{id}/unpublish — unpublish recipe (admin-only)', () => {
+    it('returns 200 and sets status to draft with ttl = now + 30d', async () => {
       ddbMock.on(GetCommand).resolves({
         Item: publishedRecipeItem({ authorId: 'contributor-user-id' }),
+      })
+      ddbMock.on(UpdateCommand).resolves({
+        Attributes: draftRecipeItem({ authorId: 'contributor-user-id' }),
+      })
+
+      const before = Math.floor(Date.now() / 1000)
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}/unpublish',
+        rawPath: '/recipes/recipe-uuid-1/unpublish',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+      })
+
+      const result = await handler(event)
+
+      const after = Math.floor(Date.now() / 1000)
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body.status).toBe('draft')
+
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      expect(updateCalls).toHaveLength(1)
+      const input = updateCalls[0].args[0].input
+      const values = (input.ExpressionAttributeValues ?? {}) as Record<string, unknown>
+      const ttl = values[':ttl']
+      expect(typeof ttl).toBe('number')
+
+      const thirtyDays = 30 * 24 * 60 * 60
+      const expectedMin = before + thirtyDays - 60
+      const expectedMax = after + thirtyDays + 60
+      expect(ttl as number).toBeGreaterThanOrEqual(expectedMin)
+      expect(ttl as number).toBeLessThanOrEqual(expectedMax)
+    })
+
+    it('returns 200 (no-op) when unpublishing an already-draft recipe', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: draftRecipeItem({ authorId: 'contributor-user-id' }),
       })
       ddbMock.on(UpdateCommand).resolves({
         Attributes: draftRecipeItem({ authorId: 'contributor-user-id' }),
@@ -1349,19 +1576,24 @@ describe('Recipe Lambda handler', () => {
         routeKey: 'PATCH /recipes/{id}/unpublish',
         rawPath: '/recipes/recipe-uuid-1/unpublish',
         pathParameters: { id: 'recipe-uuid-1' },
-        headers: { authorization: `Bearer ${contributorToken}` },
+        headers: { authorization: `Bearer ${adminToken}` },
       })
 
       const result = await handler(event)
 
       expect(result.statusCode).toBe(200)
-      const body = JSON.parse(result.body as string)
-      expect(body.status).toBe('draft')
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      if (updateCalls.length > 0) {
+        const values = (updateCalls[0].args[0].input.ExpressionAttributeValues ?? {}) as Record<string, unknown>
+        if (values[':status'] !== undefined) {
+          expect(values[':status']).toBe('draft')
+        }
+      }
     })
 
-    it('returns 403 when contributor unpublishes another user\'s recipe', async () => {
+    it('returns 403 when a contributor (even the owner) unpublishes — admin-only', async () => {
       ddbMock.on(GetCommand).resolves({
-        Item: publishedRecipeItem({ authorId: 'other-contributor-id' }),
+        Item: publishedRecipeItem({ authorId: 'contributor-user-id' }),
       })
 
       const event = makeEvent({
@@ -1376,6 +1608,19 @@ describe('Recipe Lambda handler', () => {
       expect(result.statusCode).toBe(403)
       const body = JSON.parse(result.body as string)
       expect(body).toHaveProperty('error')
+    })
+
+    it('returns 401 without a valid token', async () => {
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}/unpublish',
+        rawPath: '/recipes/recipe-uuid-1/unpublish',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: {},
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(401)
     })
   })
 
