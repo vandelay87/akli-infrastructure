@@ -1,7 +1,8 @@
-import { Stack, StackProps } from 'aws-cdk-lib'
-import { Construct } from 'constructs'
-import * as route53 from 'aws-cdk-lib/aws-route53'
+import type { StackProps } from 'aws-cdk-lib';
+import { Stack } from 'aws-cdk-lib'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
+import * as route53 from 'aws-cdk-lib/aws-route53'
+import type { Construct } from 'constructs'
 
 const DOMAIN_NAME = 'akli.dev'
 const WWW_DOMAIN_NAME = `www.${DOMAIN_NAME}`

@@ -1,5 +1,6 @@
-import { Tags, StackProps } from 'aws-cdk-lib'
-import { Construct } from 'constructs'
+import type { StackProps } from 'aws-cdk-lib';
+import { Tags } from 'aws-cdk-lib'
+import type { Construct } from 'constructs'
 
 export function applyStackTags(scope: Construct, props?: StackProps): void {
   if (props?.tags) {

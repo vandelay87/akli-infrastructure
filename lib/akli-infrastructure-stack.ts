@@ -1,16 +1,17 @@
-import { Stack, StackProps, RemovalPolicy, CfnOutput, Duration, SecretValue, Fn } from 'aws-cdk-lib'
-import { Construct } from 'constructs'
-import * as s3 from 'aws-cdk-lib/aws-s3'
+import * as path from 'path'
+import type { StackProps} from 'aws-cdk-lib';
+import { Stack, RemovalPolicy, CfnOutput, Duration, SecretValue, Fn } from 'aws-cdk-lib'
+import type * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
+import * as iam from 'aws-cdk-lib/aws-iam'
+import * as lambda from 'aws-cdk-lib/aws-lambda'
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as targets from 'aws-cdk-lib/aws-route53-targets'
-import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
+import * as s3 from 'aws-cdk-lib/aws-s3'
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager'
-import * as iam from 'aws-cdk-lib/aws-iam'
-import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'
-import * as lambda from 'aws-cdk-lib/aws-lambda'
-import * as path from 'path'
+import type { Construct } from 'constructs'
 
 interface AkliInfrastructureStackProps extends StackProps {
   hostedZone: route53.IHostedZone

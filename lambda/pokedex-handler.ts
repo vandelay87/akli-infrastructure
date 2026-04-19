@@ -1,6 +1,6 @@
-import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 import { DynamoDBClient, ScanCommand, GetItemCommand } from '@aws-sdk/client-dynamodb'
 import { unmarshall } from '@aws-sdk/util-dynamodb'
+import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 
 const client = new DynamoDBClient({})
 const TABLE_NAME = process.env.TABLE_NAME!
@@ -50,7 +50,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     return jsonResponse(404, { error: 'Pokemon not found' })
-  } catch (error) {
+  } catch {
     return jsonResponse(500, { error: 'Internal server error' })
   }
 }

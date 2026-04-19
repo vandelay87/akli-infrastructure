@@ -1,15 +1,16 @@
-import { CfnOutput, CustomResource, Duration, RemovalPolicy, Stack, StackProps } from 'aws-cdk-lib'
-import { Construct } from 'constructs'
+import * as path from 'path'
+import type { StackProps } from 'aws-cdk-lib';
+import { CfnOutput, CustomResource, Duration, RemovalPolicy, Stack } from 'aws-cdk-lib'
 import { CorsHttpMethod, HttpApi } from 'aws-cdk-lib/aws-apigatewayv2'
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2'
-import * as cognito from 'aws-cdk-lib/aws-cognito'
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch'
+import * as cognito from 'aws-cdk-lib/aws-cognito'
 import * as iam from 'aws-cdk-lib/aws-iam'
 import * as lambda from 'aws-cdk-lib/aws-lambda'
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager'
 import { Provider } from 'aws-cdk-lib/custom-resources'
-import * as path from 'path'
+import type { Construct } from 'constructs'
 import { applyStackTags } from './utils'
 
 export class AuthStack extends Stack {

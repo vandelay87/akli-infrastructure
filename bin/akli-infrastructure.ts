@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
 import { AkliInfrastructureStack } from '../lib/akli-infrastructure-stack';
-import { CertificateStack } from '../lib/certificate-stack';
-import { PokedexStack } from '../lib/pokedex-stack';
 import { ApiStack } from '../lib/api-stack';
 import { AuthStack } from '../lib/auth-stack';
+import { CertificateStack } from '../lib/certificate-stack';
+import { PokedexStack } from '../lib/pokedex-stack';
 import { RecipeStack } from '../lib/recipe-stack';
 
 const app = new cdk.App();

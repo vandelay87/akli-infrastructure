@@ -1,10 +1,10 @@
-import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 import {
   CognitoIdentityProviderClient,
   InitiateAuthCommand,
   RespondToAuthChallengeCommand,
   ChangePasswordCommand,
 } from '@aws-sdk/client-cognito-identity-provider'
+import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 
 const cognito = new CognitoIdentityProviderClient({})
 const CLIENT_ID = process.env.USER_POOL_CLIENT_ID ?? ''

@@ -1,6 +1,6 @@
-import type { S3Event } from 'aws-lambda'
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
-import sharp = require('sharp')
+import type { S3Event } from 'aws-lambda'
+import sharp from 'sharp'
 import { VARIANT_SUFFIXES, type VariantSuffix } from './image-variants'
 
 const s3 = new S3Client({})
