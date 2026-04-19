@@ -641,6 +641,126 @@ describe('Recipe Lambda handler', () => {
     })
   })
 
+  // ─── GET /recipes/admin — list all recipes for admins ──────────────
+  describe('GET /recipes/admin — list all recipes for admins', () => {
+    it('returns 401 without a valid token', async () => {
+      const event = makeEvent({
+        routeKey: 'GET /recipes/admin',
+        rawPath: '/recipes/admin',
+        headers: {},
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(401)
+      const body = JSON.parse(result.body as string)
+      expect(body).toHaveProperty('error')
+    })
+
+    it('returns 403 when the caller is not an admin', async () => {
+      const event = makeEvent({
+        routeKey: 'GET /recipes/admin',
+        rawPath: '/recipes/admin',
+        headers: { authorization: `Bearer ${contributorToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(403)
+      const body = JSON.parse(result.body as string)
+      expect(body).toHaveProperty('error')
+    })
+
+    it('merges drafts and published recipes via two GSI queries with no table scan', async () => {
+      const published = publishedRecipeItem({ id: 'pub-id', slug: 'pub-slug', title: 'Published Recipe' })
+      const draft = draftRecipeItem({ id: 'draft-id', slug: 'draft-slug', title: 'Draft Recipe' })
+
+      ddbMock.on(QueryCommand)
+        .resolvesOnce({ Items: [published] })
+        .resolvesOnce({ Items: [draft] })
+
+      const event = makeEvent({
+        routeKey: 'GET /recipes/admin',
+        rawPath: '/recipes/admin',
+        headers: { authorization: `Bearer ${adminToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+
+      const queryCalls = ddbMock.commandCalls(QueryCommand)
+      expect(queryCalls).toHaveLength(2)
+      for (const call of queryCalls) {
+        expect(call.args[0].input.IndexName).toBe('status-createdAt-index')
+      }
+
+      const statusValues = queryCalls.map((call) => call.args[0].input.ExpressionAttributeValues?.[':status'])
+      expect(new Set(statusValues)).toEqual(new Set(['published', 'draft']))
+
+      expect(ddbMock.commandCalls(ScanCommand)).toHaveLength(0)
+
+      const body = JSON.parse(result.body as string)
+      expect(Array.isArray(body)).toBe(true)
+      expect(body).toHaveLength(2)
+      const statuses = body.map((r: { status: string }) => r.status)
+      expect(statuses).toContain('published')
+      expect(statuses).toContain('draft')
+    })
+
+    it('filters out draft items whose ttl is in the past', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-04-19T12:00:00Z'))
+      try {
+        const nowSeconds = Math.floor(Date.now() / 1000)
+        const expiredDraft = draftRecipeItem({ id: 'expired-id', slug: 'expired-slug', title: 'Expired Draft', ttl: nowSeconds - 100 })
+        const liveDraft = draftRecipeItem({ id: 'live-id', slug: 'live-slug', title: 'Live Draft', ttl: nowSeconds + 100000 })
+
+        ddbMock.on(QueryCommand)
+          .resolvesOnce({ Items: [] })
+          .resolvesOnce({ Items: [expiredDraft, liveDraft] })
+
+        const event = makeEvent({
+          routeKey: 'GET /recipes/admin',
+          rawPath: '/recipes/admin',
+          headers: { authorization: `Bearer ${adminToken}` },
+        })
+
+        const result = await handler(event)
+
+        expect(result.statusCode).toBe(200)
+        const body = JSON.parse(result.body as string)
+        expect(body).toHaveLength(1)
+        expect(body[0].id).toBe('live-id')
+        expect(body.map((r: { id: string }) => r.id)).not.toContain('expired-id')
+      } finally {
+        jest.useRealTimers()
+      }
+    })
+
+    it('includes published items that have no ttl attribute', async () => {
+      const published = publishedRecipeItem({ id: 'pub-id', slug: 'pub-slug', title: 'Published Recipe' })
+      // Confirm the helper does not attach a ttl by default
+      expect(published).not.toHaveProperty('ttl')
+
+      ddbMock.on(QueryCommand)
+        .resolvesOnce({ Items: [published] })
+        .resolvesOnce({ Items: [] })
+
+      const event = makeEvent({
+        routeKey: 'GET /recipes/admin',
+        rawPath: '/recipes/admin',
+        headers: { authorization: `Bearer ${adminToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body).toHaveLength(1)
+      expect(body[0].id).toBe('pub-id')
+    })
+  })
+
   // ─── PUT /recipes/{id} — update recipe ──────────────────────────────
   describe('PUT /recipes/{id} — update recipe', () => {
     it('returns 200 when contributor updates their own recipe', async () => {

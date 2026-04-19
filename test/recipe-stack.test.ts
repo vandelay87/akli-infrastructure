@@ -341,6 +341,22 @@ describe('RecipeStack', () => {
     })
   })
 
+  describe('GET /recipes/admin route', () => {
+    it('has a GET /recipes/admin route', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'GET /recipes/admin',
+      })
+    })
+
+    it('is protected by the JWT authoriser', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', Match.objectLike({
+        RouteKey: 'GET /recipes/admin',
+        AuthorizationType: 'JWT',
+        AuthorizerId: Match.anyValue(),
+      }))
+    })
+  })
+
   describe('JWT Authoriser', () => {
     it('creates a JWT authoriser', () => {
       template.hasResourceProperties('AWS::ApiGatewayV2::Authorizer', {
