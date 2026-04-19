@@ -49,7 +49,7 @@ interface CreateRecipeInput {
   readonly servings?: number
 }
 
-function json(statusCode: number, body: Record<string, unknown> | readonly Record<string, unknown>[]): APIGatewayProxyStructuredResultV2 {
+function json(statusCode: number, body: unknown): APIGatewayProxyStructuredResultV2 {
   return { statusCode, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
 }
 
@@ -549,7 +549,7 @@ async function handlePublish(event: APIGatewayProxyEventV2): Promise<APIGatewayP
   if (!existing) return json(404, { error: 'Recipe not found' })
 
   const errors = validatePublishInput(existing)
-  if (Object.keys(errors).length > 0) return json(400, { errors: errors as Record<string, unknown> })
+  if (Object.keys(errors).length > 0) return json(400, { errors })
 
   if (existing.status === 'published') {
     return json(200, convertRecipeTags(existing))
