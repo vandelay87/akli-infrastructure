@@ -63,6 +63,27 @@ describe('RecipeStack', () => {
     })
   })
 
+  describe('DynamoDB TTL', () => {
+    it('enables native TTL on the recipes table using the ttl attribute', () => {
+      template.hasResourceProperties('AWS::DynamoDB::Table', Match.objectLike({
+        TableName: 'recipes',
+        TimeToLiveSpecification: {
+          AttributeName: 'ttl',
+          Enabled: true,
+        },
+      }))
+    })
+
+    it('does not include ttl in the recipes table AttributeDefinitions (TTL is metadata, not a key)', () => {
+      template.hasResourceProperties('AWS::DynamoDB::Table', Match.objectLike({
+        TableName: 'recipes',
+        AttributeDefinitions: Match.not(Match.arrayWith([
+          Match.objectLike({ AttributeName: 'ttl' }),
+        ])),
+      }))
+    })
+  })
+
   describe('GSI status-createdAt-index', () => {
     it('creates GSI with name status-createdAt-index', () => {
       template.hasResourceProperties('AWS::DynamoDB::Table', {
