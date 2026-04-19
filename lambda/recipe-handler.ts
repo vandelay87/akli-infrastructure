@@ -128,6 +128,14 @@ function lightweightRecipe(recipe: Record<string, unknown>): Record<string, unkn
   }
 }
 
+function lightweightAdminRecipe(recipe: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...lightweightRecipe(recipe),
+    status: recipe.status,
+    updatedAt: recipe.updatedAt,
+  }
+}
+
 export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
   try {
     switch (event.routeKey) {
@@ -135,6 +143,8 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         return await handleListTags()
       case 'GET /recipes':
         return await handleListPublished()
+      case 'GET /recipes/admin':
+        return await handleListForAdmin(event)
       case 'GET /recipes/{slug}':
         return await handleGetBySlug(event)
       case 'GET /me/recipes':
@@ -185,20 +195,37 @@ async function handleListTags(): Promise<APIGatewayProxyStructuredResultV2> {
   return json(200, sorted)
 }
 
-async function handleListPublished(): Promise<APIGatewayProxyStructuredResultV2> {
-  const result = await docClient.send(
+function queryRecipesByStatus(status: string) {
+  return docClient.send(
     new QueryCommand({
       TableName: TABLE_NAME,
       IndexName: 'status-createdAt-index',
       KeyConditionExpression: '#status = :status',
       ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: { ':status': 'published' },
+      ExpressionAttributeValues: { ':status': status },
       ScanIndexForward: false,
     }),
   )
+}
+
+async function handleListPublished(): Promise<APIGatewayProxyStructuredResultV2> {
+  const result = await queryRecipesByStatus('published')
 
   const recipes = (result.Items ?? []).map((item) => lightweightRecipe(item as Record<string, unknown>))
   return json(200, recipes)
+}
+
+async function handleListForAdmin(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
+  if (!decodeJwt(event)) return json(401, { error: 'Unauthorised' })
+  if (!isAdmin(event)) return json(403, { error: 'Forbidden' })
+
+  const [publishedResult, draftResult] = await Promise.all([queryRecipesByStatus('published'), queryRecipesByStatus('draft')])
+
+  const nowSeconds = Math.floor(Date.now() / 1000)
+  const merged = [...(publishedResult.Items ?? []), ...(draftResult.Items ?? [])] as Record<string, unknown>[]
+  const live = merged.filter((item) => typeof item.ttl !== 'number' || item.ttl > nowSeconds)
+
+  return json(200, live.map(lightweightAdminRecipe))
 }
 
 async function handleGetBySlug(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
