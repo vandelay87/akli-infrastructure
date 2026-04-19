@@ -305,7 +305,7 @@ async function handleCreateDraft(event: APIGatewayProxyEventV2): Promise<APIGate
   const title = typeof input.title === 'string' ? input.title : ''
 
   const id = randomUUID()
-  const slug = title.length > 0 ? await findUniqueSlug(generateSlug(title)) : `draft-${randomUUID()}`
+  const slug = title.length > 0 ? await findUniqueSlug(generateSlug(title)) : `draft-${id}`
   const ttl = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60
   const now = new Date().toISOString()
 
@@ -319,6 +319,7 @@ async function handleCreateDraft(event: APIGatewayProxyEventV2): Promise<APIGate
     ingredients: [],
     steps: [],
     authorId: payload.sub,
+    authorName: payload.name ?? payload.email ?? '',
     createdAt: now,
     updatedAt: now,
   }
