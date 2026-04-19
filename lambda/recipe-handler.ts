@@ -135,6 +135,8 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         return await handleListTags()
       case 'GET /recipes':
         return await handleListPublished()
+      case 'GET /recipes/admin':
+        return await handleListForAdmin(event)
       case 'GET /recipes/{slug}':
         return await handleGetBySlug(event)
       case 'GET /me/recipes':
@@ -199,6 +201,32 @@ async function handleListPublished(): Promise<APIGatewayProxyStructuredResultV2>
 
   const recipes = (result.Items ?? []).map((item) => lightweightRecipe(item as Record<string, unknown>))
   return json(200, recipes)
+}
+
+async function handleListForAdmin(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
+  const payload = decodeJwt(event)
+  if (!payload) return json(401, { error: 'Unauthorised' })
+  if (!isAdmin(event)) return json(403, { error: 'Forbidden' })
+
+  const queryByStatus = (status: string) =>
+    docClient.send(
+      new QueryCommand({
+        TableName: TABLE_NAME,
+        IndexName: 'status-createdAt-index',
+        KeyConditionExpression: '#status = :status',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: { ':status': status },
+        ScanIndexForward: false,
+      }),
+    )
+
+  const [publishedResult, draftResult] = await Promise.all([queryByStatus('published'), queryByStatus('draft')])
+
+  const nowSeconds = Math.floor(Date.now() / 1000)
+  const merged = [...(publishedResult.Items ?? []), ...(draftResult.Items ?? [])] as Record<string, unknown>[]
+  const live = merged.filter((item) => typeof item.ttl !== 'number' || (item.ttl as number) > nowSeconds)
+
+  return json(200, live.map((item) => convertRecipeTags(item)))
 }
 
 async function handleGetBySlug(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
