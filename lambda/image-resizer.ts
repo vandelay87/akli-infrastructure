@@ -1,20 +1,26 @@
 import type { S3Event } from 'aws-lambda'
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import sharp = require('sharp')
+import { VARIANT_SUFFIXES, type VariantSuffix } from './image-variants'
 
 const s3 = new S3Client({})
 
 interface ImageVariant {
-  readonly suffix: string
+  readonly suffix: VariantSuffix
   readonly width: number
   readonly quality: number
 }
 
-const VARIANTS: readonly ImageVariant[] = [
-  { suffix: 'thumb', width: 400, quality: 80 },
-  { suffix: 'medium', width: 800, quality: 85 },
-  { suffix: 'full', width: 1200, quality: 90 },
-]
+const VARIANT_SIZING: Record<VariantSuffix, { readonly width: number; readonly quality: number }> = {
+  thumb: { width: 400, quality: 80 },
+  medium: { width: 800, quality: 85 },
+  full: { width: 1200, quality: 90 },
+}
+
+const VARIANTS: readonly ImageVariant[] = VARIANT_SUFFIXES.map((suffix) => ({
+  suffix,
+  ...VARIANT_SIZING[suffix],
+}))
 
 export async function handler(event: S3Event): Promise<void> {
   const bucketName = process.env.IMAGE_BUCKET_NAME

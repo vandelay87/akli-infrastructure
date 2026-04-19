@@ -3,6 +3,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb'
 import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3'
 import { randomUUID } from 'node:crypto'
+import { VARIANT_SUFFIXES } from './image-variants'
 
 const ddbClient = new DynamoDBClient({})
 const docClient = DynamoDBDocumentClient.from(ddbClient)
@@ -364,7 +365,7 @@ function imageKeyOf(obj: unknown): string | undefined {
 }
 
 function variantKeysFor(key: string): readonly string[] {
-  return [`${key}-thumb.webp`, `${key}-medium.webp`, `${key}-full.webp`]
+  return VARIANT_SUFFIXES.map((suffix) => `${key}-${suffix}.webp`)
 }
 
 function stepImageKeySet(steps: unknown): Set<string> {
@@ -455,7 +456,7 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
     }),
   )
 
-  const atomicOld = (updateResult.Attributes ?? existing) as Record<string, unknown>
+  const atomicOld = updateResult.Attributes as Record<string, unknown>
 
   const keysToDelete = deletedImageKeysFromSwap(atomicOld, updates)
   if (keysToDelete.length > 0) {
