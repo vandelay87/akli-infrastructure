@@ -140,9 +140,7 @@ describe('Recipe Lambda handler', () => {
       expect(body[0]).not.toHaveProperty('steps')
     })
 
-    it('queries the status-createdAt GSI with status = published (regression guard)', async () => {
-      // Regression test for issue #86: if someone refactors handleListPublished
-      // away from a GSI Query filtered on status, this test must fail.
+    it('queries the status-createdAt GSI filtered to status = published', async () => {
       ddbMock.on(QueryCommand).resolves({
         Items: [publishedRecipeItem()],
       })
@@ -156,7 +154,6 @@ describe('Recipe Lambda handler', () => {
 
       expect(result.statusCode).toBe(200)
 
-      // Inspect the actual QueryCommand call — the real regression guard.
       const queryCalls = ddbMock.commandCalls(QueryCommand)
       expect(queryCalls).toHaveLength(1)
       const input = queryCalls[0].args[0].input
@@ -165,7 +162,6 @@ describe('Recipe Lambda handler', () => {
       expect(input.ExpressionAttributeNames).toEqual({ '#status': 'status' })
       expect(input.ExpressionAttributeValues).toEqual({ ':status': 'published' })
 
-      // And the rendered response must not expose any draft item.
       const body = JSON.parse(result.body as string)
       for (const recipe of body) {
         expect(recipe).not.toHaveProperty('status', 'draft')
@@ -264,68 +260,56 @@ describe('Recipe Lambda handler', () => {
     })
   })
 
-  // ─── Public endpoints do not leak drafts (integration-style) ────────
-  describe('public endpoints do not leak drafts (coordinated scenario)', () => {
-    it('hides drafts from both GET /recipes and GET /recipes/{slug} when a draft and a published item coexist', async () => {
-      // Seed: one published, one draft — the "datastore" has both.
-      const published = publishedRecipeItem({
-        id: 'pub-id',
-        slug: 'published-lamb-ragu',
-        title: 'Published Lamb Ragu',
-      })
-      const draft = draftRecipeItem({
-        id: 'draft-id',
-        slug: 'secret-draft-recipe',
-        title: 'Secret Draft Recipe',
-      })
+  describe('public endpoints do not leak drafts when drafts and published items coexist', () => {
+    const published = publishedRecipeItem({
+      id: 'pub-id',
+      slug: 'published-lamb-ragu',
+      title: 'Published Lamb Ragu',
+    })
+    const draft = draftRecipeItem({
+      id: 'draft-id',
+      slug: 'secret-draft-recipe',
+      title: 'Secret Draft Recipe',
+    })
 
-      // The list handler uses QueryCommand on the GSI, which filters by
-      // status = 'published'. Simulate that: only the published item comes back.
+    it('GET /recipes excludes the draft slug, id, and title', async () => {
+      // The GSI-backed list handler only ever sees published items — simulate that.
       ddbMock.on(QueryCommand).resolves({ Items: [published] })
-      // The slug lookup uses ScanCommand and does an in-handler status check.
-      // Return both items so the scan can surface either slug depending on the
-      // path parameter; the handler itself must reject the draft.
-      ddbMock.on(ScanCommand).resolves({ Items: [published, draft] })
 
-      // 1. GET /recipes — draft slug must NOT appear in the response.
-      const listEvent = makeEvent({ routeKey: 'GET /recipes', rawPath: '/recipes' })
-      const listResult = await handler(listEvent)
+      const result = await handler(makeEvent({ routeKey: 'GET /recipes', rawPath: '/recipes' }))
 
-      expect(listResult.statusCode).toBe(200)
-      const listBody = JSON.parse(listResult.body as string) as Array<{ slug: string; id: string }>
-      expect(listBody.map((r) => r.slug)).not.toContain('secret-draft-recipe')
-      expect(listBody.map((r) => r.id)).not.toContain('draft-id')
-      expect(listResult.body).not.toContain('Secret Draft Recipe')
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string) as Array<{ slug: string; id: string }>
+      expect(body.map((r) => r.slug)).not.toContain('secret-draft-recipe')
+      expect(body.map((r) => r.id)).not.toContain('draft-id')
+      expect(result.body).not.toContain('Secret Draft Recipe')
+    })
 
-      // 2. GET /recipes/{slug} for the draft slug — must be 404.
-      // The ScanCommand mock returns both items; handleGetBySlug picks Items[0]
-      // which is `published` above, so to actually test the draft path we need
-      // the draft to be first. Override for this call.
+    it('GET /recipes/{slug} returns 404 for the draft slug without leaking its contents', async () => {
       ddbMock.on(ScanCommand).resolves({ Items: [draft] })
 
-      const draftEvent = makeEvent({
+      const result = await handler(makeEvent({
         routeKey: 'GET /recipes/{slug}',
         rawPath: '/recipes/secret-draft-recipe',
         pathParameters: { slug: 'secret-draft-recipe' },
-      })
-      const draftResult = await handler(draftEvent)
+      }))
 
-      expect(draftResult.statusCode).toBe(404)
-      expect(draftResult.body).not.toContain('Secret Draft Recipe')
+      expect(result.statusCode).toBe(404)
+      expect(result.body).not.toContain('Secret Draft Recipe')
+    })
 
-      // 3. GET /recipes/{slug} for the published slug — must be 200.
+    it('GET /recipes/{slug} returns 200 for the published slug', async () => {
       ddbMock.on(ScanCommand).resolves({ Items: [published] })
 
-      const publishedEvent = makeEvent({
+      const result = await handler(makeEvent({
         routeKey: 'GET /recipes/{slug}',
         rawPath: '/recipes/published-lamb-ragu',
         pathParameters: { slug: 'published-lamb-ragu' },
-      })
-      const publishedResult = await handler(publishedEvent)
+      }))
 
-      expect(publishedResult.statusCode).toBe(200)
-      const publishedBody = JSON.parse(publishedResult.body as string)
-      expect(publishedBody.slug).toBe('published-lamb-ragu')
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body.slug).toBe('published-lamb-ragu')
     })
   })
 
