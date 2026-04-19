@@ -289,11 +289,18 @@ describe('RecipeStack', () => {
       })
     })
 
-    it('has a PUT /recipes/{id} route (protected)', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
-        RouteKey: 'PUT /recipes/{id}',
+    it('has a PATCH /recipes/{id} route (protected)', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', Match.objectLike({
+        RouteKey: 'PATCH /recipes/{id}',
         AuthorizationType: 'JWT',
-      })
+        AuthorizerId: Match.anyValue(),
+      }))
+    })
+
+    it('does not expose the old PUT /recipes/{id} route', () => {
+      template.resourcePropertiesCountIs('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'PUT /recipes/{id}',
+      }, 0)
     })
 
     it('has a PATCH /recipes/{id}/publish route (protected)', () => {

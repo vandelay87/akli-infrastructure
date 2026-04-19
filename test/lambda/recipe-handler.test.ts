@@ -807,8 +807,8 @@ describe('Recipe Lambda handler', () => {
     })
   })
 
-  // ─── PUT /recipes/{id} — update recipe ──────────────────────────────
-  describe('PUT /recipes/{id} — update recipe', () => {
+  // ─── PATCH /recipes/{id} — update recipe ────────────────────────────
+  describe('PATCH /recipes/{id} — update recipe', () => {
     it('returns 200 when contributor updates their own recipe', async () => {
       ddbMock.on(GetCommand).resolves({
         Item: publishedRecipeItem({ authorId: 'contributor-user-id' }),
@@ -818,7 +818,7 @@ describe('Recipe Lambda handler', () => {
       })
 
       const event = makeEvent({
-        routeKey: 'PUT /recipes/{id}',
+        routeKey: 'PATCH /recipes/{id}',
         rawPath: '/recipes/recipe-uuid-1',
         pathParameters: { id: 'recipe-uuid-1' },
         headers: { authorization: `Bearer ${contributorToken}` },
@@ -836,7 +836,7 @@ describe('Recipe Lambda handler', () => {
       })
 
       const event = makeEvent({
-        routeKey: 'PUT /recipes/{id}',
+        routeKey: 'PATCH /recipes/{id}',
         rawPath: '/recipes/recipe-uuid-1',
         pathParameters: { id: 'recipe-uuid-1' },
         headers: { authorization: `Bearer ${contributorToken}` },
@@ -859,7 +859,7 @@ describe('Recipe Lambda handler', () => {
       })
 
       const event = makeEvent({
-        routeKey: 'PUT /recipes/{id}',
+        routeKey: 'PATCH /recipes/{id}',
         rawPath: '/recipes/recipe-uuid-1',
         pathParameters: { id: 'recipe-uuid-1' },
         headers: { authorization: `Bearer ${adminToken}` },
@@ -880,7 +880,7 @@ describe('Recipe Lambda handler', () => {
       })
 
       const event = makeEvent({
-        routeKey: 'PUT /recipes/{id}',
+        routeKey: 'PATCH /recipes/{id}',
         rawPath: '/recipes/recipe-uuid-1',
         pathParameters: { id: 'recipe-uuid-1' },
         headers: { authorization: `Bearer ${contributorToken}` },
@@ -896,7 +896,7 @@ describe('Recipe Lambda handler', () => {
 
     it('returns 401 without a valid token', async () => {
       const event = makeEvent({
-        routeKey: 'PUT /recipes/{id}',
+        routeKey: 'PATCH /recipes/{id}',
         rawPath: '/recipes/recipe-uuid-1',
         pathParameters: { id: 'recipe-uuid-1' },
         headers: {},
@@ -908,6 +908,386 @@ describe('Recipe Lambda handler', () => {
       expect(result.statusCode).toBe(401)
       const body = JSON.parse(result.body as string)
       expect(body).toHaveProperty('error')
+    })
+  })
+
+  // ─── PATCH /recipes/{id} — draft-aware update and image-swap cleanup ─
+  describe('PATCH /recipes/{id} — draft-aware update and image-swap cleanup', () => {
+    it('refreshes ttl on a draft PATCH', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-04-19T12:00:00Z'))
+      try {
+        const oldItem = draftRecipeItem({ id: 'recipe-uuid-1', authorId: 'contributor-user-id' })
+        ddbMock.on(GetCommand).resolves({ Item: oldItem })
+        ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+
+        const event = makeEvent({
+          routeKey: 'PATCH /recipes/{id}',
+          rawPath: '/recipes/recipe-uuid-1',
+          pathParameters: { id: 'recipe-uuid-1' },
+          headers: { authorization: `Bearer ${adminToken}` },
+          body: JSON.stringify({ title: 'Updated Draft Title' }),
+        })
+
+        const result = await handler(event)
+
+        expect(result.statusCode).toBe(200)
+
+        const updateCalls = ddbMock.commandCalls(UpdateCommand)
+        expect(updateCalls).toHaveLength(1)
+        const input = updateCalls[0].args[0].input
+        const expectedTtl = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60
+        expect(input.ExpressionAttributeValues).toBeDefined()
+        expect((input.ExpressionAttributeValues as Record<string, unknown>)[':ttl']).toBe(expectedTtl)
+      } finally {
+        jest.useRealTimers()
+      }
+    })
+
+    it('does NOT set ttl on a published PATCH', async () => {
+      const oldItem = publishedRecipeItem({ id: 'recipe-uuid-1', authorId: 'contributor-user-id' })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ title: 'Updated Published Title' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      expect(updateCalls).toHaveLength(1)
+      const input = updateCalls[0].args[0].input
+      expect((input.ExpressionAttributeValues as Record<string, unknown>)[':ttl']).toBeUndefined()
+      expect(input.UpdateExpression).toBeDefined()
+      expect(input.UpdateExpression).not.toMatch(/\bttl\b/)
+    })
+
+    it('uses ReturnValues: ALL_OLD on the UpdateCommand', async () => {
+      const oldItem = publishedRecipeItem({ id: 'recipe-uuid-1', authorId: 'contributor-user-id' })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ title: 'Any Update' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      expect(updateCalls).toHaveLength(1)
+      expect(updateCalls[0].args[0].input.ReturnValues).toBe('ALL_OLD')
+    })
+
+    it('diffs image swap against the UpdateCommand ALL_OLD snapshot, not the pre-read', async () => {
+      const preReadItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        authorId: 'contributor-user-id',
+        coverImage: { key: 'keyA', alt: 'Pre-read alt' },
+      })
+      const atomicOldItem = {
+        ...preReadItem,
+        coverImage: { key: 'keyB', alt: 'Atomic-old alt' },
+      }
+      ddbMock.on(GetCommand).resolves({ Item: preReadItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: atomicOldItem })
+      s3Mock.on(DeleteObjectsCommand).resolves({})
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ coverImage: { key: 'keyC', alt: 'New alt' } }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+
+      const deleteCalls = s3Mock.commandCalls(DeleteObjectsCommand)
+      expect(deleteCalls).toHaveLength(1)
+      const keys = (deleteCalls[0].args[0].input.Delete?.Objects ?? []).map((o) => o.Key)
+      // Diff must be against the atomic-old snapshot (keyB), not the pre-read (keyA).
+      expect(keys).toContain('keyB-thumb.webp')
+      expect(keys).toContain('keyB-medium.webp')
+      expect(keys).toContain('keyB-full.webp')
+      expect(keys).not.toContain('keyA-thumb.webp')
+      expect(keys).not.toContain('keyA-medium.webp')
+      expect(keys).not.toContain('keyA-full.webp')
+      expect(keys).toHaveLength(3)
+    })
+
+    it('cover-image swap deletes the three old variants from S3', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        authorId: 'contributor-user-id',
+        coverImage: { key: 'recipes/images/recipe-1/cover', alt: 'Old alt' },
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+      s3Mock.on(DeleteObjectsCommand).resolves({})
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ coverImage: { key: 'recipes/images/recipe-1/cover-v2', alt: 'New alt' } }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+
+      const deleteCalls = s3Mock.commandCalls(DeleteObjectsCommand)
+      expect(deleteCalls).toHaveLength(1)
+      const deleteInput = deleteCalls[0].args[0].input
+      const keys = (deleteInput.Delete?.Objects ?? []).map((o) => o.Key)
+      expect(keys).toContain('recipes/images/recipe-1/cover-thumb.webp')
+      expect(keys).toContain('recipes/images/recipe-1/cover-medium.webp')
+      expect(keys).toContain('recipes/images/recipe-1/cover-full.webp')
+      expect(keys).toHaveLength(3)
+    })
+
+    it('same cover-image key triggers no S3 delete', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        authorId: 'contributor-user-id',
+        coverImage: { key: 'recipes/images/recipe-1/cover', alt: 'Old alt' },
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ coverImage: { key: 'recipes/images/recipe-1/cover', alt: 'Same key' } }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(0)
+    })
+
+    it('step-image swap deletes old variants by key-set (reorder-safe)', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        authorId: 'contributor-user-id',
+        steps: [
+          { order: 1, text: 'A', image: { key: 'step-a', alt: 'a' } },
+          { order: 2, text: 'B', image: { key: 'step-b', alt: 'b' } },
+          { order: 3, text: 'C', image: { key: 'step-c', alt: 'c' } },
+        ],
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+      s3Mock.on(DeleteObjectsCommand).resolves({})
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({
+          steps: [
+            { order: 1, text: 'C', image: { key: 'step-c', alt: 'c' } },
+            { order: 2, text: 'D', image: { key: 'step-d', alt: 'd' } },
+          ],
+        }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+
+      const deleteCalls = s3Mock.commandCalls(DeleteObjectsCommand)
+      expect(deleteCalls).toHaveLength(1)
+      const keys = (deleteCalls[0].args[0].input.Delete?.Objects ?? []).map((o) => o.Key)
+      // step-a variants must be scheduled for deletion
+      expect(keys).toContain('step-a-thumb.webp')
+      expect(keys).toContain('step-a-medium.webp')
+      expect(keys).toContain('step-a-full.webp')
+      // step-b variants must be scheduled for deletion
+      expect(keys).toContain('step-b-thumb.webp')
+      expect(keys).toContain('step-b-medium.webp')
+      expect(keys).toContain('step-b-full.webp')
+      // step-c is still referenced — its variants must NOT be deleted
+      expect(keys).not.toContain('step-c-thumb.webp')
+      expect(keys).not.toContain('step-c-medium.webp')
+      expect(keys).not.toContain('step-c-full.webp')
+      // step-d is newly added — its variants must NOT be deleted
+      expect(keys).not.toContain('step-d-thumb.webp')
+      expect(keys).not.toContain('step-d-medium.webp')
+      expect(keys).not.toContain('step-d-full.webp')
+      expect(keys).toHaveLength(6)
+    })
+
+    it('pure step reorder (same key-set) triggers no S3 delete', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        authorId: 'contributor-user-id',
+        steps: [
+          { order: 1, text: 'A', image: { key: 'step-a', alt: 'a' } },
+          { order: 2, text: 'B', image: { key: 'step-b', alt: 'b' } },
+          { order: 3, text: 'C', image: { key: 'step-c', alt: 'c' } },
+        ],
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({
+          steps: [
+            { order: 1, text: 'C', image: { key: 'step-c', alt: 'c' } },
+            { order: 2, text: 'A', image: { key: 'step-a', alt: 'a' } },
+            { order: 3, text: 'B', image: { key: 'step-b', alt: 'b' } },
+          ],
+        }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(0)
+    })
+
+    it('invokes UpdateCommand before DeleteObjectsCommand', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        authorId: 'contributor-user-id',
+        coverImage: { key: 'recipes/images/recipe-1/cover', alt: 'Old alt' },
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+
+      const callOrder: string[] = []
+      ddbMock.on(UpdateCommand).callsFake(async () => {
+        callOrder.push('update')
+        return { Attributes: oldItem }
+      })
+      s3Mock.on(DeleteObjectsCommand).callsFake(async () => {
+        callOrder.push('delete')
+        return {}
+      })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ coverImage: { key: 'recipes/images/recipe-1/cover-v2', alt: 'New alt' } }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(1)
+      expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(1)
+      expect(callOrder).toEqual(['update', 'delete'])
+    })
+
+    it('logs and swallows partial S3 delete failures without rolling back DDB', async () => {
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        const oldItem = publishedRecipeItem({
+          id: 'recipe-uuid-1',
+          authorId: 'contributor-user-id',
+          coverImage: { key: 'recipes/images/recipe-1/cover', alt: 'Old alt' },
+        })
+        ddbMock.on(GetCommand).resolves({ Item: oldItem })
+        ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+        s3Mock.on(DeleteObjectsCommand).resolves({
+          Errors: [{ Key: 'recipes/images/recipe-1/cover-thumb.webp', Code: 'AccessDenied', Message: 'nope' }],
+        })
+
+        const event = makeEvent({
+          routeKey: 'PATCH /recipes/{id}',
+          rawPath: '/recipes/recipe-uuid-1',
+          pathParameters: { id: 'recipe-uuid-1' },
+          headers: { authorization: `Bearer ${adminToken}` },
+          body: JSON.stringify({ coverImage: { key: 'recipes/images/recipe-1/cover-v2', alt: 'New alt' } }),
+        })
+
+        const result = await handler(event)
+
+        expect(result.statusCode).toBe(200)
+        const body = JSON.parse(result.body as string)
+        expect(body.id).toBe('recipe-uuid-1')
+        expect(body.coverImage).toEqual({ key: 'recipes/images/recipe-1/cover-v2', alt: 'New alt' })
+
+        // Must have logged the partial failure somewhere observable.
+        const logged = errorSpy.mock.calls.length + warnSpy.mock.calls.length
+        expect(logged).toBeGreaterThan(0)
+      } finally {
+        errorSpy.mockRestore()
+        warnSpy.mockRestore()
+      }
+    })
+
+    it('silently drops status from the update body', async () => {
+      const oldItem = publishedRecipeItem({ id: 'recipe-uuid-1', authorId: 'contributor-user-id' })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ title: 'x', status: 'published' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      expect(updateCalls).toHaveLength(1)
+      const input = updateCalls[0].args[0].input
+      expect((input.ExpressionAttributeNames as Record<string, string>)['#status']).toBeUndefined()
+      expect((input.ExpressionAttributeValues as Record<string, unknown>)[':status']).toBeUndefined()
+    })
+
+    it('silently drops ttl from the update body', async () => {
+      const oldItem = publishedRecipeItem({ id: 'recipe-uuid-1', authorId: 'contributor-user-id' })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ title: 'x', ttl: 12345 }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      expect(updateCalls).toHaveLength(1)
+      const input = updateCalls[0].args[0].input
+      // The user-supplied ttl value must not be present
+      expect((input.ExpressionAttributeNames as Record<string, string>)['#ttl']).toBeUndefined()
+      expect((input.ExpressionAttributeValues as Record<string, unknown>)[':ttl']).toBe(undefined)
     })
   })
 
