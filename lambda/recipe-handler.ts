@@ -49,7 +49,7 @@ interface CreateRecipeInput {
   readonly servings?: number
 }
 
-function json(statusCode: number, body: Record<string, unknown> | readonly Record<string, unknown>[]): APIGatewayProxyStructuredResultV2 {
+function json(statusCode: number, body: unknown): APIGatewayProxyStructuredResultV2 {
   return { statusCode, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
 }
 
@@ -481,17 +481,66 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
   return json(200, convertRecipeTags(newItem))
 }
 
+interface PublishErrors {
+  title?: string
+  intro?: string
+  coverImage?: { key?: string; alt?: string }
+  ingredients?: string
+  steps?: string
+}
+
+function validatePublishInput(item: Record<string, unknown>): PublishErrors {
+  const errors: PublishErrors = {}
+
+  const title = item.title
+  if (typeof title !== 'string' || title.trim().length === 0) {
+    errors.title = 'title is required'
+  }
+
+  const intro = item.intro
+  if (typeof intro !== 'string' || intro.trim().length === 0) {
+    errors.intro = 'intro is required'
+  }
+
+  const coverImage = item.coverImage as { key?: unknown; alt?: unknown } | undefined
+  const coverErrors: { key?: string; alt?: string } = {}
+  const coverKey = coverImage?.key
+  if (typeof coverKey !== 'string' || coverKey.trim().length === 0) {
+    coverErrors.key = 'coverImage.key is required'
+  }
+  const coverAlt = coverImage?.alt
+  if (typeof coverAlt !== 'string' || coverAlt.trim().length === 0) {
+    coverErrors.alt = 'coverImage.alt is required'
+  }
+  if (coverErrors.key || coverErrors.alt) {
+    errors.coverImage = coverErrors
+  }
+
+  const ingredients = item.ingredients
+  if (!Array.isArray(ingredients) || ingredients.length === 0) {
+    errors.ingredients = 'At least one ingredient is required'
+  }
+
+  const steps = item.steps
+  if (!Array.isArray(steps) || steps.length === 0) {
+    errors.steps = 'At least one step is required'
+  } else {
+    const hasEmptyStep = steps.some((step) => {
+      const text = (step as { text?: unknown }).text
+      return typeof text !== 'string' || text.trim().length === 0
+    })
+    if (hasEmptyStep) {
+      errors.steps = 'Every step must have non-empty text'
+    }
+  }
+
+  return errors
+}
+
 async function handlePublish(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
-  return await handleStatusChange(event, 'published')
-}
-
-async function handleUnpublish(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
-  return await handleStatusChange(event, 'draft')
-}
-
-async function handleStatusChange(event: APIGatewayProxyEventV2, newStatus: string): Promise<APIGatewayProxyStructuredResultV2> {
   const payload = decodeJwt(event)
   if (!payload) return json(401, { error: 'Unauthorised' })
+  if (!isAdmin(event)) return json(403, { error: 'Forbidden' })
 
   const id = event.pathParameters?.id
   if (!id) return json(400, { error: 'id is required' })
@@ -499,8 +548,11 @@ async function handleStatusChange(event: APIGatewayProxyEventV2, newStatus: stri
   const existing = await getRecipeById(id)
   if (!existing) return json(404, { error: 'Recipe not found' })
 
-  if (!isOwnerOrAdmin(existing.authorId as string, payload.sub, event)) {
-    return json(403, { error: 'Forbidden' })
+  const errors = validatePublishInput(existing)
+  if (Object.keys(errors).length > 0) return json(400, { errors })
+
+  if (existing.status === 'published') {
+    return json(200, convertRecipeTags(existing))
   }
 
   const now = new Date().toISOString()
@@ -508,9 +560,40 @@ async function handleStatusChange(event: APIGatewayProxyEventV2, newStatus: stri
     new UpdateCommand({
       TableName: TABLE_NAME,
       Key: { id },
-      UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt',
-      ExpressionAttributeNames: { '#status': 'status', '#updatedAt': 'updatedAt' },
-      ExpressionAttributeValues: { ':status': newStatus, ':updatedAt': now },
+      UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt REMOVE #ttl',
+      ExpressionAttributeNames: { '#status': 'status', '#updatedAt': 'updatedAt', '#ttl': 'ttl' },
+      ExpressionAttributeValues: { ':status': 'published', ':updatedAt': now },
+      ReturnValues: 'ALL_NEW',
+    }),
+  )
+
+  return json(200, convertRecipeTags(result.Attributes as Record<string, unknown>))
+}
+
+async function handleUnpublish(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
+  const payload = decodeJwt(event)
+  if (!payload) return json(401, { error: 'Unauthorised' })
+  if (!isAdmin(event)) return json(403, { error: 'Forbidden' })
+
+  const id = event.pathParameters?.id
+  if (!id) return json(400, { error: 'id is required' })
+
+  const existing = await getRecipeById(id)
+  if (!existing) return json(404, { error: 'Recipe not found' })
+
+  if (existing.status === 'draft') {
+    return json(200, convertRecipeTags(existing))
+  }
+
+  const now = new Date().toISOString()
+  const ttl = Math.floor(Date.now() / 1000) + DRAFT_TTL_SECONDS
+  const result = await docClient.send(
+    new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: { id },
+      UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt, #ttl = :ttl',
+      ExpressionAttributeNames: { '#status': 'status', '#updatedAt': 'updatedAt', '#ttl': 'ttl' },
+      ExpressionAttributeValues: { ':status': 'draft', ':updatedAt': now, ':ttl': ttl },
       ReturnValues: 'ALL_NEW',
     }),
   )
