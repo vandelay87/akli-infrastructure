@@ -3,7 +3,7 @@
 > **Sibling PRD:** [`personal-website/docs/prds/draft-recipes.md`](../../../personal-website/docs/prds/draft-recipes.md) — covers the React editor, autosave hook, admin list, and `StatusBadge` component that consume the endpoints defined here.
 
 ## Overview
-Recipes become a two-state resource — `draft` and `published` — backed by DynamoDB with native TTL on drafts and a Cognito-gated CRUD surface. This PRD covers the CDK / Lambda / IAM side: schema changes, route additions, image-swap cleanup on S3, admin authorisation, and the backfill migration.
+Recipes become a two-state resource — `draft` and `published` — backed by DynamoDB with native TTL on drafts and a Cognito-gated CRUD surface. This PRD covers the CDK / Lambda / IAM side: schema changes, route additions, image-swap cleanup on S3, and admin authorisation.
 
 ## Problem Statement
 The current recipe API has a direct `POST /recipes` create path and no notion of drafts. This means the admin editor must save a fully-formed recipe before images can be uploaded, because the image handler requires `recipeId` to generate a presigned URL — and `recipeId` only exists after save. There's also no server-side protection against abandoned drafts, and swapping a cover or step image leaves orphaned `*-thumb.webp`, `*-medium.webp`, `*-full.webp` variants in S3. A compliance-adjacent issue: the `isAdmin` helper currently decodes the JWT without verifying its signature (tracked separately as a non-goal here — every new route in this PRD must be attached to the existing Cognito authoriser at the API Gateway level so the helper's gap can't be exploited).
@@ -60,15 +60,7 @@ States in the API:
 - Existing `authorId-createdAt-index` GSI stays in place, unused (non-goal).
 - Native DynamoDB TTL enabled via `timeToLiveAttribute: 'ttl'` on the L2 `dynamodb.Table` construct in `lib/recipe-stack.ts`. TTL is best-effort — AWS deletes expired items within 48h of expiry. Admin list queries filter `ttl <= now` client-side to hide expired-but-not-yet-deleted items.
 
-**Backfill migration**
-- Script at `akli-infrastructure/scripts/backfill-recipe-status.ts`.
-- Sets `status: 'published'` on every existing item missing the attribute. Does not set `ttl`.
-- Hard requirements:
-  - **Account guard** — exits non-zero if `AWS_ACCOUNT_ID` env var is unset or doesn't match `sts:GetCallerIdentity`.
-  - **Dry-run** — `--dry-run` flag logs affected ids without writing.
-  - **Idempotency** — each `UpdateItem` carries `ConditionExpression: attribute_not_exists(#s)`, so re-runs are safe no-ops on already-migrated items.
-  - **Run log** — emits affected ids and a summary count; collects failures rather than halting.
-- Run order: deploy (TTL enabled) → backfill → start using new endpoints from the frontend.
+**Backfill migration** — not required. The recipes table was empty at the time of this work, so no existing items needed a `status` backfill. All new items created through `POST /recipes/drafts` carry `status` from creation, so the attribute is present on every item going forward without a migration step. If a future import bypasses the draft endpoint, the backfill script would need to be resurrected (it was originally tracked as infra issue #85, closed as not planned).
 
 **Recipe handler (`lambda/recipe-handler.ts`)**
 
@@ -104,7 +96,6 @@ Public GET leakage:
 **Testing approach (TDD for handlers and CDK)**
 - Jest + `aws-sdk-client-mock` for Lambda handler unit tests. Pattern already established in `test/lambda/recipe-handler.test.ts`.
 - `aws-cdk-lib/assertions` for template tests in `test/recipe-stack.test.ts`.
-- Backfill script tests run against moto or a local DynamoDB container.
 
 ## Acceptance Criteria
 
@@ -114,12 +105,6 @@ CDK (`lib/recipe-stack.ts` + template tests):
 - [ ] Every admin route (`POST /recipes/drafts`, `GET /recipes/admin`, `PATCH /recipes/{id}`, `PATCH /recipes/{id}/publish`, `PATCH /recipes/{id}/unpublish`, `DELETE /recipes/{id}`) has `AuthorizationType: JWT` on its `AWS::ApiGatewayV2::Route` resource.
 - [ ] The recipe-handler role policy grants `s3:DeleteObject` on the image bucket ARN (regression test).
 - [ ] The old `POST /recipes` route is removed from both CDK and the handler dispatch.
-
-Backfill script (`scripts/backfill-recipe-status.ts`):
-- [ ] Exits non-zero when `AWS_ACCOUNT_ID` env var is unset or doesn't match `sts:GetCallerIdentity`.
-- [ ] `--dry-run` flag logs affected items without writing.
-- [ ] Uses `ConditionExpression: attribute_not_exists(#s)` on every update so re-runs are no-ops on already-migrated items.
-- [ ] Prints affected ids and a summary count; failures are collected and surfaced at the end, not fatal mid-run.
 
 Handler — new endpoints:
 - [ ] `POST /recipes/drafts` requires admin JWT, returns `{ id, slug }`, writes `status: 'draft'` and `ttl = now + 30d`. Defaults `slug` to `draft-<uuid>` when the body has no title.
