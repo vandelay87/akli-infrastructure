@@ -61,6 +61,7 @@ CDK_DEFAULT_REGION=eu-west-2
 | `pnpm build` | Compile TypeScript |
 | `pnpm watch` | Watch mode compilation |
 | `pnpm test` | Run Jest tests |
+| `pnpm lint` | Run ESLint across the project |
 | `pnpm cdk diff --all` | Preview infrastructure changes |
 | `pnpm cdk deploy --all` | Deploy all stacks |
 | `pnpm cdk synth` | Generate CloudFormation templates |
