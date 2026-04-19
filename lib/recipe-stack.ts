@@ -234,7 +234,7 @@ export class RecipeStack extends Stack {
 
     new apigwv2.CfnRoute(this, 'UpdateRecipeRoute', {
       apiId: this.httpApi.httpApiId,
-      routeKey: 'PUT /recipes/{id}',
+      routeKey: 'PATCH /recipes/{id}',
       target: `integrations/${recipeIntegration.ref}`,
       authorizationType: 'JWT',
       authorizerId: jwtAuthorizer.ref,

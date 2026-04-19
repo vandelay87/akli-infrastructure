@@ -153,7 +153,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         return await handleCreateRecipe(event)
       case 'POST /recipes/drafts':
         return await handleCreateDraft(event)
-      case 'PUT /recipes/{id}':
+      case 'PATCH /recipes/{id}':
         return await handleUpdateRecipe(event)
       case 'PATCH /recipes/{id}/publish':
         return await handlePublish(event)
@@ -357,6 +357,46 @@ async function handleCreateDraft(event: APIGatewayProxyEventV2): Promise<APIGate
   return json(201, { id, slug })
 }
 
+function imageKeyOf(obj: unknown): string | undefined {
+  if (!obj || typeof obj !== 'object') return undefined
+  const key = (obj as { key?: unknown }).key
+  return typeof key === 'string' ? key : undefined
+}
+
+function variantKeysFor(key: string): readonly string[] {
+  return [`${key}-thumb.webp`, `${key}-medium.webp`, `${key}-full.webp`]
+}
+
+function stepImageKeySet(steps: unknown): Set<string> {
+  const keys = new Set<string>()
+  if (!Array.isArray(steps)) return keys
+  for (const step of steps) {
+    const key = imageKeyOf((step as { image?: unknown }).image)
+    if (key) keys.add(key)
+  }
+  return keys
+}
+
+function deletedImageKeysFromSwap(oldItem: Record<string, unknown>, updates: Record<string, unknown>): string[] {
+  const keysToDelete: string[] = []
+
+  if ('coverImage' in updates) {
+    const oldKey = imageKeyOf(oldItem.coverImage)
+    const newKey = imageKeyOf(updates.coverImage)
+    if (oldKey && oldKey !== newKey) keysToDelete.push(...variantKeysFor(oldKey))
+  }
+
+  if ('steps' in updates) {
+    const oldKeys = stepImageKeySet(oldItem.steps)
+    const newKeys = stepImageKeySet(updates.steps)
+    for (const oldKey of oldKeys) {
+      if (!newKeys.has(oldKey)) keysToDelete.push(...variantKeysFor(oldKey))
+    }
+  }
+
+  return keysToDelete
+}
+
 async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
   const payload = decodeJwt(event)
   if (!payload) return json(401, { error: 'Unauthorised' })
@@ -376,6 +416,8 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
   delete updates.id
   delete updates.authorId
   delete updates.createdAt
+  delete updates.status
+  delete updates.ttl
 
   const now = new Date().toISOString()
   const expressionParts: string[] = []
@@ -394,18 +436,46 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
   expressionNames['#updatedAt'] = 'updatedAt'
   expressionValues[':updatedAt'] = now
 
-  const result = await docClient.send(
+  const isDraft = existing.status === 'draft'
+  const refreshedTtl = Math.floor(Date.now() / 1000) + DRAFT_TTL_SECONDS
+  if (isDraft) {
+    expressionParts.push('#ttl = :ttl')
+    expressionNames['#ttl'] = 'ttl'
+    expressionValues[':ttl'] = refreshedTtl
+  }
+
+  await docClient.send(
     new UpdateCommand({
       TableName: TABLE_NAME,
       Key: { id },
       UpdateExpression: `SET ${expressionParts.join(', ')}`,
       ExpressionAttributeNames: expressionNames,
       ExpressionAttributeValues: expressionValues,
-      ReturnValues: 'ALL_NEW',
+      ReturnValues: 'ALL_OLD',
     }),
   )
 
-  return json(200, convertRecipeTags(result.Attributes as Record<string, unknown>))
+  const keysToDelete = deletedImageKeysFromSwap(existing, updates)
+  if (keysToDelete.length > 0) {
+    const deleteResult = await s3Client.send(
+      new DeleteObjectsCommand({
+        Bucket: IMAGE_BUCKET_NAME,
+        Delete: { Objects: keysToDelete.map((Key) => ({ Key })) },
+      }),
+    )
+    if (deleteResult.Errors && deleteResult.Errors.length > 0) {
+      console.error('Partial S3 delete failure during recipe image swap', deleteResult.Errors)
+    }
+  }
+
+  const newItem: Record<string, unknown> = {
+    ...existing,
+    ...updates,
+    updatedAt: now,
+    ...(isDraft ? { ttl: refreshedTtl } : {}),
+  }
+
+  return json(200, convertRecipeTags(newItem))
 }
 
 async function handlePublish(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
