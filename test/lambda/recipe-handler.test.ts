@@ -990,6 +990,45 @@ describe('Recipe Lambda handler', () => {
       expect(updateCalls[0].args[0].input.ReturnValues).toBe('ALL_OLD')
     })
 
+    it('diffs image swap against the UpdateCommand ALL_OLD snapshot, not the pre-read', async () => {
+      const preReadItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        authorId: 'contributor-user-id',
+        coverImage: { key: 'keyA', alt: 'Pre-read alt' },
+      })
+      const atomicOldItem = {
+        ...preReadItem,
+        coverImage: { key: 'keyB', alt: 'Atomic-old alt' },
+      }
+      ddbMock.on(GetCommand).resolves({ Item: preReadItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: atomicOldItem })
+      s3Mock.on(DeleteObjectsCommand).resolves({})
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ coverImage: { key: 'keyC', alt: 'New alt' } }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+
+      const deleteCalls = s3Mock.commandCalls(DeleteObjectsCommand)
+      expect(deleteCalls).toHaveLength(1)
+      const keys = (deleteCalls[0].args[0].input.Delete?.Objects ?? []).map((o) => o.Key)
+      // Diff must be against the atomic-old snapshot (keyB), not the pre-read (keyA).
+      expect(keys).toContain('keyB-thumb.webp')
+      expect(keys).toContain('keyB-medium.webp')
+      expect(keys).toContain('keyB-full.webp')
+      expect(keys).not.toContain('keyA-thumb.webp')
+      expect(keys).not.toContain('keyA-medium.webp')
+      expect(keys).not.toContain('keyA-full.webp')
+      expect(keys).toHaveLength(3)
+    })
+
     it('cover-image swap deletes the three old variants from S3', async () => {
       const oldItem = publishedRecipeItem({
         id: 'recipe-uuid-1',

@@ -444,7 +444,7 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
     expressionValues[':ttl'] = refreshedTtl
   }
 
-  await docClient.send(
+  const updateResult = await docClient.send(
     new UpdateCommand({
       TableName: TABLE_NAME,
       Key: { id },
@@ -455,7 +455,9 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
     }),
   )
 
-  const keysToDelete = deletedImageKeysFromSwap(existing, updates)
+  const atomicOld = (updateResult.Attributes ?? existing) as Record<string, unknown>
+
+  const keysToDelete = deletedImageKeysFromSwap(atomicOld, updates)
   if (keysToDelete.length > 0) {
     const deleteResult = await s3Client.send(
       new DeleteObjectsCommand({
@@ -469,7 +471,7 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
   }
 
   const newItem: Record<string, unknown> = {
-    ...existing,
+    ...atomicOld,
     ...updates,
     updatedAt: now,
     ...(isDraft ? { ttl: refreshedTtl } : {}),
