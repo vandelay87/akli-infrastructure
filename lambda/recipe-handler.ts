@@ -551,6 +551,10 @@ async function handlePublish(event: APIGatewayProxyEventV2): Promise<APIGatewayP
   const errors = validatePublishInput(existing)
   if (Object.keys(errors).length > 0) return json(400, { errors: errors as Record<string, unknown> })
 
+  if (existing.status === 'published') {
+    return json(200, convertRecipeTags(existing))
+  }
+
   const now = new Date().toISOString()
   const result = await docClient.send(
     new UpdateCommand({

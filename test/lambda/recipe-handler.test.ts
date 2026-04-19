@@ -1469,6 +1469,7 @@ describe('Recipe Lambda handler', () => {
       expect(result.statusCode).toBe(200)
       const body = JSON.parse(result.body as string)
       expect(body.status).toBe('published')
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0)
     })
 
     it('returns 400 when re-publishing an already-published recipe that now fails validation', async () => {
@@ -1582,13 +1583,7 @@ describe('Recipe Lambda handler', () => {
       const result = await handler(event)
 
       expect(result.statusCode).toBe(200)
-      const updateCalls = ddbMock.commandCalls(UpdateCommand)
-      if (updateCalls.length > 0) {
-        const values = (updateCalls[0].args[0].input.ExpressionAttributeValues ?? {}) as Record<string, unknown>
-        if (values[':status'] !== undefined) {
-          expect(values[':status']).toBe('draft')
-        }
-      }
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0)
     })
 
     it('returns 403 when a contributor (even the owner) unpublishes — admin-only', async () => {
