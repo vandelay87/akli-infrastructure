@@ -1,20 +1,18 @@
-import type { APIGatewayProxyEventV2 } from 'aws-lambda'
 import { S3Client } from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import type { APIGatewayProxyEventV2 } from 'aws-lambda'
 import { mockClient } from 'aws-sdk-client-mock'
 
-// Mock getSignedUrl before importing the handler
+// jest.mock() is hoisted above imports, so the handler imports the mocked module.
 jest.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: jest.fn().mockResolvedValue('https://mock-presigned-url.s3.amazonaws.com/test'),
 }))
 
 const s3Mock = mockClient(S3Client)
 
-// Set environment variables before importing handler
 process.env.IMAGE_BUCKET_NAME = 'test-recipe-images-bucket'
 
-// Import handler after mock setup
 import { handler } from '../../lambda/recipe-image-handler'
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 // Build a fake JWT with the given payload (header.payload.signature)
 function fakeJwt(payload: Record<string, unknown>): string {

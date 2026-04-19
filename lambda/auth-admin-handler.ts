@@ -1,4 +1,3 @@
-import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 import {
   CognitoIdentityProviderClient,
   AdminCreateUserCommand,
@@ -8,6 +7,7 @@ import {
   ListUsersInGroupCommand,
   type UserType,
 } from '@aws-sdk/client-cognito-identity-provider'
+import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 
 const cognito = new CognitoIdentityProviderClient({})
 const USER_POOL_ID = process.env.USER_POOL_ID ?? ''

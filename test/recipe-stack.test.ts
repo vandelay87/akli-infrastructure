@@ -63,6 +63,27 @@ describe('RecipeStack', () => {
     })
   })
 
+  describe('DynamoDB TTL', () => {
+    it('enables native TTL on the recipes table using the ttl attribute', () => {
+      template.hasResourceProperties('AWS::DynamoDB::Table', Match.objectLike({
+        TableName: 'recipes',
+        TimeToLiveSpecification: {
+          AttributeName: 'ttl',
+          Enabled: true,
+        },
+      }))
+    })
+
+    it('does not include ttl in the recipes table AttributeDefinitions (TTL is metadata, not a key)', () => {
+      template.hasResourceProperties('AWS::DynamoDB::Table', Match.objectLike({
+        TableName: 'recipes',
+        AttributeDefinitions: Match.not(Match.arrayWith([
+          Match.objectLike({ AttributeName: 'ttl' }),
+        ])),
+      }))
+    })
+  })
+
   describe('GSI status-createdAt-index', () => {
     it('creates GSI with name status-createdAt-index', () => {
       template.hasResourceProperties('AWS::DynamoDB::Table', {
@@ -261,45 +282,66 @@ describe('RecipeStack', () => {
       })
     })
 
-    it('has a POST /recipes route (protected)', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
-        RouteKey: 'POST /recipes',
-        AuthorizationType: 'JWT',
-      })
-    })
-
-    it('has a PUT /recipes/{id} route (protected)', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+    it('does not expose the old PUT /recipes/{id} route', () => {
+      template.resourcePropertiesCountIs('AWS::ApiGatewayV2::Route', {
         RouteKey: 'PUT /recipes/{id}',
-        AuthorizationType: 'JWT',
-      })
-    })
-
-    it('has a PATCH /recipes/{id}/publish route (protected)', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
-        RouteKey: 'PATCH /recipes/{id}/publish',
-        AuthorizationType: 'JWT',
-      })
-    })
-
-    it('has a PATCH /recipes/{id}/unpublish route (protected)', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
-        RouteKey: 'PATCH /recipes/{id}/unpublish',
-        AuthorizationType: 'JWT',
-      })
-    })
-
-    it('has a DELETE /recipes/{id} route (protected)', () => {
-      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
-        RouteKey: 'DELETE /recipes/{id}',
-        AuthorizationType: 'JWT',
-      })
+      }, 0)
     })
 
     it('has a POST /recipes/images/upload-url route (protected)', () => {
       template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
         RouteKey: 'POST /recipes/images/upload-url',
         AuthorizationType: 'JWT',
+      })
+    })
+
+    const adminRoutes = [
+      'POST /recipes/drafts',
+      'GET /recipes/admin',
+      'PATCH /recipes/{id}',
+      'PATCH /recipes/{id}/publish',
+      'PATCH /recipes/{id}/unpublish',
+      'DELETE /recipes/{id}',
+    ]
+
+    it.each(adminRoutes)('route %s has AuthorizationType: JWT', (routeKey) => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', Match.objectLike({
+        RouteKey: routeKey,
+        AuthorizationType: 'JWT',
+        AuthorizerId: Match.anyValue(),
+      }))
+    })
+
+    it('does not expose the old POST /recipes route', () => {
+      template.resourcePropertiesCountIs('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'POST /recipes',
+      }, 0)
+    })
+  })
+
+  describe('IAM — recipe handler role', () => {
+    it('grants s3:DeleteObject on the image bucket ARN', () => {
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        Roles: Match.arrayWith([
+          { Ref: Match.stringLikeRegexp('^RecipeHandlerServiceRole.*') },
+        ]),
+        PolicyDocument: Match.objectLike({
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: 's3:DeleteObject*',
+              Effect: 'Allow',
+              Resource: {
+                'Fn::Join': [
+                  '',
+                  [
+                    { 'Fn::GetAtt': [Match.stringLikeRegexp('^RecipeImagesBucket.*'), 'Arn'] },
+                    '/*',
+                  ],
+                ],
+              },
+            }),
+          ]),
+        }),
       })
     })
   })

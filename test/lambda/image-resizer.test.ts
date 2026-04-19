@@ -1,6 +1,6 @@
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
-import { mockClient } from 'aws-sdk-client-mock'
 import type { S3Event } from 'aws-lambda'
+import { mockClient } from 'aws-sdk-client-mock'
 
 const s3Mock = mockClient(S3Client)
 

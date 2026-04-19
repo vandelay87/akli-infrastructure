@@ -1,5 +1,6 @@
-import { Duration, RemovalPolicy, Stack, StackProps } from 'aws-cdk-lib'
-import { Construct } from 'constructs'
+import * as path from 'path'
+import type { StackProps } from 'aws-cdk-lib'
+import { Duration, RemovalPolicy, Stack } from 'aws-cdk-lib'
 import { CorsHttpMethod, HttpApi } from 'aws-cdk-lib/aws-apigatewayv2'
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2'
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb'
@@ -8,7 +9,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda'
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications'
-import * as path from 'path'
+import type { Construct } from 'constructs'
 import { applyStackTags } from './utils'
 
 interface RecipeStackProps extends StackProps {
@@ -23,13 +24,14 @@ export class RecipeStack extends Stack {
   constructor(scope: Construct, id: string, props: RecipeStackProps) {
     super(scope, id, props)
 
-    const { userPoolId, userPoolClientId, userPoolArn } = props
+    const { userPoolId, userPoolClientId } = props
 
     // DynamoDB table
     const table = new dynamodb.Table(this, 'RecipesTable', {
       tableName: 'recipes',
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'ttl',
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
       removalPolicy: RemovalPolicy.RETAIN,
     })
@@ -207,9 +209,17 @@ export class RecipeStack extends Stack {
       authorizerId: jwtAuthorizer.ref,
     })
 
-    new apigwv2.CfnRoute(this, 'CreateRecipeRoute', {
+    new apigwv2.CfnRoute(this, 'AdminListRecipesRoute', {
       apiId: this.httpApi.httpApiId,
-      routeKey: 'POST /recipes',
+      routeKey: 'GET /recipes/admin',
+      target: `integrations/${recipeIntegration.ref}`,
+      authorizationType: 'JWT',
+      authorizerId: jwtAuthorizer.ref,
+    })
+
+    new apigwv2.CfnRoute(this, 'CreateDraftRoute', {
+      apiId: this.httpApi.httpApiId,
+      routeKey: 'POST /recipes/drafts',
       target: `integrations/${recipeIntegration.ref}`,
       authorizationType: 'JWT',
       authorizerId: jwtAuthorizer.ref,
@@ -217,7 +227,7 @@ export class RecipeStack extends Stack {
 
     new apigwv2.CfnRoute(this, 'UpdateRecipeRoute', {
       apiId: this.httpApi.httpApiId,
-      routeKey: 'PUT /recipes/{id}',
+      routeKey: 'PATCH /recipes/{id}',
       target: `integrations/${recipeIntegration.ref}`,
       authorizationType: 'JWT',
       authorizerId: jwtAuthorizer.ref,

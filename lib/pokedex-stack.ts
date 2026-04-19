@@ -1,14 +1,15 @@
-import { CfnOutput, CustomResource, Duration, Stack, StackProps } from 'aws-cdk-lib'
-import { Construct } from 'constructs'
-import * as dynamodb from 'aws-cdk-lib/aws-dynamodb'
-import * as lambda from 'aws-cdk-lib/aws-lambda'
-import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'
-import { CorsHttpMethod, HttpApi, HttpMethod } from 'aws-cdk-lib/aws-apigatewayv2'
-import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations'
-import { Provider } from 'aws-cdk-lib/custom-resources'
 import * as crypto from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
+import type { StackProps } from 'aws-cdk-lib';
+import { CfnOutput, CustomResource, Duration, Stack } from 'aws-cdk-lib'
+import { CorsHttpMethod, HttpApi, HttpMethod } from 'aws-cdk-lib/aws-apigatewayv2'
+import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations'
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb'
+import * as lambda from 'aws-cdk-lib/aws-lambda'
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'
+import { Provider } from 'aws-cdk-lib/custom-resources'
+import type { Construct } from 'constructs'
 import { applyStackTags } from './utils'
 
 export class PokedexStack extends Stack {
