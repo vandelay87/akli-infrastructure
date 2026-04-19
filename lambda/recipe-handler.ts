@@ -10,6 +10,7 @@ const s3Client = new S3Client({})
 
 const TABLE_NAME = process.env.TABLE_NAME ?? ''
 const IMAGE_BUCKET_NAME = process.env.IMAGE_BUCKET_NAME ?? ''
+const DRAFT_TTL_SECONDS = 30 * 24 * 60 * 60
 
 interface JwtPayload {
   readonly sub: string
@@ -140,6 +141,8 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         return await handleListUserRecipes(event)
       case 'POST /recipes':
         return await handleCreateRecipe(event)
+      case 'POST /recipes/drafts':
+        return await handleCreateDraft(event)
       case 'PUT /recipes/{id}':
         return await handleUpdateRecipe(event)
       case 'PATCH /recipes/{id}/publish':
@@ -292,6 +295,39 @@ function validateCreateInput(input: CreateRecipeInput): string[] {
   if (!input.ingredients || input.ingredients.length === 0) errors.push('At least one ingredient is required')
   if (!input.steps || input.steps.length === 0) errors.push('At least one step is required')
   return errors
+}
+
+async function handleCreateDraft(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
+  const payload = decodeJwt(event)
+  if (!payload) return json(401, { error: 'Unauthorised' })
+  if (!isAdmin(event)) return json(403, { error: 'Forbidden' })
+
+  const input = JSON.parse(event.body ?? '{}') as { title?: string }
+  const title = typeof input.title === 'string' ? input.title : ''
+
+  const id = randomUUID()
+  const slug = title.length > 0 ? await findUniqueSlug(generateSlug(title)) : `draft-${id}`
+  const ttl = Math.floor(Date.now() / 1000) + DRAFT_TTL_SECONDS
+  const now = new Date().toISOString()
+
+  const item: Record<string, unknown> = {
+    id,
+    slug,
+    status: 'draft',
+    ttl,
+    title,
+    intro: '',
+    ingredients: [],
+    steps: [],
+    authorId: payload.sub,
+    authorName: payload.name ?? payload.email ?? '',
+    createdAt: now,
+    updatedAt: now,
+  }
+
+  await docClient.send(new PutCommand({ TableName: TABLE_NAME, Item: item }))
+
+  return json(201, { id, slug })
 }
 
 async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {

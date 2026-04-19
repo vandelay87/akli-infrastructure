@@ -325,6 +325,22 @@ describe('RecipeStack', () => {
     })
   })
 
+  describe('POST /recipes/drafts route', () => {
+    it('has a POST /recipes/drafts route', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+        RouteKey: 'POST /recipes/drafts',
+      })
+    })
+
+    it('is protected by the JWT authoriser', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Route', Match.objectLike({
+        RouteKey: 'POST /recipes/drafts',
+        AuthorizationType: 'JWT',
+        AuthorizerId: Match.anyValue(),
+      }))
+    })
+  })
+
   describe('JWT Authoriser', () => {
     it('creates a JWT authoriser', () => {
       template.hasResourceProperties('AWS::ApiGatewayV2::Authorizer', {
