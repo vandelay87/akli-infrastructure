@@ -140,7 +140,7 @@ describe('Recipe Lambda handler', () => {
       expect(body[0]).not.toHaveProperty('steps')
     })
 
-    it('does not return draft recipes', async () => {
+    it('queries the status-createdAt GSI filtered to status = published', async () => {
       ddbMock.on(QueryCommand).resolves({
         Items: [publishedRecipeItem()],
       })
@@ -153,8 +153,16 @@ describe('Recipe Lambda handler', () => {
       const result = await handler(event)
 
       expect(result.statusCode).toBe(200)
+
+      const queryCalls = ddbMock.commandCalls(QueryCommand)
+      expect(queryCalls).toHaveLength(1)
+      const input = queryCalls[0].args[0].input
+      expect(input.IndexName).toBe('status-createdAt-index')
+      expect(input.KeyConditionExpression).toBe('#status = :status')
+      expect(input.ExpressionAttributeNames).toEqual({ '#status': 'status' })
+      expect(input.ExpressionAttributeValues).toEqual({ ':status': 'published' })
+
       const body = JSON.parse(result.body as string)
-      // The query should filter by status=published via the GSI
       for (const recipe of body) {
         expect(recipe).not.toHaveProperty('status', 'draft')
       }
@@ -207,9 +215,10 @@ describe('Recipe Lambda handler', () => {
       expect(Array.isArray(body.tags)).toBe(true)
     })
 
-    it('returns 404 for a draft recipe', async () => {
+    it('returns 404 (not 200) for a draft recipe and does not leak the item', async () => {
+      const draft = draftRecipeItem({ slug: 'my-draft-recipe', title: 'Secret Draft' })
       ddbMock.on(ScanCommand).resolves({
-        Items: [draftRecipeItem({ slug: 'my-draft-recipe' })],
+        Items: [draft],
       })
 
       const event = makeEvent({
@@ -223,6 +232,13 @@ describe('Recipe Lambda handler', () => {
       expect(result.statusCode).toBe(404)
       const body = JSON.parse(result.body as string)
       expect(body).toHaveProperty('error')
+      // Must not leak any of the draft's contents in the response body.
+      expect(body).not.toHaveProperty('id')
+      expect(body).not.toHaveProperty('title')
+      expect(body).not.toHaveProperty('slug')
+      expect(body).not.toHaveProperty('intro')
+      expect(body).not.toHaveProperty('status')
+      expect(result.body).not.toContain('Secret Draft')
     })
 
     it('returns 404 for a non-existent slug', async () => {
@@ -241,6 +257,59 @@ describe('Recipe Lambda handler', () => {
       expect(result.statusCode).toBe(404)
       const body = JSON.parse(result.body as string)
       expect(body).toHaveProperty('error')
+    })
+  })
+
+  describe('public endpoints do not leak drafts when drafts and published items coexist', () => {
+    const published = publishedRecipeItem({
+      id: 'pub-id',
+      slug: 'published-lamb-ragu',
+      title: 'Published Lamb Ragu',
+    })
+    const draft = draftRecipeItem({
+      id: 'draft-id',
+      slug: 'secret-draft-recipe',
+      title: 'Secret Draft Recipe',
+    })
+
+    it('GET /recipes excludes the draft slug, id, and title', async () => {
+      // The GSI-backed list handler only ever sees published items — simulate that.
+      ddbMock.on(QueryCommand).resolves({ Items: [published] })
+
+      const result = await handler(makeEvent({ routeKey: 'GET /recipes', rawPath: '/recipes' }))
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string) as Array<{ slug: string; id: string }>
+      expect(body.map((r) => r.slug)).not.toContain('secret-draft-recipe')
+      expect(body.map((r) => r.id)).not.toContain('draft-id')
+      expect(result.body).not.toContain('Secret Draft Recipe')
+    })
+
+    it('GET /recipes/{slug} returns 404 for the draft slug without leaking its contents', async () => {
+      ddbMock.on(ScanCommand).resolves({ Items: [draft] })
+
+      const result = await handler(makeEvent({
+        routeKey: 'GET /recipes/{slug}',
+        rawPath: '/recipes/secret-draft-recipe',
+        pathParameters: { slug: 'secret-draft-recipe' },
+      }))
+
+      expect(result.statusCode).toBe(404)
+      expect(result.body).not.toContain('Secret Draft Recipe')
+    })
+
+    it('GET /recipes/{slug} returns 200 for the published slug', async () => {
+      ddbMock.on(ScanCommand).resolves({ Items: [published] })
+
+      const result = await handler(makeEvent({
+        routeKey: 'GET /recipes/{slug}',
+        rawPath: '/recipes/published-lamb-ragu',
+        pathParameters: { slug: 'published-lamb-ragu' },
+      }))
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body.slug).toBe('published-lamb-ragu')
     })
   })
 
