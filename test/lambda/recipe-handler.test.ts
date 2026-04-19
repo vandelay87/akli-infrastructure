@@ -737,6 +737,52 @@ describe('Recipe Lambda handler', () => {
       }
     })
 
+    it('returns a lightweight admin projection that includes status and updatedAt but omits heavy fields', async () => {
+      const published = publishedRecipeItem({ id: 'pub-id', slug: 'pub-slug', title: 'Published Recipe' })
+      const draft = draftRecipeItem({ id: 'draft-id', slug: 'draft-slug', title: 'Draft Recipe' })
+
+      ddbMock.on(QueryCommand)
+        .resolvesOnce({ Items: [published] })
+        .resolvesOnce({ Items: [draft] })
+
+      const event = makeEvent({
+        routeKey: 'GET /recipes/admin',
+        rawPath: '/recipes/admin',
+        headers: { authorization: `Bearer ${adminToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string) as Array<Record<string, unknown>>
+      expect(body).toHaveLength(2)
+
+      for (const item of body) {
+        expect(item).toHaveProperty('id')
+        expect(item).toHaveProperty('title')
+        expect(item).toHaveProperty('slug')
+        expect(item).toHaveProperty('coverImage')
+        expect(item).toHaveProperty('tags')
+        expect(item).toHaveProperty('prepTime')
+        expect(item).toHaveProperty('cookTime')
+        expect(item).toHaveProperty('servings')
+        expect(item).toHaveProperty('createdAt')
+        expect(item).toHaveProperty('status')
+        expect(item).toHaveProperty('updatedAt')
+        expect(typeof item.status).toBe('string')
+        expect(typeof item.updatedAt).toBe('string')
+        expect(Array.isArray(item.tags)).toBe(true)
+
+        // Heavy/private fields must be stripped from the list response.
+        expect(item).not.toHaveProperty('intro')
+        expect(item).not.toHaveProperty('ingredients')
+        expect(item).not.toHaveProperty('steps')
+        expect(item).not.toHaveProperty('authorId')
+        expect(item).not.toHaveProperty('authorName')
+        expect(item).not.toHaveProperty('ttl')
+      }
+    })
+
     it('includes published items that have no ttl attribute', async () => {
       const published = publishedRecipeItem({ id: 'pub-id', slug: 'pub-slug', title: 'Published Recipe' })
       // Confirm the helper does not attach a ttl by default

@@ -128,6 +128,14 @@ function lightweightRecipe(recipe: Record<string, unknown>): Record<string, unkn
   }
 }
 
+function lightweightAdminRecipe(recipe: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...lightweightRecipe(recipe),
+    status: recipe.status,
+    updatedAt: recipe.updatedAt,
+  }
+}
+
 export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
   try {
     switch (event.routeKey) {
@@ -226,7 +234,7 @@ async function handleListForAdmin(event: APIGatewayProxyEventV2): Promise<APIGat
   const merged = [...(publishedResult.Items ?? []), ...(draftResult.Items ?? [])] as Record<string, unknown>[]
   const live = merged.filter((item) => typeof item.ttl !== 'number' || (item.ttl as number) > nowSeconds)
 
-  return json(200, live.map((item) => convertRecipeTags(item)))
+  return json(200, live.map((item) => lightweightAdminRecipe(item)))
 }
 
 async function handleGetBySlug(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
