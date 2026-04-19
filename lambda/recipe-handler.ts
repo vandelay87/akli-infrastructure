@@ -195,46 +195,37 @@ async function handleListTags(): Promise<APIGatewayProxyStructuredResultV2> {
   return json(200, sorted)
 }
 
-async function handleListPublished(): Promise<APIGatewayProxyStructuredResultV2> {
-  const result = await docClient.send(
+function queryRecipesByStatus(status: string) {
+  return docClient.send(
     new QueryCommand({
       TableName: TABLE_NAME,
       IndexName: 'status-createdAt-index',
       KeyConditionExpression: '#status = :status',
       ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: { ':status': 'published' },
+      ExpressionAttributeValues: { ':status': status },
       ScanIndexForward: false,
     }),
   )
+}
+
+async function handleListPublished(): Promise<APIGatewayProxyStructuredResultV2> {
+  const result = await queryRecipesByStatus('published')
 
   const recipes = (result.Items ?? []).map((item) => lightweightRecipe(item as Record<string, unknown>))
   return json(200, recipes)
 }
 
 async function handleListForAdmin(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
-  const payload = decodeJwt(event)
-  if (!payload) return json(401, { error: 'Unauthorised' })
+  if (!decodeJwt(event)) return json(401, { error: 'Unauthorised' })
   if (!isAdmin(event)) return json(403, { error: 'Forbidden' })
 
-  const queryByStatus = (status: string) =>
-    docClient.send(
-      new QueryCommand({
-        TableName: TABLE_NAME,
-        IndexName: 'status-createdAt-index',
-        KeyConditionExpression: '#status = :status',
-        ExpressionAttributeNames: { '#status': 'status' },
-        ExpressionAttributeValues: { ':status': status },
-        ScanIndexForward: false,
-      }),
-    )
-
-  const [publishedResult, draftResult] = await Promise.all([queryByStatus('published'), queryByStatus('draft')])
+  const [publishedResult, draftResult] = await Promise.all([queryRecipesByStatus('published'), queryRecipesByStatus('draft')])
 
   const nowSeconds = Math.floor(Date.now() / 1000)
   const merged = [...(publishedResult.Items ?? []), ...(draftResult.Items ?? [])] as Record<string, unknown>[]
-  const live = merged.filter((item) => typeof item.ttl !== 'number' || (item.ttl as number) > nowSeconds)
+  const live = merged.filter((item) => typeof item.ttl !== 'number' || item.ttl > nowSeconds)
 
-  return json(200, live.map((item) => lightweightAdminRecipe(item)))
+  return json(200, live.map(lightweightAdminRecipe))
 }
 
 async function handleGetBySlug(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
