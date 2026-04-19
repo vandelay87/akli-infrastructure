@@ -1,5 +1,5 @@
 import * as path from 'path'
-import type { StackProps } from 'aws-cdk-lib';
+import type { StackProps } from 'aws-cdk-lib'
 import { Duration, RemovalPolicy, Stack } from 'aws-cdk-lib'
 import { CorsHttpMethod, HttpApi } from 'aws-cdk-lib/aws-apigatewayv2'
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2'
