@@ -1,7 +1,7 @@
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import type { S3Event } from 'aws-lambda'
 import sharp from 'sharp'
-import { VARIANT_SUFFIXES, type VariantSuffix } from './image-variants'
+import { VARIANT_SUFFIXES, toProcessedKey, type VariantSuffix } from './image-variants'
 
 const s3 = new S3Client({})
 
@@ -37,7 +37,7 @@ export async function handler(event: S3Event): Promise<void> {
     const bodyBytes = await getResponse.Body!.transformToByteArray()
     const imageBuffer = Buffer.from(bodyBytes)
 
-    const processedKey = key.replace('uploads/', 'processed/')
+    const processedKey = toProcessedKey(key)
 
     await Promise.all(
       VARIANTS.map(async (variant) => {

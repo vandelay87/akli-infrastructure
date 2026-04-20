@@ -1,6 +1,7 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
+import { UPLOAD_PREFIX, toProcessedKey } from './image-variants'
 
 const s3 = new S3Client({})
 const IMAGE_BUCKET_NAME = process.env.IMAGE_BUCKET_NAME ?? ''
@@ -53,8 +54,8 @@ async function handleUploadUrl(event: APIGatewayProxyEventV2): Promise<APIGatewa
   if (imageType !== 'cover' && !stepOrder) return json(400, { error: 'stepOrder is required for step images' })
 
   const uploadKey = imageType === 'cover'
-    ? `uploads/recipes/${recipeId}/cover`
-    : `uploads/recipes/${recipeId}/step-${stepOrder}`
+    ? `${UPLOAD_PREFIX}recipes/${recipeId}/cover`
+    : `${UPLOAD_PREFIX}recipes/${recipeId}/step-${stepOrder}`
 
   const uploadUrl = await getSignedUrl(
     s3,
@@ -64,8 +65,8 @@ async function handleUploadUrl(event: APIGatewayProxyEventV2): Promise<APIGatewa
 
   // `key` is where the resizer writes variants (the caller stores this and
   // constructs image URLs like `/images/<key>-<variant>.webp`). The presigned
-  // URL still targets the raw `uploads/` prefix that triggers the resizer.
-  const key = uploadKey.replace('uploads/', 'processed/')
+  // URL still targets the raw uploads prefix that triggers the resizer.
+  const key = toProcessedKey(uploadKey)
 
   return json(200, { uploadUrl, key })
 }
