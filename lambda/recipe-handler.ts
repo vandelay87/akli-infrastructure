@@ -266,6 +266,7 @@ async function handleCreateDraft(event: APIGatewayProxyEventV2): Promise<APIGate
     intro: '',
     ingredients: [],
     steps: [],
+    imageStatus: {},
     authorId: payload.sub,
     authorName: payload.name ?? payload.email ?? '',
     createdAt: now,
