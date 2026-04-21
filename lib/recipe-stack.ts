@@ -133,6 +133,7 @@ export class RecipeStack extends Stack {
 
     imageBucket.grantReadWrite(imageResizer)
     imageBucket.grantDelete(imageResizer)
+    // Narrow ARN (no GSI wildcards): table.grant() would add /index/* which UpdateItem cannot target.
     imageResizer.addToRolePolicy(new iam.PolicyStatement({
       actions: ['dynamodb:UpdateItem'],
       resources: [table.tableArn],
