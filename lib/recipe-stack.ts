@@ -127,11 +127,16 @@ export class RecipeStack extends Stack {
       functionName: 'akli-image-resizer',
       environment: {
         IMAGE_BUCKET_NAME: imageBucket.bucketName,
+        TABLE_NAME: table.tableName,
       },
     })
 
     imageBucket.grantReadWrite(imageResizer)
     imageBucket.grantDelete(imageResizer)
+    imageResizer.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:UpdateItem'],
+      resources: [table.tableArn],
+    }))
 
     // S3 event notification for image uploads
     imageBucket.addEventNotification(
