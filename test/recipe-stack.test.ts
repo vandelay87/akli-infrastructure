@@ -346,6 +346,58 @@ describe('RecipeStack', () => {
     })
   })
 
+  describe('IAM — image-resizer role', () => {
+    it('image-resizer Lambda environment includes TABLE_NAME set to the recipes table name', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', Match.objectLike({
+        FunctionName: 'akli-image-resizer',
+        Environment: {
+          Variables: Match.objectLike({
+            TABLE_NAME: { Ref: Match.stringLikeRegexp('^RecipesTable.*') },
+          }),
+        },
+      }))
+    })
+
+    it('grants dynamodb:UpdateItem on the recipes table ARN', () => {
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        Roles: Match.arrayWith([
+          { Ref: Match.stringLikeRegexp('^ImageResizerServiceRole.*') },
+        ]),
+        PolicyDocument: Match.objectLike({
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: 'dynamodb:UpdateItem',
+              Effect: 'Allow',
+              Resource: { 'Fn::GetAtt': [Match.stringLikeRegexp('^RecipesTable.*'), 'Arn'] },
+            }),
+          ]),
+        }),
+      })
+    })
+
+    it('does not grant dynamodb:PutItem, dynamodb:DeleteItem, or dynamodb:Scan on the image-resizer role', () => {
+      const assertResizerLacks = (action: string) => {
+        // CDK consolidates actions into either a string or string[] — assert both forms.
+        for (const actionMatcher of [action, Match.arrayWith([action])]) {
+          template.hasResourceProperties('AWS::IAM::Policy', {
+            Roles: Match.arrayWith([
+              { Ref: Match.stringLikeRegexp('^ImageResizerServiceRole.*') },
+            ]),
+            PolicyDocument: Match.objectLike({
+              Statement: Match.not(Match.arrayWith([
+                Match.objectLike({ Action: actionMatcher }),
+              ])),
+            }),
+          })
+        }
+      }
+
+      for (const action of ['dynamodb:PutItem', 'dynamodb:DeleteItem', 'dynamodb:Scan']) {
+        assertResizerLacks(action)
+      }
+    })
+  })
+
   describe('JWT Authoriser', () => {
     it('creates a JWT authoriser', () => {
       template.hasResourceProperties('AWS::ApiGatewayV2::Authorizer', {
