@@ -1954,5 +1954,27 @@ describe('Recipe Lambda handler', () => {
       expect(body.steps[0].image).not.toHaveProperty('processedAt')
       expect(body.steps[0].image).toEqual({ key: step1Key, alt: 'step alt' })
     })
+
+    it('preserves processedAt: 0 when imageStatus records a falsy-but-valid timestamp', async () => {
+      // Guards against a future `if (processedAt)` truthiness regression — the code
+      // must keep the `!== undefined` check so 0 is treated as "ready", not "missing".
+      const item = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        coverImage: { key: coverKey, alt: 'cover alt' },
+        steps: [],
+        imageStatus: { [coverKey]: 0 },
+      })
+      ddbMock.on(ScanCommand).resolves({ Items: [item] })
+
+      const result = await handler(makeEvent({
+        routeKey: 'GET /recipes/{slug}',
+        rawPath: '/recipes/slow-cooked-lamb-ragu',
+        pathParameters: { slug: 'slow-cooked-lamb-ragu' },
+      }))
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body.coverImage).toEqual({ key: coverKey, alt: 'cover alt', processedAt: 0 })
+    })
   })
 })

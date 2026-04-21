@@ -127,7 +127,15 @@ function lightweightRecipe(recipe: Record<string, unknown>): Record<string, unkn
 function lightweightAdminRecipe(recipe: Record<string, unknown>): Record<string, unknown> {
   const composed = composeImageProcessedAt(recipe)
   return {
-    ...lightweightRecipe(composed),
+    id: composed.id,
+    title: composed.title,
+    slug: composed.slug,
+    coverImage: composed.coverImage,
+    tags: tagsToArray(composed.tags),
+    prepTime: composed.prepTime,
+    cookTime: composed.cookTime,
+    servings: composed.servings,
+    createdAt: composed.createdAt,
     status: composed.status,
     updatedAt: composed.updatedAt,
   }
