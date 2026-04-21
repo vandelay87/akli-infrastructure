@@ -346,6 +346,99 @@ describe('RecipeStack', () => {
     })
   })
 
+  describe('IAM — image-resizer role', () => {
+    it('image-resizer Lambda environment includes TABLE_NAME set to the recipes table name', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', Match.objectLike({
+        FunctionName: 'akli-image-resizer',
+        Environment: {
+          Variables: Match.objectLike({
+            TABLE_NAME: { Ref: Match.stringLikeRegexp('^RecipesTable.*') },
+          }),
+        },
+      }))
+    })
+
+    it('grants dynamodb:UpdateItem on the recipes table ARN', () => {
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        Roles: Match.arrayWith([
+          { Ref: Match.stringLikeRegexp('^ImageResizerServiceRole.*') },
+        ]),
+        PolicyDocument: Match.objectLike({
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: 'dynamodb:UpdateItem',
+              Effect: 'Allow',
+              Resource: { 'Fn::GetAtt': [Match.stringLikeRegexp('^RecipesTable.*'), 'Arn'] },
+            }),
+          ]),
+        }),
+      })
+    })
+
+    it('does not grant dynamodb:PutItem, dynamodb:DeleteItem, or dynamodb:Scan on the image-resizer role', () => {
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        Roles: Match.arrayWith([
+          { Ref: Match.stringLikeRegexp('^ImageResizerServiceRole.*') },
+        ]),
+        PolicyDocument: Match.objectLike({
+          Statement: Match.not(Match.arrayWith([
+            Match.objectLike({ Action: Match.arrayWith(['dynamodb:PutItem']) }),
+          ])),
+        }),
+      })
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        Roles: Match.arrayWith([
+          { Ref: Match.stringLikeRegexp('^ImageResizerServiceRole.*') },
+        ]),
+        PolicyDocument: Match.objectLike({
+          Statement: Match.not(Match.arrayWith([
+            Match.objectLike({ Action: 'dynamodb:PutItem' }),
+          ])),
+        }),
+      })
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        Roles: Match.arrayWith([
+          { Ref: Match.stringLikeRegexp('^ImageResizerServiceRole.*') },
+        ]),
+        PolicyDocument: Match.objectLike({
+          Statement: Match.not(Match.arrayWith([
+            Match.objectLike({ Action: Match.arrayWith(['dynamodb:DeleteItem']) }),
+          ])),
+        }),
+      })
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        Roles: Match.arrayWith([
+          { Ref: Match.stringLikeRegexp('^ImageResizerServiceRole.*') },
+        ]),
+        PolicyDocument: Match.objectLike({
+          Statement: Match.not(Match.arrayWith([
+            Match.objectLike({ Action: 'dynamodb:DeleteItem' }),
+          ])),
+        }),
+      })
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        Roles: Match.arrayWith([
+          { Ref: Match.stringLikeRegexp('^ImageResizerServiceRole.*') },
+        ]),
+        PolicyDocument: Match.objectLike({
+          Statement: Match.not(Match.arrayWith([
+            Match.objectLike({ Action: Match.arrayWith(['dynamodb:Scan']) }),
+          ])),
+        }),
+      })
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        Roles: Match.arrayWith([
+          { Ref: Match.stringLikeRegexp('^ImageResizerServiceRole.*') },
+        ]),
+        PolicyDocument: Match.objectLike({
+          Statement: Match.not(Match.arrayWith([
+            Match.objectLike({ Action: 'dynamodb:Scan' }),
+          ])),
+        }),
+      })
+    })
+  })
+
   describe('JWT Authoriser', () => {
     it('creates a JWT authoriser', () => {
       template.hasResourceProperties('AWS::ApiGatewayV2::Authorizer', {
