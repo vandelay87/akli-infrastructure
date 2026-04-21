@@ -417,6 +417,28 @@ describe('Recipe Lambda handler', () => {
       }
     })
 
+    it('initialises imageStatus as an empty map on the new item', async () => {
+      ddbMock.on(ScanCommand).resolves({ Items: [] })
+      ddbMock.on(PutCommand).resolves({})
+
+      const event = makeEvent({
+        routeKey: 'POST /recipes/drafts',
+        rawPath: '/recipes/drafts',
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: '{}',
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(201)
+
+      const putCalls = ddbMock.commandCalls(PutCommand)
+      expect(putCalls).toHaveLength(1)
+      const item = putCalls[0].args[0].input.Item as Record<string, unknown>
+      expect(item).toHaveProperty('imageStatus')
+      expect(item.imageStatus).toEqual({})
+    })
+
     it('defaults slug to draft-<uuid> when no title is provided', async () => {
       ddbMock.on(ScanCommand).resolves({ Items: [] })
       ddbMock.on(PutCommand).resolves({})
