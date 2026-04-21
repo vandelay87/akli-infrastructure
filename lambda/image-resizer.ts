@@ -1,4 +1,4 @@
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { ConditionalCheckFailedException, DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb'
 import type { S3Event } from 'aws-lambda'
@@ -6,7 +6,7 @@ import sharp from 'sharp'
 import { VARIANT_SUFFIXES, toProcessedKey, UPLOAD_PREFIX, type VariantSuffix } from './image-variants'
 
 const s3 = new S3Client({})
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}))
+const docClient = DynamoDBDocumentClient.from(new DynamoDBClient({}))
 
 interface ImageVariant {
   readonly suffix: VariantSuffix
@@ -27,10 +27,11 @@ const VARIANTS: readonly ImageVariant[] = VARIANT_SUFFIXES.map((suffix) => ({
 
 const RECIPES_SEGMENT = 'recipes'
 
+// Accepts exactly `uploads/recipes/<id>/<type>` — extra trailing segments are rejected.
 function parseRecipeId(uploadKey: string): string | undefined {
   if (!uploadKey.startsWith(UPLOAD_PREFIX)) return undefined
   const segments = uploadKey.slice(UPLOAD_PREFIX.length).split('/')
-  if (segments.length < 3) return undefined
+  if (segments.length !== 3) return undefined
   if (segments[0] !== RECIPES_SEGMENT) return undefined
   const id = segments[1]
   if (!id) return undefined
@@ -75,12 +76,15 @@ export async function handler(event: S3Event): Promise<void> {
       }),
     )
 
+    const logSkip = (reason: string) =>
+      console.info({ event: 'resizer.writeback.skipped', reason, key })
+
     const recipeId = parseRecipeId(key)
     if (recipeId === undefined) {
-      console.info({ event: 'resizer.writeback.skipped', reason: 'unrecognised_key_shape', key })
+      logSkip('unrecognised_key_shape')
     } else {
       try {
-        await ddb.send(
+        await docClient.send(
           new UpdateCommand({
             TableName: tableName,
             Key: { id: recipeId },
@@ -91,8 +95,8 @@ export async function handler(event: S3Event): Promise<void> {
           }),
         )
       } catch (error) {
-        if (error instanceof Error && error.name === 'ConditionalCheckFailedException') {
-          console.info({ event: 'resizer.writeback.skipped', reason: 'recipe_deleted', key })
+        if (error instanceof ConditionalCheckFailedException) {
+          logSkip('recipe_deleted')
         } else {
           throw error
         }

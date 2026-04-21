@@ -1,3 +1,4 @@
+import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb'
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb'
 import type { S3Event } from 'aws-lambda'
@@ -174,8 +175,9 @@ describe('image-resizer handler', () => {
   it('swallows ConditionalCheckFailedException, still deletes source, and logs skip event', async () => {
     const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
 
-    const condFailed = Object.assign(new Error('The conditional request failed'), {
-      name: 'ConditionalCheckFailedException',
+    const condFailed = new ConditionalCheckFailedException({
+      $metadata: {},
+      message: 'The conditional request failed',
     })
     ddbMock.on(UpdateCommand).rejects(condFailed)
 
