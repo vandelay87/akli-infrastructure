@@ -86,8 +86,12 @@ async function findUniqueSlug(baseSlug: string): Promise<string> {
   }
 }
 
+function imageStatusOf(item: Record<string, unknown>): Record<string, number> {
+  return (item.imageStatus as Record<string, number> | undefined) ?? {}
+}
+
 function composeImageProcessedAt<T extends Record<string, unknown>>(item: T): Omit<T, 'imageStatus'> {
-  const imageStatus = (item.imageStatus as Record<string, number> | undefined) ?? {}
+  const imageStatus = imageStatusOf(item)
   const coverImage = item.coverImage as { key?: string } | undefined
   const coverProcessedAt = coverImage?.key ? imageStatus[coverImage.key] : undefined
   const steps = Array.isArray(item.steps)
@@ -494,9 +498,9 @@ function validatePublishInput(item: Record<string, unknown>): PublishErrors {
     coverErrors.alt = 'coverImage.alt is required'
   }
 
-  const imageStatus = (item.imageStatus as Record<string, number> | undefined) ?? {}
+  const imageStatus = imageStatusOf(item)
 
-  if (typeof coverKey === 'string' && coverKey.trim().length > 0 && imageStatus[coverKey] === undefined) {
+  if (!coverErrors.key && imageStatus[coverKey as string] === undefined) {
     coverErrors.processedAt = 'Cover image still processing'
   }
 
