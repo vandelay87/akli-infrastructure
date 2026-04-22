@@ -642,7 +642,6 @@ describe('Recipe Lambda handler', () => {
     })
   })
 
-  // ─── GET /recipes/admin/{id} — admin single recipe ──────────────────
   describe('GET /recipes/admin/{id} — admin single recipe', () => {
     it('returns 401 without a JWT', async () => {
       const event = makeEvent({
@@ -657,7 +656,6 @@ describe('Recipe Lambda handler', () => {
       expect(result.statusCode).toBe(401)
       const body = JSON.parse(result.body as string)
       expect(body).toHaveProperty('error')
-      // The handler must not touch DDB when the caller is unauthenticated.
       expect(ddbMock.commandCalls(GetCommand)).toHaveLength(0)
     })
 
@@ -692,8 +690,6 @@ describe('Recipe Lambda handler', () => {
       expect(result.statusCode).toBe(404)
       const body = JSON.parse(result.body as string)
       expect(body).toHaveProperty('error')
-      // Admin single-recipe lookup is by id, so a GetCommand (not a Scan or Query) is the
-      // right access pattern.
       const getCalls = ddbMock.commandCalls(GetCommand)
       expect(getCalls).toHaveLength(1)
       expect(getCalls[0].args[0].input.Key).toEqual({ id: 'missing-id' })
@@ -716,11 +712,9 @@ describe('Recipe Lambda handler', () => {
       const body = JSON.parse(result.body as string)
       expect(body.id).toBe('recipe-uuid-1')
       expect(body.status).toBe('published')
-      // Full recipe (not a lightweight projection) — admin detail view.
       expect(body).toHaveProperty('intro')
       expect(body).toHaveProperty('ingredients')
       expect(body).toHaveProperty('steps')
-      // Tags Set has been converted to array form.
       expect(Array.isArray(body.tags)).toBe(true)
     })
 
@@ -737,8 +731,6 @@ describe('Recipe Lambda handler', () => {
 
       const result = await handler(event)
 
-      // Distinct from the public GET /recipes/{slug} which 404s on drafts — the admin
-      // endpoint must return drafts as well as published items.
       expect(result.statusCode).toBe(200)
       const body = JSON.parse(result.body as string)
       expect(body.id).toBe('draft-id')
@@ -771,11 +763,9 @@ describe('Recipe Lambda handler', () => {
       const result = await handler(event)
 
       expect(result.statusCode).toBe(200)
-      // imageStatus is an internal attribute — it must never leak into responses.
       expect(result.body).not.toContain('imageStatus')
       const body = JSON.parse(result.body as string)
       expect(body).not.toHaveProperty('imageStatus')
-      // processedAt is composed onto cover and each step image with a matching entry.
       expect(body.coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
       expect(body.steps[0].image).toEqual({ key: step1Key, alt: 'seared lamb', processedAt: step1Ts })
     })

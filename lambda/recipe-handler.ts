@@ -247,7 +247,7 @@ async function handleGetAdminRecipeById(event: APIGatewayProxyEventV2): Promise<
   const item = await getRecipeById(id)
   if (!item) return json(404, { error: 'Recipe not found' })
 
-  return json(200, composeImageProcessedAt(convertRecipeTags(item)))
+  return json(200, convertRecipeTags(item))
 }
 
 async function handleGetBySlug(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
