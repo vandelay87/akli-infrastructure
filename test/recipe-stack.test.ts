@@ -317,6 +317,52 @@ describe('RecipeStack', () => {
         RouteKey: 'POST /recipes',
       }, 0)
     })
+
+    describe('GET /recipes/admin/{id} — admin single recipe', () => {
+      it('has a GET /recipes/admin/{id} route with AuthorizationType: JWT', () => {
+        template.hasResourceProperties('AWS::ApiGatewayV2::Route', Match.objectLike({
+          RouteKey: 'GET /recipes/admin/{id}',
+          AuthorizationType: 'JWT',
+          AuthorizerId: Match.anyValue(),
+        }))
+      })
+
+      it('points the GET /recipes/admin/{id} route at the recipe handler integration', () => {
+        const routes = template.findResources('AWS::ApiGatewayV2::Route', {
+          Properties: Match.objectLike({ RouteKey: 'GET /recipes/admin/{id}' }),
+        })
+        const routeEntries = Object.values(routes)
+        expect(routeEntries).toHaveLength(1)
+        const target = (routeEntries[0] as { Properties: { Target: unknown } }).Properties.Target
+        const serialised = JSON.stringify(target)
+        expect(serialised).toMatch(/RecipeHandlerIntegration/)
+        expect(serialised).not.toMatch(/RecipeImageHandlerIntegration/)
+      })
+
+      it('does not add a new AWS::Lambda::Permission resource for the new route', () => {
+        // Existing permissions: RecipeImagesBucket→ImageResizer,
+        // RecipeHandler→ApiGateway, RecipeImageHandler→ApiGateway.
+        // The recipe handler's wildcard /*/* sourceArn covers every route.
+        const permissions = template.findResources('AWS::Lambda::Permission')
+        expect(Object.keys(permissions)).toHaveLength(3)
+      })
+
+      it('the existing RecipeHandler ApiGateway permission uses a wildcard sourceArn ending in /*/*', () => {
+        template.hasResourceProperties('AWS::Lambda::Permission', Match.objectLike({
+          Action: 'lambda:InvokeFunction',
+          Principal: 'apigateway.amazonaws.com',
+          FunctionName: Match.objectLike({
+            'Fn::GetAtt': Match.arrayWith([Match.stringLikeRegexp('^RecipeHandler.*')]),
+          }),
+          SourceArn: {
+            'Fn::Join': [
+              '',
+              Match.arrayWith(['/*/*']),
+            ],
+          },
+        }))
+      })
+    })
   })
 
   describe('IAM — recipe handler role', () => {

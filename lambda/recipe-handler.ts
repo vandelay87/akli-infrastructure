@@ -154,6 +154,8 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         return await handleListPublished()
       case 'GET /recipes/admin':
         return await handleListForAdmin(event)
+      case 'GET /recipes/admin/{id}':
+        return await handleGetAdminRecipeById(event)
       case 'GET /recipes/{slug}':
         return await handleGetBySlug(event)
       case 'GET /me/recipes':
@@ -233,6 +235,19 @@ async function handleListForAdmin(event: APIGatewayProxyEventV2): Promise<APIGat
   const live = merged.filter((item) => typeof item.ttl !== 'number' || item.ttl > nowSeconds)
 
   return json(200, live.map(lightweightAdminRecipe))
+}
+
+async function handleGetAdminRecipeById(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
+  if (!decodeJwt(event)) return json(401, { error: 'Unauthorised' })
+  if (!isAdmin(event)) return json(403, { error: 'Forbidden' })
+
+  const id = event.pathParameters?.id
+  if (!id) return json(400, { error: 'id is required' })
+
+  const item = await getRecipeById(id)
+  if (!item) return json(404, { error: 'Recipe not found' })
+
+  return json(200, convertRecipeTags(item))
 }
 
 async function handleGetBySlug(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {

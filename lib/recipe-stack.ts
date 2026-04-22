@@ -223,6 +223,14 @@ export class RecipeStack extends Stack {
       authorizerId: jwtAuthorizer.ref,
     })
 
+    new apigwv2.CfnRoute(this, 'AdminGetRecipeByIdRoute', {
+      apiId: this.httpApi.httpApiId,
+      routeKey: 'GET /recipes/admin/{id}',
+      target: `integrations/${recipeIntegration.ref}`,
+      authorizationType: 'JWT',
+      authorizerId: jwtAuthorizer.ref,
+    })
+
     new apigwv2.CfnRoute(this, 'CreateDraftRoute', {
       apiId: this.httpApi.httpApiId,
       routeKey: 'POST /recipes/drafts',

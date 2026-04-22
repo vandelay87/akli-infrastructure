@@ -642,6 +642,135 @@ describe('Recipe Lambda handler', () => {
     })
   })
 
+  describe('GET /recipes/admin/{id} — admin single recipe', () => {
+    it('returns 401 without a JWT', async () => {
+      const event = makeEvent({
+        routeKey: 'GET /recipes/admin/{id}',
+        rawPath: '/recipes/admin/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: {},
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(401)
+      const body = JSON.parse(result.body as string)
+      expect(body).toHaveProperty('error')
+      expect(ddbMock.commandCalls(GetCommand)).toHaveLength(0)
+    })
+
+    it('returns 403 when the caller is not in the admin group', async () => {
+      const event = makeEvent({
+        routeKey: 'GET /recipes/admin/{id}',
+        rawPath: '/recipes/admin/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${contributorToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(403)
+      const body = JSON.parse(result.body as string)
+      expect(body).toHaveProperty('error')
+      expect(ddbMock.commandCalls(GetCommand)).toHaveLength(0)
+    })
+
+    it('returns 404 when the recipe does not exist', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: undefined })
+
+      const event = makeEvent({
+        routeKey: 'GET /recipes/admin/{id}',
+        rawPath: '/recipes/admin/missing-id',
+        pathParameters: { id: 'missing-id' },
+        headers: { authorization: `Bearer ${adminToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(404)
+      const body = JSON.parse(result.body as string)
+      expect(body).toHaveProperty('error')
+      const getCalls = ddbMock.commandCalls(GetCommand)
+      expect(getCalls).toHaveLength(1)
+      expect(getCalls[0].args[0].input.Key).toEqual({ id: 'missing-id' })
+    })
+
+    it('returns 200 with a published recipe for admin', async () => {
+      const item = publishedRecipeItem({ id: 'recipe-uuid-1' })
+      ddbMock.on(GetCommand).resolves({ Item: item })
+
+      const event = makeEvent({
+        routeKey: 'GET /recipes/admin/{id}',
+        rawPath: '/recipes/admin/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body.id).toBe('recipe-uuid-1')
+      expect(body.status).toBe('published')
+      expect(body).toHaveProperty('intro')
+      expect(body).toHaveProperty('ingredients')
+      expect(body).toHaveProperty('steps')
+      expect(Array.isArray(body.tags)).toBe(true)
+    })
+
+    it('returns 200 with a draft recipe for admin (not filtered by status)', async () => {
+      const draft = draftRecipeItem({ id: 'draft-id', slug: 'my-draft', title: 'My Draft' })
+      ddbMock.on(GetCommand).resolves({ Item: draft })
+
+      const event = makeEvent({
+        routeKey: 'GET /recipes/admin/{id}',
+        rawPath: '/recipes/admin/draft-id',
+        pathParameters: { id: 'draft-id' },
+        headers: { authorization: `Bearer ${adminToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body.id).toBe('draft-id')
+      expect(body.status).toBe('draft')
+    })
+
+    it('composes processedAt onto images and strips imageStatus from the response body', async () => {
+      const coverKey = 'processed/recipes/recipe-uuid-1/cover'
+      const step1Key = 'processed/recipes/recipe-uuid-1/step-1'
+      const coverTs = 1_745_000_000_001
+      const step1Ts = 1_745_000_000_002
+
+      const item = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+        steps: [
+          { order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared lamb' } },
+        ],
+        imageStatus: { [coverKey]: coverTs, [step1Key]: step1Ts },
+      })
+      ddbMock.on(GetCommand).resolves({ Item: item })
+
+      const event = makeEvent({
+        routeKey: 'GET /recipes/admin/{id}',
+        rawPath: '/recipes/admin/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      expect(result.body).not.toContain('imageStatus')
+      const body = JSON.parse(result.body as string)
+      expect(body).not.toHaveProperty('imageStatus')
+      expect(body.coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
+      expect(body.steps[0].image).toEqual({ key: step1Key, alt: 'seared lamb', processedAt: step1Ts })
+    })
+  })
+
   // ─── PATCH /recipes/{id} — update recipe ────────────────────────────
   describe('PATCH /recipes/{id} — update recipe', () => {
     it('returns 200 when contributor updates their own recipe', async () => {
