@@ -1977,4 +1977,183 @@ describe('Recipe Lambda handler', () => {
       expect(body.coverImage).toEqual({ key: coverKey, alt: 'cover alt', processedAt: 0 })
     })
   })
+
+  // ─── PATCH /recipes/{id} — imageStatus REMOVE on swap + processedAt strip ───
+  describe('PATCH /recipes/{id} — imageStatus REMOVE on swap and processedAt body strip', () => {
+    const oldCoverKey = 'processed/recipes/recipe-uuid-1/cover'
+    const newCoverKey = 'processed/recipes/recipe-uuid-1/cover-v2'
+    const stepAKey = 'processed/recipes/recipe-uuid-1/step-1'
+    const stepBKey = 'processed/recipes/recipe-uuid-1/step-2'
+    const stepCKey = 'processed/recipes/recipe-uuid-1/step-3'
+
+    // AC 1 + AC 5: cover-image swap REMOVEs imageStatus.#<oldCoverKey> in the same
+    // UpdateCommand as SET for updated fields, with ExpressionAttributeNames pointing
+    // at the dropped key.
+    it('cover-image swap includes REMOVE imageStatus.#<oldKey> in the same UpdateCommand as SET', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        authorId: 'contributor-user-id',
+        coverImage: { key: oldCoverKey, alt: 'Old alt' },
+        imageStatus: { [oldCoverKey]: 1_745_000_000_001 },
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+      s3Mock.on(DeleteObjectsCommand).resolves({})
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ coverImage: { key: newCoverKey, alt: 'New alt' } }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      expect(updateCalls).toHaveLength(1)
+      const input = updateCalls[0].args[0].input
+      const expr = input.UpdateExpression as string
+
+      // Both SET (for the coverImage field) and REMOVE (for imageStatus entry) live in the same expression.
+      expect(expr).toMatch(/\bSET\b/)
+      expect(expr).toMatch(/\bREMOVE\b/)
+      expect(expr).toMatch(/REMOVE\s+imageStatus\.#/)
+
+      // An ExpressionAttributeName must point at the dropped old cover key.
+      const names = input.ExpressionAttributeNames as Record<string, string>
+      const nameValues = Object.values(names)
+      expect(nameValues).toContain(oldCoverKey)
+
+      // The name placeholder used in REMOVE must resolve to the old cover key.
+      const removeMatch = expr.match(/REMOVE\s+imageStatus\.(#[a-zA-Z0-9_]+)/)
+      expect(removeMatch).not.toBeNull()
+      const removePlaceholder = removeMatch![1]
+      expect(names[removePlaceholder]).toBe(oldCoverKey)
+    })
+
+    // AC 2: step-image swap REMOVEs only dropped step image keys; preserved keys stay.
+    it('step-image swap REMOVEs imageStatus entries for dropped keys only, preserving kept keys', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        authorId: 'contributor-user-id',
+        coverImage: { key: oldCoverKey, alt: 'Cover alt' },
+        steps: [
+          { order: 1, text: 'A', image: { key: stepAKey, alt: 'a' } },
+          { order: 2, text: 'B', image: { key: stepBKey, alt: 'b' } },
+          { order: 3, text: 'C', image: { key: stepCKey, alt: 'c' } },
+        ],
+        imageStatus: {
+          [oldCoverKey]: 1_745_000_000_000,
+          [stepAKey]: 1_745_000_000_001,
+          [stepBKey]: 1_745_000_000_002,
+          [stepCKey]: 1_745_000_000_003,
+        },
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+      s3Mock.on(DeleteObjectsCommand).resolves({})
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        // Keep stepC, drop stepA and stepB. Cover unchanged.
+        body: JSON.stringify({
+          steps: [
+            { order: 1, text: 'C', image: { key: stepCKey, alt: 'c' } },
+          ],
+        }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      expect(updateCalls).toHaveLength(1)
+      const input = updateCalls[0].args[0].input
+      const expr = input.UpdateExpression as string
+      const names = input.ExpressionAttributeNames as Record<string, string>
+
+      expect(expr).toMatch(/\bREMOVE\b/)
+
+      // Collect every imageStatus.#<placeholder> occurrence in the REMOVE segment.
+      const removeSegmentMatch = expr.match(/REMOVE\s+(.+)$/)
+      expect(removeSegmentMatch).not.toBeNull()
+      const removeSegment = removeSegmentMatch![1]
+      const placeholderMatches = Array.from(removeSegment.matchAll(/imageStatus\.(#[a-zA-Z0-9_]+)/g))
+      const removedKeys = placeholderMatches.map((m) => names[m[1]])
+
+      // Dropped step keys are REMOVEd.
+      expect(removedKeys).toContain(stepAKey)
+      expect(removedKeys).toContain(stepBKey)
+      // Preserved step key is NOT REMOVEd.
+      expect(removedKeys).not.toContain(stepCKey)
+      // Cover is unchanged — its imageStatus entry must be preserved too.
+      expect(removedKeys).not.toContain(oldCoverKey)
+      expect(removedKeys).toHaveLength(2)
+    })
+
+    // AC 3 + AC 4: client-supplied processedAt on nested coverImage and step.image is
+    // stripped before expression building; the outgoing UpdateCommand carries the cleaned
+    // objects and no value contains a processedAt field.
+    it('strips client-supplied processedAt from coverImage and step.image before the UpdateCommand runs', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        authorId: 'contributor-user-id',
+        coverImage: { key: oldCoverKey, alt: 'Old cover alt' },
+        steps: [{ order: 1, text: 'A', image: { key: stepAKey, alt: 'a' } }],
+        imageStatus: { [oldCoverKey]: 1_745_000_000_000, [stepAKey]: 1_745_000_000_001 },
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+
+      // Same keys — no image swap — so any UpdateExpression values that carry the nested
+      // image objects come straight from the (stripped) request body.
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({
+          coverImage: { key: oldCoverKey, alt: 'Cover alt', processedAt: 9_999_999_999_999 },
+          steps: [
+            { order: 1, text: 'A', image: { key: stepAKey, alt: 'a', processedAt: 9_999_999_999_998 } },
+          ],
+        }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      expect(updateCalls).toHaveLength(1)
+      const input = updateCalls[0].args[0].input
+      const values = input.ExpressionAttributeValues as Record<string, unknown>
+
+      // AC 4: no ExpressionAttributeValue key exists for a client-supplied processedAt
+      // (i.e. the strip happened on the parsed body before the handler built the expression).
+      expect(Object.keys(values)).not.toContain(':processedAt')
+
+      // The nested coverImage value carried in the UpdateCommand must not include processedAt.
+      const coverValue = values[':coverImage'] as Record<string, unknown> | undefined
+      expect(coverValue).toBeDefined()
+      expect(coverValue).not.toHaveProperty('processedAt')
+      expect(coverValue).toEqual({ key: oldCoverKey, alt: 'Cover alt' })
+
+      // Each nested step.image carried in the UpdateCommand must not include processedAt.
+      const stepsValue = values[':steps'] as Array<{ image?: Record<string, unknown> }> | undefined
+      expect(stepsValue).toBeDefined()
+      expect(stepsValue).toHaveLength(1)
+      const stepImage = stepsValue![0].image
+      expect(stepImage).toBeDefined()
+      expect(stepImage).not.toHaveProperty('processedAt')
+      expect(stepImage).toEqual({ key: stepAKey, alt: 'a' })
+    })
+  })
 })
