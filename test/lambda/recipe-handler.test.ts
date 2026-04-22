@@ -1978,7 +1978,6 @@ describe('Recipe Lambda handler', () => {
     })
   })
 
-  // ─── PATCH /recipes/{id} — imageStatus REMOVE on swap + processedAt strip ───
   describe('PATCH /recipes/{id} — imageStatus REMOVE on swap and processedAt body strip', () => {
     const oldCoverKey = 'processed/recipes/recipe-uuid-1/cover'
     const newCoverKey = 'processed/recipes/recipe-uuid-1/cover-v2'
@@ -1986,9 +1985,6 @@ describe('Recipe Lambda handler', () => {
     const stepBKey = 'processed/recipes/recipe-uuid-1/step-2'
     const stepCKey = 'processed/recipes/recipe-uuid-1/step-3'
 
-    // AC 1 + AC 5: cover-image swap REMOVEs imageStatus.#<oldCoverKey> in the same
-    // UpdateCommand as SET for updated fields, with ExpressionAttributeNames pointing
-    // at the dropped key.
     it('cover-image swap includes REMOVE imageStatus.#<oldKey> in the same UpdateCommand as SET', async () => {
       const oldItem = publishedRecipeItem({
         id: 'recipe-uuid-1',
@@ -2017,24 +2013,20 @@ describe('Recipe Lambda handler', () => {
       const input = updateCalls[0].args[0].input
       const expr = input.UpdateExpression as string
 
-      // Both SET (for the coverImage field) and REMOVE (for imageStatus entry) live in the same expression.
       expect(expr).toMatch(/\bSET\b/)
       expect(expr).toMatch(/\bREMOVE\b/)
       expect(expr).toMatch(/REMOVE\s+imageStatus\.#/)
 
-      // An ExpressionAttributeName must point at the dropped old cover key.
       const names = input.ExpressionAttributeNames as Record<string, string>
       const nameValues = Object.values(names)
       expect(nameValues).toContain(oldCoverKey)
 
-      // The name placeholder used in REMOVE must resolve to the old cover key.
       const removeMatch = expr.match(/REMOVE\s+imageStatus\.(#[a-zA-Z0-9_]+)/)
       expect(removeMatch).not.toBeNull()
       const removePlaceholder = removeMatch![1]
       expect(names[removePlaceholder]).toBe(oldCoverKey)
     })
 
-    // AC 2: step-image swap REMOVEs only dropped step image keys; preserved keys stay.
     it('step-image swap REMOVEs imageStatus entries for dropped keys only, preserving kept keys', async () => {
       const oldItem = publishedRecipeItem({
         id: 'recipe-uuid-1',
@@ -2061,7 +2053,6 @@ describe('Recipe Lambda handler', () => {
         rawPath: '/recipes/recipe-uuid-1',
         pathParameters: { id: 'recipe-uuid-1' },
         headers: { authorization: `Bearer ${adminToken}` },
-        // Keep stepC, drop stepA and stepB. Cover unchanged.
         body: JSON.stringify({
           steps: [
             { order: 1, text: 'C', image: { key: stepCKey, alt: 'c' } },
@@ -2081,26 +2072,19 @@ describe('Recipe Lambda handler', () => {
 
       expect(expr).toMatch(/\bREMOVE\b/)
 
-      // Collect every imageStatus.#<placeholder> occurrence in the REMOVE segment.
       const removeSegmentMatch = expr.match(/REMOVE\s+(.+)$/)
       expect(removeSegmentMatch).not.toBeNull()
       const removeSegment = removeSegmentMatch![1]
       const placeholderMatches = Array.from(removeSegment.matchAll(/imageStatus\.(#[a-zA-Z0-9_]+)/g))
       const removedKeys = placeholderMatches.map((m) => names[m[1]])
 
-      // Dropped step keys are REMOVEd.
       expect(removedKeys).toContain(stepAKey)
       expect(removedKeys).toContain(stepBKey)
-      // Preserved step key is NOT REMOVEd.
       expect(removedKeys).not.toContain(stepCKey)
-      // Cover is unchanged — its imageStatus entry must be preserved too.
       expect(removedKeys).not.toContain(oldCoverKey)
       expect(removedKeys).toHaveLength(2)
     })
 
-    // AC 3 + AC 4: client-supplied processedAt on nested coverImage and step.image is
-    // stripped before expression building; the outgoing UpdateCommand carries the cleaned
-    // objects and no value contains a processedAt field.
     it('strips client-supplied processedAt from coverImage and step.image before the UpdateCommand runs', async () => {
       const oldItem = publishedRecipeItem({
         id: 'recipe-uuid-1',
@@ -2112,8 +2096,6 @@ describe('Recipe Lambda handler', () => {
       ddbMock.on(GetCommand).resolves({ Item: oldItem })
       ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
 
-      // Same keys — no image swap — so any UpdateExpression values that carry the nested
-      // image objects come straight from the (stripped) request body.
       const event = makeEvent({
         routeKey: 'PATCH /recipes/{id}',
         rawPath: '/recipes/recipe-uuid-1',
@@ -2136,17 +2118,13 @@ describe('Recipe Lambda handler', () => {
       const input = updateCalls[0].args[0].input
       const values = input.ExpressionAttributeValues as Record<string, unknown>
 
-      // AC 4: no ExpressionAttributeValue key exists for a client-supplied processedAt
-      // (i.e. the strip happened on the parsed body before the handler built the expression).
       expect(Object.keys(values)).not.toContain(':processedAt')
 
-      // The nested coverImage value carried in the UpdateCommand must not include processedAt.
       const coverValue = values[':coverImage'] as Record<string, unknown> | undefined
       expect(coverValue).toBeDefined()
       expect(coverValue).not.toHaveProperty('processedAt')
       expect(coverValue).toEqual({ key: oldCoverKey, alt: 'Cover alt' })
 
-      // Each nested step.image carried in the UpdateCommand must not include processedAt.
       const stepsValue = values[':steps'] as Array<{ image?: Record<string, unknown> }> | undefined
       expect(stepsValue).toBeDefined()
       expect(stepsValue).toHaveLength(1)

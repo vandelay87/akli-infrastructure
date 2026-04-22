@@ -327,26 +327,6 @@ function stepImageKeySet(steps: unknown): Set<string> {
   return keys
 }
 
-function deletedImageKeysFromSwap(oldItem: Record<string, unknown>, updates: Record<string, unknown>): string[] {
-  const keysToDelete: string[] = []
-
-  if ('coverImage' in updates) {
-    const oldKey = imageKeyOf(oldItem.coverImage)
-    const newKey = imageKeyOf(updates.coverImage)
-    if (oldKey && oldKey !== newKey) keysToDelete.push(...variantKeysFor(oldKey))
-  }
-
-  if ('steps' in updates) {
-    const oldKeys = stepImageKeySet(oldItem.steps)
-    const newKeys = stepImageKeySet(updates.steps)
-    for (const oldKey of oldKeys) {
-      if (!newKeys.has(oldKey)) keysToDelete.push(...variantKeysFor(oldKey))
-    }
-  }
-
-  return keysToDelete
-}
-
 function droppedImageBaseKeys(oldItem: Record<string, unknown>, updates: Record<string, unknown>): string[] {
   const droppedKeys: string[] = []
 
@@ -458,7 +438,7 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
 
   const atomicOld = updateResult.Attributes as Record<string, unknown>
 
-  const keysToDelete = deletedImageKeysFromSwap(atomicOld, updates)
+  const keysToDelete = droppedImageBaseKeys(atomicOld, updates).flatMap(variantKeysFor)
   if (keysToDelete.length > 0) {
     const deleteResult = await s3Client.send(
       new DeleteObjectsCommand({
