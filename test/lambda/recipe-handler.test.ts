@@ -1284,6 +1284,201 @@ describe('Recipe Lambda handler', () => {
       })
     })
 
+    // ─── Publish readiness validation (issue #109) ────────────────────
+    describe('readiness validation — rejects recipes with unready images', () => {
+      const coverKey = 'processed/recipes/recipe-uuid-1/cover'
+      const step1Key = 'processed/recipes/recipe-uuid-1/step-1'
+      const step2Key = 'processed/recipes/recipe-uuid-1/step-2'
+      const coverTs = 1_745_000_000_001
+      const step1Ts = 1_745_000_000_002
+      const step2Ts = 1_745_000_000_003
+
+      function publishEvent() {
+        return makeEvent({
+          routeKey: 'PATCH /recipes/{id}/publish',
+          rawPath: '/recipes/recipe-uuid-1/publish',
+          pathParameters: { id: 'recipe-uuid-1' },
+          headers: { authorization: `Bearer ${adminToken}` },
+        })
+      }
+
+      // AC 1, AC 6 (cover-unready alone)
+      it('returns 400 with errors.coverImage.processedAt when cover key has no imageStatus entry (steps either absent or fully ready)', async () => {
+        ddbMock.on(GetCommand).resolves({
+          Item: draftRecipeItem({
+            authorId: 'contributor-user-id',
+            coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+            steps: [
+              { order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared' } },
+            ],
+            // cover key missing from imageStatus → unready cover
+            imageStatus: { [step1Key]: step1Ts },
+          }),
+        })
+        // Fallback to ensure a failure-to-reject returns 200 (not 500 from a
+        // missing UpdateCommand mock) so the failure signal is unambiguous.
+        ddbMock.on(UpdateCommand).resolves({
+          Attributes: publishedRecipeItem({ authorId: 'contributor-user-id' }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(400)
+        const body = JSON.parse(result.body as string)
+        expect(body.errors).toBeDefined()
+        expect(body.errors.coverImage).toBeDefined()
+        expect(body.errors.coverImage.processedAt).toBe('Cover image still processing')
+        expect(body.errors).not.toHaveProperty('stepImages')
+      })
+
+      // AC 2, AC 6 (step-unready alone)
+      it('returns 400 with errors.stepImages for each step whose image key has no imageStatus entry (cover ready)', async () => {
+        ddbMock.on(GetCommand).resolves({
+          Item: draftRecipeItem({
+            authorId: 'contributor-user-id',
+            coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+            steps: [
+              { order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared' } },
+              { order: 2, text: 'Simmer.', image: { key: step2Key, alt: 'simmering' } },
+            ],
+            // cover + step 1 ready; step 2 unready
+            imageStatus: { [coverKey]: coverTs, [step1Key]: step1Ts },
+          }),
+        })
+        ddbMock.on(UpdateCommand).resolves({
+          Attributes: publishedRecipeItem({ authorId: 'contributor-user-id' }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(400)
+        const body = JSON.parse(result.body as string)
+        expect(body.errors).toBeDefined()
+        expect(body.errors).not.toHaveProperty('coverImage')
+        expect(body.errors.stepImages).toEqual([
+          { order: 2, processedAt: 'Step image still processing' },
+        ])
+      })
+
+      // AC 1, AC 2, AC 6 (both)
+      it('returns 400 with both errors.coverImage.processedAt and errors.stepImages when cover and step images are unready', async () => {
+        ddbMock.on(GetCommand).resolves({
+          Item: draftRecipeItem({
+            authorId: 'contributor-user-id',
+            coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+            steps: [
+              { order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared' } },
+              { order: 2, text: 'Simmer.', image: { key: step2Key, alt: 'simmering' } },
+            ],
+            imageStatus: {},
+          }),
+        })
+        ddbMock.on(UpdateCommand).resolves({
+          Attributes: publishedRecipeItem({ authorId: 'contributor-user-id' }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(400)
+        const body = JSON.parse(result.body as string)
+        expect(body.errors.coverImage.processedAt).toBe('Cover image still processing')
+        expect(body.errors.stepImages).toEqual([
+          { order: 1, processedAt: 'Step image still processing' },
+          { order: 2, processedAt: 'Step image still processing' },
+        ])
+      })
+
+      // AC 4, AC 6 (readiness + other validation error)
+      it('returns 400 with readiness errors coexisting with other validation errors (e.g. missing title)', async () => {
+        ddbMock.on(GetCommand).resolves({
+          Item: draftRecipeItem({
+            authorId: 'contributor-user-id',
+            title: '', // triggers existing `errors.title`
+            coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+            imageStatus: {}, // cover unready
+          }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(400)
+        const body = JSON.parse(result.body as string)
+        // Existing title validation still fires
+        expect(body.errors).toHaveProperty('title')
+        // Readiness error coexists on the same response
+        expect(body.errors.coverImage).toBeDefined()
+        expect(body.errors.coverImage.processedAt).toBe('Cover image still processing')
+      })
+
+      // AC 5, AC 6 (republish with unready swapped image)
+      it('returns 400 when republishing a currently-published recipe whose cover was swapped to an unready new key', async () => {
+        const oldCoverKey = 'processed/recipes/recipe-uuid-1/cover-old'
+        const newCoverKey = 'processed/recipes/recipe-uuid-1/cover'
+        ddbMock.on(GetCommand).resolves({
+          Item: publishedRecipeItem({
+            authorId: 'contributor-user-id',
+            // Item is currently published — a cover swap landed via autosave PATCH,
+            // and the resizer hasn't yet written the new key's imageStatus entry.
+            coverImage: { key: newCoverKey, alt: 'New cover' },
+            // imageStatus still holds only the OLD key's timestamp
+            imageStatus: { [oldCoverKey]: coverTs },
+          }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(400)
+        const body = JSON.parse(result.body as string)
+        expect(body.errors).toBeDefined()
+        expect(body.errors.coverImage).toBeDefined()
+        expect(body.errors.coverImage.processedAt).toBe('Cover image still processing')
+      })
+
+      // AC 3 (preserve existing errors.steps string shape)
+      it('preserves the existing errors.steps string shape when steps have empty text (does NOT restructure into stepImages)', async () => {
+        ddbMock.on(GetCommand).resolves({
+          Item: draftRecipeItem({
+            authorId: 'contributor-user-id',
+            coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+            steps: [{ order: 1, text: '' }, { order: 2, text: '   ' }],
+            imageStatus: { [coverKey]: coverTs },
+          }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(400)
+        const body = JSON.parse(result.body as string)
+        // existing empty-text error is a string under `steps` — shape unchanged
+        expect(body.errors).toHaveProperty('steps')
+        expect(typeof body.errors.steps).toBe('string')
+        // readiness errors must NOT be smuggled into the `steps` key
+        expect(body.errors.steps).not.toEqual(expect.any(Array))
+      })
+
+      // Positive control: a recipe with every image ready publishes successfully.
+      it('publishes successfully when every image key has a matching imageStatus entry', async () => {
+        ddbMock.on(GetCommand).resolves({
+          Item: draftRecipeItem({
+            authorId: 'contributor-user-id',
+            coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+            steps: [
+              { order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared' } },
+              { order: 2, text: 'Simmer.', image: { key: step2Key, alt: 'simmering' } },
+            ],
+            imageStatus: { [coverKey]: coverTs, [step1Key]: step1Ts, [step2Key]: step2Ts },
+          }),
+        })
+        ddbMock.on(UpdateCommand).resolves({
+          Attributes: publishedRecipeItem({ authorId: 'contributor-user-id' }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(200)
+      })
+    })
+
     it('returns 200 (no-op) when publishing an already-published recipe that still passes validation', async () => {
       ddbMock.on(GetCommand).resolves({
         Item: publishedRecipeItem({ authorId: 'contributor-user-id' }),
