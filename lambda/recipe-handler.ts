@@ -86,29 +86,62 @@ async function findUniqueSlug(baseSlug: string): Promise<string> {
   }
 }
 
+function imageStatusOf(item: Record<string, unknown>): Record<string, number> {
+  return (item.imageStatus as Record<string, number> | undefined) ?? {}
+}
+
+function composeImageProcessedAt<T extends Record<string, unknown>>(item: T): Omit<T, 'imageStatus'> {
+  const imageStatus = imageStatusOf(item)
+  const coverImage = item.coverImage as { key?: string } | undefined
+  const coverProcessedAt = coverImage?.key ? imageStatus[coverImage.key] : undefined
+  const steps = Array.isArray(item.steps)
+    ? item.steps.map((step) => {
+        const img = (step as { image?: { key?: string } }).image
+        if (!img?.key) return step
+        const processedAt = imageStatus[img.key]
+        return processedAt !== undefined ? { ...(step as object), image: { ...img, processedAt } } : step
+      })
+    : item.steps
+  const nextCover = coverImage && coverProcessedAt !== undefined
+    ? { ...coverImage, processedAt: coverProcessedAt }
+    : coverImage
+  const { imageStatus: _stripped, ...rest } = item
+  return { ...rest, coverImage: nextCover, steps } as Omit<T, 'imageStatus'>
+}
+
 function convertRecipeTags(recipe: Record<string, unknown>): Record<string, unknown> {
-  return { ...recipe, tags: tagsToArray(recipe.tags) }
+  return composeImageProcessedAt({ ...recipe, tags: tagsToArray(recipe.tags) })
 }
 
 function lightweightRecipe(recipe: Record<string, unknown>): Record<string, unknown> {
+  const composed = composeImageProcessedAt(recipe)
   return {
-    id: recipe.id,
-    title: recipe.title,
-    slug: recipe.slug,
-    coverImage: recipe.coverImage,
-    tags: tagsToArray(recipe.tags),
-    prepTime: recipe.prepTime,
-    cookTime: recipe.cookTime,
-    servings: recipe.servings,
-    createdAt: recipe.createdAt,
+    id: composed.id,
+    title: composed.title,
+    slug: composed.slug,
+    coverImage: composed.coverImage,
+    tags: tagsToArray(composed.tags),
+    prepTime: composed.prepTime,
+    cookTime: composed.cookTime,
+    servings: composed.servings,
+    createdAt: composed.createdAt,
   }
 }
 
 function lightweightAdminRecipe(recipe: Record<string, unknown>): Record<string, unknown> {
+  const composed = composeImageProcessedAt(recipe)
   return {
-    ...lightweightRecipe(recipe),
-    status: recipe.status,
-    updatedAt: recipe.updatedAt,
+    id: composed.id,
+    title: composed.title,
+    slug: composed.slug,
+    coverImage: composed.coverImage,
+    tags: tagsToArray(composed.tags),
+    prepTime: composed.prepTime,
+    cookTime: composed.cookTime,
+    servings: composed.servings,
+    createdAt: composed.createdAt,
+    status: composed.status,
+    updatedAt: composed.updatedAt,
   }
 }
 
@@ -121,6 +154,8 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         return await handleListPublished()
       case 'GET /recipes/admin':
         return await handleListForAdmin(event)
+      case 'GET /recipes/admin/{id}':
+        return await handleGetAdminRecipeById(event)
       case 'GET /recipes/{slug}':
         return await handleGetBySlug(event)
       case 'GET /me/recipes':
@@ -202,6 +237,19 @@ async function handleListForAdmin(event: APIGatewayProxyEventV2): Promise<APIGat
   return json(200, live.map(lightweightAdminRecipe))
 }
 
+async function handleGetAdminRecipeById(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
+  if (!decodeJwt(event)) return json(401, { error: 'Unauthorised' })
+  if (!isAdmin(event)) return json(403, { error: 'Forbidden' })
+
+  const id = event.pathParameters?.id
+  if (!id) return json(400, { error: 'id is required' })
+
+  const item = await getRecipeById(id)
+  if (!item) return json(404, { error: 'Recipe not found' })
+
+  return json(200, convertRecipeTags(item))
+}
+
 async function handleGetBySlug(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
   const slug = event.pathParameters?.slug
   if (!slug) return json(400, { error: 'slug is required' })
@@ -266,6 +314,7 @@ async function handleCreateDraft(event: APIGatewayProxyEventV2): Promise<APIGate
     intro: '',
     ingredients: [],
     steps: [],
+    imageStatus: {},
     authorId: payload.sub,
     authorName: payload.name ?? payload.email ?? '',
     createdAt: now,
@@ -297,24 +346,42 @@ function stepImageKeySet(steps: unknown): Set<string> {
   return keys
 }
 
-function deletedImageKeysFromSwap(oldItem: Record<string, unknown>, updates: Record<string, unknown>): string[] {
-  const keysToDelete: string[] = []
+function droppedImageBaseKeys(oldItem: Record<string, unknown>, updates: Record<string, unknown>): string[] {
+  const droppedKeys: string[] = []
 
   if ('coverImage' in updates) {
     const oldKey = imageKeyOf(oldItem.coverImage)
     const newKey = imageKeyOf(updates.coverImage)
-    if (oldKey && oldKey !== newKey) keysToDelete.push(...variantKeysFor(oldKey))
+    if (oldKey && oldKey !== newKey) droppedKeys.push(oldKey)
   }
 
   if ('steps' in updates) {
     const oldKeys = stepImageKeySet(oldItem.steps)
     const newKeys = stepImageKeySet(updates.steps)
     for (const oldKey of oldKeys) {
-      if (!newKeys.has(oldKey)) keysToDelete.push(...variantKeysFor(oldKey))
+      if (!newKeys.has(oldKey)) droppedKeys.push(oldKey)
     }
   }
 
-  return keysToDelete
+  return droppedKeys
+}
+
+function stripProcessedAtFromBody(updates: Record<string, unknown>): void {
+  const coverImage = updates.coverImage
+  if (coverImage && typeof coverImage === 'object' && !Array.isArray(coverImage)) {
+    delete (coverImage as Record<string, unknown>).processedAt
+  }
+
+  const steps = updates.steps
+  if (Array.isArray(steps)) {
+    for (const step of steps) {
+      if (!step || typeof step !== 'object') continue
+      const image = (step as { image?: unknown }).image
+      if (image && typeof image === 'object' && !Array.isArray(image)) {
+        delete (image as Record<string, unknown>).processedAt
+      }
+    }
+  }
 }
 
 async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
@@ -338,37 +405,50 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
   delete updates.createdAt
   delete updates.status
   delete updates.ttl
+  stripProcessedAtFromBody(updates)
 
   const now = new Date().toISOString()
-  const expressionParts: string[] = []
+  const setParts: string[] = []
   const expressionNames: Record<string, string> = {}
   const expressionValues: Record<string, unknown> = {}
 
   for (const [key, value] of Object.entries(updates)) {
     const attrName = `#${key}`
     const attrValue = `:${key}`
-    expressionParts.push(`${attrName} = ${attrValue}`)
+    setParts.push(`${attrName} = ${attrValue}`)
     expressionNames[attrName] = key
     expressionValues[attrValue] = value
   }
 
-  expressionParts.push('#updatedAt = :updatedAt')
+  setParts.push('#updatedAt = :updatedAt')
   expressionNames['#updatedAt'] = 'updatedAt'
   expressionValues[':updatedAt'] = now
 
   const isDraft = existing.status === DRAFT
   const refreshedTtl = Math.floor(Date.now() / 1000) + DRAFT_TTL_SECONDS
   if (isDraft) {
-    expressionParts.push('#ttl = :ttl')
+    setParts.push('#ttl = :ttl')
     expressionNames['#ttl'] = 'ttl'
     expressionValues[':ttl'] = refreshedTtl
   }
+
+  const droppedKeys = droppedImageBaseKeys(existing, updates)
+  const removeParts: string[] = []
+  droppedKeys.forEach((droppedKey, index) => {
+    const placeholder = `#droppedImageKey${index}`
+    removeParts.push(`imageStatus.${placeholder}`)
+    expressionNames[placeholder] = droppedKey
+  })
+
+  const updateExpression = removeParts.length > 0
+    ? `SET ${setParts.join(', ')} REMOVE ${removeParts.join(', ')}`
+    : `SET ${setParts.join(', ')}`
 
   const updateResult = await docClient.send(
     new UpdateCommand({
       TableName: TABLE_NAME,
       Key: { id },
-      UpdateExpression: `SET ${expressionParts.join(', ')}`,
+      UpdateExpression: updateExpression,
       ExpressionAttributeNames: expressionNames,
       ExpressionAttributeValues: expressionValues,
       ReturnValues: 'ALL_OLD',
@@ -377,7 +457,7 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
 
   const atomicOld = updateResult.Attributes as Record<string, unknown>
 
-  const keysToDelete = deletedImageKeysFromSwap(atomicOld, updates)
+  const keysToDelete = droppedImageBaseKeys(atomicOld, updates).flatMap(variantKeysFor)
   if (keysToDelete.length > 0) {
     const deleteResult = await s3Client.send(
       new DeleteObjectsCommand({
@@ -403,9 +483,10 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
 interface PublishErrors {
   title?: string
   intro?: string
-  coverImage?: { key?: string; alt?: string }
+  coverImage?: { key?: string; alt?: string; processedAt?: string }
   ingredients?: string
   steps?: string
+  stepImages?: Array<{ order: number; processedAt: string }>
 }
 
 function validatePublishInput(item: Record<string, unknown>): PublishErrors {
@@ -422,7 +503,7 @@ function validatePublishInput(item: Record<string, unknown>): PublishErrors {
   }
 
   const coverImage = item.coverImage as { key?: unknown; alt?: unknown } | undefined
-  const coverErrors: { key?: string; alt?: string } = {}
+  const coverErrors: { key?: string; alt?: string; processedAt?: string } = {}
   const coverKey = coverImage?.key
   if (typeof coverKey !== 'string' || coverKey.trim().length === 0) {
     coverErrors.key = 'coverImage.key is required'
@@ -431,7 +512,14 @@ function validatePublishInput(item: Record<string, unknown>): PublishErrors {
   if (typeof coverAlt !== 'string' || coverAlt.trim().length === 0) {
     coverErrors.alt = 'coverImage.alt is required'
   }
-  if (coverErrors.key || coverErrors.alt) {
+
+  const imageStatus = imageStatusOf(item)
+
+  if (!coverErrors.key && imageStatus[coverKey as string] === undefined) {
+    coverErrors.processedAt = 'Cover image still processing'
+  }
+
+  if (coverErrors.key || coverErrors.alt || coverErrors.processedAt) {
     errors.coverImage = coverErrors
   }
 
@@ -450,6 +538,19 @@ function validatePublishInput(item: Record<string, unknown>): PublishErrors {
     })
     if (hasEmptyStep) {
       errors.steps = 'Every step must have non-empty text'
+    }
+
+    const stepImageErrors: Array<{ order: number; processedAt: string }> = []
+    for (const step of steps) {
+      const typedStep = step as { order?: unknown; image?: { key?: unknown } }
+      const imageKey = typedStep.image?.key
+      if (typeof imageKey !== 'string' || imageKey.trim().length === 0) continue
+      if (imageStatus[imageKey] !== undefined) continue
+      const order = typeof typedStep.order === 'number' ? typedStep.order : 0
+      stepImageErrors.push({ order, processedAt: 'Step image still processing' })
+    }
+    if (stepImageErrors.length > 0) {
+      errors.stepImages = stepImageErrors
     }
   }
 
