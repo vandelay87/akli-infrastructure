@@ -86,8 +86,12 @@ async function findUniqueSlug(baseSlug: string): Promise<string> {
   }
 }
 
+function imageStatusOf(item: Record<string, unknown>): Record<string, number> {
+  return (item.imageStatus as Record<string, number> | undefined) ?? {}
+}
+
 function composeImageProcessedAt<T extends Record<string, unknown>>(item: T): Omit<T, 'imageStatus'> {
-  const imageStatus = (item.imageStatus as Record<string, number> | undefined) ?? {}
+  const imageStatus = imageStatusOf(item)
   const coverImage = item.coverImage as { key?: string } | undefined
   const coverProcessedAt = coverImage?.key ? imageStatus[coverImage.key] : undefined
   const steps = Array.isArray(item.steps)
@@ -464,9 +468,10 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
 interface PublishErrors {
   title?: string
   intro?: string
-  coverImage?: { key?: string; alt?: string }
+  coverImage?: { key?: string; alt?: string; processedAt?: string }
   ingredients?: string
   steps?: string
+  stepImages?: Array<{ order: number; processedAt: string }>
 }
 
 function validatePublishInput(item: Record<string, unknown>): PublishErrors {
@@ -483,7 +488,7 @@ function validatePublishInput(item: Record<string, unknown>): PublishErrors {
   }
 
   const coverImage = item.coverImage as { key?: unknown; alt?: unknown } | undefined
-  const coverErrors: { key?: string; alt?: string } = {}
+  const coverErrors: { key?: string; alt?: string; processedAt?: string } = {}
   const coverKey = coverImage?.key
   if (typeof coverKey !== 'string' || coverKey.trim().length === 0) {
     coverErrors.key = 'coverImage.key is required'
@@ -492,7 +497,14 @@ function validatePublishInput(item: Record<string, unknown>): PublishErrors {
   if (typeof coverAlt !== 'string' || coverAlt.trim().length === 0) {
     coverErrors.alt = 'coverImage.alt is required'
   }
-  if (coverErrors.key || coverErrors.alt) {
+
+  const imageStatus = imageStatusOf(item)
+
+  if (!coverErrors.key && imageStatus[coverKey as string] === undefined) {
+    coverErrors.processedAt = 'Cover image still processing'
+  }
+
+  if (coverErrors.key || coverErrors.alt || coverErrors.processedAt) {
     errors.coverImage = coverErrors
   }
 
@@ -511,6 +523,19 @@ function validatePublishInput(item: Record<string, unknown>): PublishErrors {
     })
     if (hasEmptyStep) {
       errors.steps = 'Every step must have non-empty text'
+    }
+
+    const stepImageErrors: Array<{ order: number; processedAt: string }> = []
+    for (const step of steps) {
+      const typedStep = step as { order?: unknown; image?: { key?: unknown } }
+      const imageKey = typedStep.image?.key
+      if (typeof imageKey !== 'string' || imageKey.trim().length === 0) continue
+      if (imageStatus[imageKey] !== undefined) continue
+      const order = typeof typedStep.order === 'number' ? typedStep.order : 0
+      stepImageErrors.push({ order, processedAt: 'Step image still processing' })
+    }
+    if (stepImageErrors.length > 0) {
+      errors.stepImages = stepImageErrors
     }
   }
 
