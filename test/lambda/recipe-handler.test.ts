@@ -1130,7 +1130,10 @@ describe('Recipe Lambda handler', () => {
   describe('PATCH /recipes/{id}/publish — publish recipe (admin-only)', () => {
     it('returns 200 and sets status to published when admin publishes a valid draft', async () => {
       ddbMock.on(GetCommand).resolves({
-        Item: draftRecipeItem({ authorId: 'contributor-user-id' }),
+        Item: draftRecipeItem({
+          authorId: 'contributor-user-id',
+          imageStatus: { 'recipes/images/recipe-uuid-1/cover': 1_745_000_000_000 },
+        }),
       })
       ddbMock.on(UpdateCommand).resolves({
         Attributes: publishedRecipeItem({ authorId: 'contributor-user-id' }),
@@ -1152,7 +1155,10 @@ describe('Recipe Lambda handler', () => {
 
     it('removes ttl via UpdateExpression REMOVE (not SET ttl = null) on publish', async () => {
       ddbMock.on(GetCommand).resolves({
-        Item: draftRecipeItem({ authorId: 'contributor-user-id' }),
+        Item: draftRecipeItem({
+          authorId: 'contributor-user-id',
+          imageStatus: { 'recipes/images/recipe-uuid-1/cover': 1_745_000_000_000 },
+        }),
       })
       ddbMock.on(UpdateCommand).resolves({
         Attributes: publishedRecipeItem({ authorId: 'contributor-user-id' }),
@@ -1481,7 +1487,10 @@ describe('Recipe Lambda handler', () => {
 
     it('returns 200 (no-op) when publishing an already-published recipe that still passes validation', async () => {
       ddbMock.on(GetCommand).resolves({
-        Item: publishedRecipeItem({ authorId: 'contributor-user-id' }),
+        Item: publishedRecipeItem({
+          authorId: 'contributor-user-id',
+          imageStatus: { 'recipes/images/recipe-uuid-1/cover': 1_745_000_000_000 },
+        }),
       })
       ddbMock.on(UpdateCommand).resolves({
         Attributes: publishedRecipeItem({ authorId: 'contributor-user-id' }),
