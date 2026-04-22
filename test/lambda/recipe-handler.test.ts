@@ -1648,4 +1648,333 @@ describe('Recipe Lambda handler', () => {
       expect(body).toHaveProperty('error')
     })
   })
+
+  // ─── Response composition — processedAt + imageStatus stripping ─────
+  describe('Response composition — processedAt + imageStatus stripping', () => {
+    // A published recipe whose cover image and one step image both have matching
+    // imageStatus entries, plus one step image without a matching entry.
+    const coverKey = 'processed/recipes/recipe-uuid-1/cover'
+    const step1Key = 'processed/recipes/recipe-uuid-1/step-1'
+    const step2Key = 'processed/recipes/recipe-uuid-1/step-2'
+    const coverTs = 1_745_000_000_001
+    const step1Ts = 1_745_000_000_002
+
+    function recipeWithImageStatus(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+        steps: [
+          { order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared lamb' } },
+          { order: 2, text: 'Simmer.', image: { key: step2Key, alt: 'simmering' } },
+        ],
+        imageStatus: { [coverKey]: coverTs, [step1Key]: step1Ts },
+        ...overrides,
+      })
+    }
+
+    // AC 1: GET /recipes composes processedAt onto cover image.
+    it('GET /recipes composes processedAt onto cover image from imageStatus', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [recipeWithImageStatus()] })
+
+      const result = await handler(makeEvent({ routeKey: 'GET /recipes', rawPath: '/recipes' }))
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body[0].coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
+    })
+
+    // AC 2: GET /recipes/{slug} composes onto cover AND each step.image.
+    it('GET /recipes/{slug} composes processedAt onto coverImage and each step.image', async () => {
+      ddbMock.on(ScanCommand).resolves({ Items: [recipeWithImageStatus()] })
+
+      const result = await handler(makeEvent({
+        routeKey: 'GET /recipes/{slug}',
+        rawPath: '/recipes/slow-cooked-lamb-ragu',
+        pathParameters: { slug: 'slow-cooked-lamb-ragu' },
+      }))
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body.coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
+      // step 1 has a matching imageStatus entry → processedAt composed
+      expect(body.steps[0].image).toEqual({ key: step1Key, alt: 'seared lamb', processedAt: step1Ts })
+      // step 2 has no matching entry → processedAt absent (not null, not undefined-serialised)
+      expect(body.steps[1].image).toEqual({ key: step2Key, alt: 'simmering' })
+      expect(body.steps[1].image).not.toHaveProperty('processedAt')
+    })
+
+    // AC 3: GET /me/recipes composes processedAt on returned items.
+    it('GET /me/recipes composes processedAt on returned items', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [recipeWithImageStatus({ authorId: 'contributor-user-id' })] })
+
+      const result = await handler(makeEvent({
+        routeKey: 'GET /me/recipes',
+        rawPath: '/me/recipes',
+        headers: { authorization: `Bearer ${contributorToken}` },
+      }))
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body).toHaveLength(1)
+      expect(body[0].coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
+    })
+
+    // AC 4: GET /recipes/admin composes processedAt on returned items.
+    it('GET /recipes/admin composes processedAt on returned items', async () => {
+      ddbMock.on(QueryCommand)
+        .resolvesOnce({ Items: [recipeWithImageStatus()] })
+        .resolvesOnce({ Items: [] })
+
+      const result = await handler(makeEvent({
+        routeKey: 'GET /recipes/admin',
+        rawPath: '/recipes/admin',
+        headers: { authorization: `Bearer ${adminToken}` },
+      }))
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body).toHaveLength(1)
+      expect(body[0].coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
+    })
+
+    // AC 5: PATCH /recipes/{id} response composes processedAt.
+    it('PATCH /recipes/{id} response composes processedAt onto the returned recipe', async () => {
+      const oldItem = recipeWithImageStatus({ authorId: 'contributor-user-id' })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+
+      const result = await handler(makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ title: 'Updated Title' }),
+      }))
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body.coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
+      expect(body.steps[0].image).toEqual({ key: step1Key, alt: 'seared lamb', processedAt: step1Ts })
+    })
+
+    // AC 6: PATCH /recipes/{id}/publish response composes processedAt.
+    it('PATCH /recipes/{id}/publish response composes processedAt onto the returned recipe', async () => {
+      // Draft we read for validation passes all existing checks AND has readiness on every image.
+      const fullyReadyDraft = recipeWithImageStatus({
+        status: 'draft',
+        authorId: 'contributor-user-id',
+        steps: [
+          { order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared lamb' } },
+        ],
+        imageStatus: { [coverKey]: coverTs, [step1Key]: step1Ts },
+      })
+      ddbMock.on(GetCommand).resolves({ Item: fullyReadyDraft })
+      ddbMock.on(UpdateCommand).resolves({
+        Attributes: { ...fullyReadyDraft, status: 'published' },
+      })
+
+      const result = await handler(makeEvent({
+        routeKey: 'PATCH /recipes/{id}/publish',
+        rawPath: '/recipes/recipe-uuid-1/publish',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+      }))
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body.coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
+      expect(body.steps[0].image).toEqual({ key: step1Key, alt: 'seared lamb', processedAt: step1Ts })
+    })
+
+    // AC 7: PATCH /recipes/{id}/unpublish response composes processedAt.
+    it('PATCH /recipes/{id}/unpublish response composes processedAt onto the returned recipe', async () => {
+      const oldItem = recipeWithImageStatus({ authorId: 'contributor-user-id' })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({
+        Attributes: { ...oldItem, status: 'draft' },
+      })
+
+      const result = await handler(makeEvent({
+        routeKey: 'PATCH /recipes/{id}/unpublish',
+        rawPath: '/recipes/recipe-uuid-1/unpublish',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+      }))
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body.coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
+    })
+
+    // AC 8: imageStatus is stripped from every response body.
+    describe('imageStatus is stripped from every response body', () => {
+      it('GET /recipes strips imageStatus', async () => {
+        ddbMock.on(QueryCommand).resolves({ Items: [recipeWithImageStatus()] })
+
+        const result = await handler(makeEvent({ routeKey: 'GET /recipes', rawPath: '/recipes' }))
+
+        expect(result.statusCode).toBe(200)
+        expect(result.body).not.toContain('imageStatus')
+        const body = JSON.parse(result.body as string)
+        expect(body[0]).not.toHaveProperty('imageStatus')
+      })
+
+      it('GET /recipes/{slug} strips imageStatus', async () => {
+        ddbMock.on(ScanCommand).resolves({ Items: [recipeWithImageStatus()] })
+
+        const result = await handler(makeEvent({
+          routeKey: 'GET /recipes/{slug}',
+          rawPath: '/recipes/slow-cooked-lamb-ragu',
+          pathParameters: { slug: 'slow-cooked-lamb-ragu' },
+        }))
+
+        expect(result.statusCode).toBe(200)
+        expect(result.body).not.toContain('imageStatus')
+        const body = JSON.parse(result.body as string)
+        expect(body).not.toHaveProperty('imageStatus')
+      })
+
+      it('GET /me/recipes strips imageStatus', async () => {
+        ddbMock.on(QueryCommand).resolves({ Items: [recipeWithImageStatus({ authorId: 'contributor-user-id' })] })
+
+        const result = await handler(makeEvent({
+          routeKey: 'GET /me/recipes',
+          rawPath: '/me/recipes',
+          headers: { authorization: `Bearer ${contributorToken}` },
+        }))
+
+        expect(result.statusCode).toBe(200)
+        expect(result.body).not.toContain('imageStatus')
+        const body = JSON.parse(result.body as string)
+        expect(body[0]).not.toHaveProperty('imageStatus')
+      })
+
+      it('GET /recipes/admin strips imageStatus', async () => {
+        ddbMock.on(QueryCommand)
+          .resolvesOnce({ Items: [recipeWithImageStatus()] })
+          .resolvesOnce({ Items: [] })
+
+        const result = await handler(makeEvent({
+          routeKey: 'GET /recipes/admin',
+          rawPath: '/recipes/admin',
+          headers: { authorization: `Bearer ${adminToken}` },
+        }))
+
+        expect(result.statusCode).toBe(200)
+        expect(result.body).not.toContain('imageStatus')
+        const body = JSON.parse(result.body as string)
+        expect(body[0]).not.toHaveProperty('imageStatus')
+      })
+
+      it('PATCH /recipes/{id} strips imageStatus', async () => {
+        const oldItem = recipeWithImageStatus({ authorId: 'contributor-user-id' })
+        ddbMock.on(GetCommand).resolves({ Item: oldItem })
+        ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+
+        const result = await handler(makeEvent({
+          routeKey: 'PATCH /recipes/{id}',
+          rawPath: '/recipes/recipe-uuid-1',
+          pathParameters: { id: 'recipe-uuid-1' },
+          headers: { authorization: `Bearer ${adminToken}` },
+          body: JSON.stringify({ title: 'Updated Title' }),
+        }))
+
+        expect(result.statusCode).toBe(200)
+        expect(result.body).not.toContain('imageStatus')
+        const body = JSON.parse(result.body as string)
+        expect(body).not.toHaveProperty('imageStatus')
+      })
+
+      it('PATCH /recipes/{id}/publish strips imageStatus', async () => {
+        const fullyReadyDraft = recipeWithImageStatus({
+          status: 'draft',
+          authorId: 'contributor-user-id',
+          steps: [{ order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared lamb' } }],
+          imageStatus: { [coverKey]: coverTs, [step1Key]: step1Ts },
+        })
+        ddbMock.on(GetCommand).resolves({ Item: fullyReadyDraft })
+        ddbMock.on(UpdateCommand).resolves({ Attributes: { ...fullyReadyDraft, status: 'published' } })
+
+        const result = await handler(makeEvent({
+          routeKey: 'PATCH /recipes/{id}/publish',
+          rawPath: '/recipes/recipe-uuid-1/publish',
+          pathParameters: { id: 'recipe-uuid-1' },
+          headers: { authorization: `Bearer ${adminToken}` },
+        }))
+
+        expect(result.statusCode).toBe(200)
+        expect(result.body).not.toContain('imageStatus')
+        const body = JSON.parse(result.body as string)
+        expect(body).not.toHaveProperty('imageStatus')
+      })
+
+      it('PATCH /recipes/{id}/unpublish strips imageStatus', async () => {
+        const oldItem = recipeWithImageStatus({ authorId: 'contributor-user-id' })
+        ddbMock.on(GetCommand).resolves({ Item: oldItem })
+        ddbMock.on(UpdateCommand).resolves({ Attributes: { ...oldItem, status: 'draft' } })
+
+        const result = await handler(makeEvent({
+          routeKey: 'PATCH /recipes/{id}/unpublish',
+          rawPath: '/recipes/recipe-uuid-1/unpublish',
+          pathParameters: { id: 'recipe-uuid-1' },
+          headers: { authorization: `Bearer ${adminToken}` },
+        }))
+
+        expect(result.statusCode).toBe(200)
+        expect(result.body).not.toContain('imageStatus')
+        const body = JSON.parse(result.body as string)
+        expect(body).not.toHaveProperty('imageStatus')
+      })
+    })
+
+    // AC 9: No processedAt added when imageStatus entry missing.
+    it('GET /recipes/{slug} omits processedAt when imageStatus has no entry for the cover key', async () => {
+      const item = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        coverImage: { key: coverKey, alt: 'no-entry alt' },
+        steps: [{ order: 1, text: 'step', image: { key: step1Key, alt: 'step alt' } }],
+        // imageStatus is an empty map — no entries for either key.
+        imageStatus: {},
+      })
+      ddbMock.on(ScanCommand).resolves({ Items: [item] })
+
+      const result = await handler(makeEvent({
+        routeKey: 'GET /recipes/{slug}',
+        rawPath: '/recipes/slow-cooked-lamb-ragu',
+        pathParameters: { slug: 'slow-cooked-lamb-ragu' },
+      }))
+
+      expect(result.statusCode).toBe(200)
+      // Literal check: the serialised body must not contain a processedAt key at all
+      // (guards against `processedAt: null` or `processedAt: undefined` slip-through).
+      expect(result.body).not.toContain('processedAt')
+      const body = JSON.parse(result.body as string)
+      expect(body.coverImage).not.toHaveProperty('processedAt')
+      expect(body.coverImage).toEqual({ key: coverKey, alt: 'no-entry alt' })
+      expect(body.steps[0].image).not.toHaveProperty('processedAt')
+      expect(body.steps[0].image).toEqual({ key: step1Key, alt: 'step alt' })
+    })
+
+    it('preserves processedAt: 0 when imageStatus records a falsy-but-valid timestamp', async () => {
+      // Guards against a future `if (processedAt)` truthiness regression — the code
+      // must keep the `!== undefined` check so 0 is treated as "ready", not "missing".
+      const item = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        coverImage: { key: coverKey, alt: 'cover alt' },
+        steps: [],
+        imageStatus: { [coverKey]: 0 },
+      })
+      ddbMock.on(ScanCommand).resolves({ Items: [item] })
+
+      const result = await handler(makeEvent({
+        routeKey: 'GET /recipes/{slug}',
+        rawPath: '/recipes/slow-cooked-lamb-ragu',
+        pathParameters: { slug: 'slow-cooked-lamb-ragu' },
+      }))
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body.coverImage).toEqual({ key: coverKey, alt: 'cover alt', processedAt: 0 })
+    })
+  })
 })

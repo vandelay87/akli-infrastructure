@@ -86,29 +86,58 @@ async function findUniqueSlug(baseSlug: string): Promise<string> {
   }
 }
 
+function composeImageProcessedAt<T extends Record<string, unknown>>(item: T): Omit<T, 'imageStatus'> {
+  const imageStatus = (item.imageStatus as Record<string, number> | undefined) ?? {}
+  const coverImage = item.coverImage as { key?: string } | undefined
+  const coverProcessedAt = coverImage?.key ? imageStatus[coverImage.key] : undefined
+  const steps = Array.isArray(item.steps)
+    ? item.steps.map((step) => {
+        const img = (step as { image?: { key?: string } }).image
+        if (!img?.key) return step
+        const processedAt = imageStatus[img.key]
+        return processedAt !== undefined ? { ...(step as object), image: { ...img, processedAt } } : step
+      })
+    : item.steps
+  const nextCover = coverImage && coverProcessedAt !== undefined
+    ? { ...coverImage, processedAt: coverProcessedAt }
+    : coverImage
+  const { imageStatus: _stripped, ...rest } = item
+  return { ...rest, coverImage: nextCover, steps } as Omit<T, 'imageStatus'>
+}
+
 function convertRecipeTags(recipe: Record<string, unknown>): Record<string, unknown> {
-  return { ...recipe, tags: tagsToArray(recipe.tags) }
+  return composeImageProcessedAt({ ...recipe, tags: tagsToArray(recipe.tags) })
 }
 
 function lightweightRecipe(recipe: Record<string, unknown>): Record<string, unknown> {
+  const composed = composeImageProcessedAt(recipe)
   return {
-    id: recipe.id,
-    title: recipe.title,
-    slug: recipe.slug,
-    coverImage: recipe.coverImage,
-    tags: tagsToArray(recipe.tags),
-    prepTime: recipe.prepTime,
-    cookTime: recipe.cookTime,
-    servings: recipe.servings,
-    createdAt: recipe.createdAt,
+    id: composed.id,
+    title: composed.title,
+    slug: composed.slug,
+    coverImage: composed.coverImage,
+    tags: tagsToArray(composed.tags),
+    prepTime: composed.prepTime,
+    cookTime: composed.cookTime,
+    servings: composed.servings,
+    createdAt: composed.createdAt,
   }
 }
 
 function lightweightAdminRecipe(recipe: Record<string, unknown>): Record<string, unknown> {
+  const composed = composeImageProcessedAt(recipe)
   return {
-    ...lightweightRecipe(recipe),
-    status: recipe.status,
-    updatedAt: recipe.updatedAt,
+    id: composed.id,
+    title: composed.title,
+    slug: composed.slug,
+    coverImage: composed.coverImage,
+    tags: tagsToArray(composed.tags),
+    prepTime: composed.prepTime,
+    cookTime: composed.cookTime,
+    servings: composed.servings,
+    createdAt: composed.createdAt,
+    status: composed.status,
+    updatedAt: composed.updatedAt,
   }
 }
 
