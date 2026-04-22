@@ -317,6 +317,69 @@ describe('RecipeStack', () => {
         RouteKey: 'POST /recipes',
       }, 0)
     })
+
+    // ─── GET /recipes/admin/{id} — admin single-recipe route ──────────
+    describe('GET /recipes/admin/{id} — admin single recipe', () => {
+      it('has a GET /recipes/admin/{id} route with AuthorizationType: JWT', () => {
+        template.hasResourceProperties('AWS::ApiGatewayV2::Route', Match.objectLike({
+          RouteKey: 'GET /recipes/admin/{id}',
+          AuthorizationType: 'JWT',
+          AuthorizerId: Match.anyValue(),
+        }))
+      })
+
+      it('points the GET /recipes/admin/{id} route at the recipe handler integration', () => {
+        // The Target is a CloudFormation Fn::Join of "integrations/" + the integration ref.
+        // We match the structure loosely so the test only breaks if the integration wiring
+        // itself changes — not on unrelated template-shape shifts.
+        const routes = template.findResources('AWS::ApiGatewayV2::Route', {
+          Properties: Match.objectLike({ RouteKey: 'GET /recipes/admin/{id}' }),
+        })
+        const routeEntries = Object.values(routes)
+        expect(routeEntries).toHaveLength(1)
+        const target = (routeEntries[0] as { Properties: { Target: unknown } }).Properties.Target
+        // The target string embeds the recipe integration's logical id — assert it resolves
+        // to the RecipeHandlerIntegration, not the RecipeImageHandlerIntegration.
+        const serialised = JSON.stringify(target)
+        expect(serialised).toMatch(/RecipeHandlerIntegration/)
+        expect(serialised).not.toMatch(/RecipeImageHandlerIntegration/)
+      })
+
+      it('does not add a new AWS::Lambda::Permission resource for the new route', () => {
+        // The existing recipeHandler.addPermission('ApiGatewayInvoke', ...) uses a wildcard
+        // sourceArn ending in "/*/*", which covers every route on the API. Adding a new
+        // route must NOT introduce another Lambda::Permission resource.
+        //
+        // Baseline permissions today (3 total):
+        //   1. RecipeImagesBucket → ImageResizer (S3 notification invocation)
+        //   2. RecipeHandler → ApiGateway invoke (sourceArn ".../*/*")
+        //   3. RecipeImageHandler → ApiGateway invoke (sourceArn ".../*/*")
+        //
+        // If the implementation agent adds a new Permission for this route, this count
+        // ticks to 4 and this assertion fails.
+        const permissions = template.findResources('AWS::Lambda::Permission')
+        expect(Object.keys(permissions)).toHaveLength(3)
+      })
+
+      it('the existing RecipeHandler ApiGateway permission uses a wildcard sourceArn ending in /*/*', () => {
+        // Defence in depth for AC 6: even if someone changed the permission count for an
+        // unrelated reason, the wildcard sourceArn on the recipe handler is what makes a
+        // per-route Permission unnecessary.
+        template.hasResourceProperties('AWS::Lambda::Permission', Match.objectLike({
+          Action: 'lambda:InvokeFunction',
+          Principal: 'apigateway.amazonaws.com',
+          FunctionName: Match.objectLike({
+            'Fn::GetAtt': Match.arrayWith([Match.stringLikeRegexp('^RecipeHandler.*')]),
+          }),
+          SourceArn: {
+            'Fn::Join': [
+              '',
+              Match.arrayWith(['/*/*']),
+            ],
+          },
+        }))
+      })
+    })
   })
 
   describe('IAM — recipe handler role', () => {
