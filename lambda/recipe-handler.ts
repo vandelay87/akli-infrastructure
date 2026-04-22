@@ -327,24 +327,42 @@ function stepImageKeySet(steps: unknown): Set<string> {
   return keys
 }
 
-function deletedImageKeysFromSwap(oldItem: Record<string, unknown>, updates: Record<string, unknown>): string[] {
-  const keysToDelete: string[] = []
+function droppedImageBaseKeys(oldItem: Record<string, unknown>, updates: Record<string, unknown>): string[] {
+  const droppedKeys: string[] = []
 
   if ('coverImage' in updates) {
     const oldKey = imageKeyOf(oldItem.coverImage)
     const newKey = imageKeyOf(updates.coverImage)
-    if (oldKey && oldKey !== newKey) keysToDelete.push(...variantKeysFor(oldKey))
+    if (oldKey && oldKey !== newKey) droppedKeys.push(oldKey)
   }
 
   if ('steps' in updates) {
     const oldKeys = stepImageKeySet(oldItem.steps)
     const newKeys = stepImageKeySet(updates.steps)
     for (const oldKey of oldKeys) {
-      if (!newKeys.has(oldKey)) keysToDelete.push(...variantKeysFor(oldKey))
+      if (!newKeys.has(oldKey)) droppedKeys.push(oldKey)
     }
   }
 
-  return keysToDelete
+  return droppedKeys
+}
+
+function stripProcessedAtFromBody(updates: Record<string, unknown>): void {
+  const coverImage = updates.coverImage
+  if (coverImage && typeof coverImage === 'object' && !Array.isArray(coverImage)) {
+    delete (coverImage as Record<string, unknown>).processedAt
+  }
+
+  const steps = updates.steps
+  if (Array.isArray(steps)) {
+    for (const step of steps) {
+      if (!step || typeof step !== 'object') continue
+      const image = (step as { image?: unknown }).image
+      if (image && typeof image === 'object' && !Array.isArray(image)) {
+        delete (image as Record<string, unknown>).processedAt
+      }
+    }
+  }
 }
 
 async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
@@ -368,37 +386,50 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
   delete updates.createdAt
   delete updates.status
   delete updates.ttl
+  stripProcessedAtFromBody(updates)
 
   const now = new Date().toISOString()
-  const expressionParts: string[] = []
+  const setParts: string[] = []
   const expressionNames: Record<string, string> = {}
   const expressionValues: Record<string, unknown> = {}
 
   for (const [key, value] of Object.entries(updates)) {
     const attrName = `#${key}`
     const attrValue = `:${key}`
-    expressionParts.push(`${attrName} = ${attrValue}`)
+    setParts.push(`${attrName} = ${attrValue}`)
     expressionNames[attrName] = key
     expressionValues[attrValue] = value
   }
 
-  expressionParts.push('#updatedAt = :updatedAt')
+  setParts.push('#updatedAt = :updatedAt')
   expressionNames['#updatedAt'] = 'updatedAt'
   expressionValues[':updatedAt'] = now
 
   const isDraft = existing.status === DRAFT
   const refreshedTtl = Math.floor(Date.now() / 1000) + DRAFT_TTL_SECONDS
   if (isDraft) {
-    expressionParts.push('#ttl = :ttl')
+    setParts.push('#ttl = :ttl')
     expressionNames['#ttl'] = 'ttl'
     expressionValues[':ttl'] = refreshedTtl
   }
+
+  const droppedKeys = droppedImageBaseKeys(existing, updates)
+  const removeParts: string[] = []
+  droppedKeys.forEach((droppedKey, index) => {
+    const placeholder = `#droppedImageKey${index}`
+    removeParts.push(`imageStatus.${placeholder}`)
+    expressionNames[placeholder] = droppedKey
+  })
+
+  const updateExpression = removeParts.length > 0
+    ? `SET ${setParts.join(', ')} REMOVE ${removeParts.join(', ')}`
+    : `SET ${setParts.join(', ')}`
 
   const updateResult = await docClient.send(
     new UpdateCommand({
       TableName: TABLE_NAME,
       Key: { id },
-      UpdateExpression: `SET ${expressionParts.join(', ')}`,
+      UpdateExpression: updateExpression,
       ExpressionAttributeNames: expressionNames,
       ExpressionAttributeValues: expressionValues,
       ReturnValues: 'ALL_OLD',
@@ -407,7 +438,7 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
 
   const atomicOld = updateResult.Attributes as Record<string, unknown>
 
-  const keysToDelete = deletedImageKeysFromSwap(atomicOld, updates)
+  const keysToDelete = droppedImageBaseKeys(atomicOld, updates).flatMap(variantKeysFor)
   if (keysToDelete.length > 0) {
     const deleteResult = await s3Client.send(
       new DeleteObjectsCommand({
