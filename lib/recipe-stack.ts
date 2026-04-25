@@ -129,6 +129,24 @@ export class RecipeStack extends Stack {
         IMAGE_BUCKET_NAME: imageBucket.bucketName,
         TABLE_NAME: table.tableName,
       },
+      // sharp ships native binaries — bundle in Docker so the linux-x64 binary
+      // is installed instead of the host's (e.g. darwin) binary. beforeInstall:
+      // (1) the pnpm baked into CDK's bundling image hits a URLSearchParams bug
+      // on Node 22, so install a current pnpm to a writable prefix; (2) pnpm 10
+      // blocks install scripts by default — allowlist sharp so its postinstall
+      // can fetch the linux-x64 binary.
+      bundling: {
+        nodeModules: ['sharp'],
+        forceDockerBundling: true,
+        commandHooks: {
+          beforeBundling: () => [],
+          afterBundling: () => [],
+          beforeInstall: (_inputDir, outputDir) => [
+            'export HOME=/tmp && mkdir -p /tmp/pnpm-bin && npm install --prefix /tmp/pnpm-bin pnpm@10.33.2 && export PATH=/tmp/pnpm-bin/node_modules/.bin:$PATH',
+            `echo 'only-built-dependencies[]=sharp' > ${outputDir}/.npmrc`,
+          ],
+        },
+      },
     })
 
     imageBucket.grantReadWrite(imageResizer)
