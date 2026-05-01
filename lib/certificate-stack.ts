@@ -1,5 +1,5 @@
 import type { StackProps } from 'aws-cdk-lib';
-import { CfnOutput, Stack } from 'aws-cdk-lib'
+import { Stack } from 'aws-cdk-lib'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import type { Construct } from 'constructs'
@@ -40,16 +40,10 @@ export class CertificateStack extends Stack {
       validation: certificatemanager.CertificateValidation.fromDns(this.hostedZone),
     })
 
-    // Dedicated certificate for images.akli.dev — separate cert avoids replacing SiteCert (which would
-    // break cross-region SSM exports consumed by AkliInfrastructureStack). See images-cdn-phase-1 PRD.
+    // Separate certificate for images.akli.dev — avoids replacing the site cert which would break cross-stack exports
     this.imagesCertificate = new certificatemanager.Certificate(this, 'ImagesCert', {
       domainName: IMAGES_DOMAIN_NAME,
       validation: certificatemanager.CertificateValidation.fromDns(this.hostedZone),
-    })
-
-    new CfnOutput(this, 'ImagesCertArn', {
-      value: this.imagesCertificate.certificateArn,
-      description: 'ACM certificate ARN for images.akli.dev (consumed cross-region by ImagesStack)',
     })
   }
 }

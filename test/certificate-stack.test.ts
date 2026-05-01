@@ -11,26 +11,17 @@ function createStack(): CertificateStack {
   })
 }
 
-function createTestStack(): Template {
-  return Template.fromStack(createStack())
-}
-
 describe('CertificateStack', () => {
+  let stack: CertificateStack
   let template: Template
 
   beforeAll(() => {
-    template = createTestStack()
+    stack = createStack()
+    template = Template.fromStack(stack)
   })
 
   describe('Site certificate', () => {
-    it('creates a certificate for akli.dev', () => {
-      template.hasResourceProperties('AWS::CertificateManager::Certificate', {
-        DomainName: 'akli.dev',
-        SubjectAlternativeNames: Match.arrayWith(['www.akli.dev']),
-      })
-    })
-
-    it('does not change the SiteCert domain or subject alternative names (regression guard)', () => {
+    it('creates a certificate for akli.dev with exactly www.akli.dev as SAN', () => {
       template.hasResourceProperties('AWS::CertificateManager::Certificate', {
         DomainName: 'akli.dev',
         SubjectAlternativeNames: ['www.akli.dev'],
@@ -56,15 +47,6 @@ describe('CertificateStack', () => {
         }),
       )
     })
-
-    it('exports an ImagesCertArn CloudFormation output referencing the new certificate', () => {
-      template.hasOutput(
-        'ImagesCertArn',
-        Match.objectLike({
-          Value: Match.objectLike({ Ref: Match.stringLikeRegexp('^ImagesCert') }),
-        }),
-      )
-    })
   })
 
   describe('Certificate count', () => {
@@ -75,7 +57,6 @@ describe('CertificateStack', () => {
 
   describe('Cross-region references', () => {
     it('enables crossRegionReferences on the stack instance', () => {
-      const stack = createStack()
       // CDK exposes the resolved value as `_crossRegionReferences` on the Stack instance
       // (the public `crossRegionReferences` is on StackProps, the input).
       expect(stack._crossRegionReferences).toBe(true)
