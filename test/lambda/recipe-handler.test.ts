@@ -2313,13 +2313,7 @@ describe('Recipe Lambda handler', () => {
       expect(body.coverImage).toEqual({ key: coverKey, alt: 'cover alt', processedAt: 0 })
     })
 
-    // Regression guard for the prefix flip from `processed/` to `recipes/`.
-    // After the prefix change, recipes whose imageStatus map still carries a
-    // stale `processed/recipes/...`-keyed entry (left over from before the
-    // change) must NOT be treated as "ready". The new coverImage.key uses the
-    // `recipes/...` shape; the stale entry's key does not match, so processedAt
-    // must be omitted (otherwise the consumer would render a broken URL).
-    it('omits processedAt when imageStatus carries only stale "processed/recipes/..." keys (prefix-flip regression)', async () => {
+    it('omits processedAt when imageStatus keys do not match coverImage.key', async () => {
       const newCoverKey = 'recipes/recipe-uuid-1/cover'
       const staleCoverKey = 'processed/recipes/recipe-uuid-1/cover'
       const item = publishedRecipeItem({
