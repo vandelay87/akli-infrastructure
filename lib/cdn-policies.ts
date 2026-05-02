@@ -2,17 +2,14 @@ import { Duration } from 'aws-cdk-lib'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
 import type { Construct } from 'constructs'
 
-/**
- * Creates the shared image cache policy used by CloudFront distributions
- * that serve optimised images. Stable name `AkliImageCachePolicy` lets
- * tests and other stacks reference the policy by name.
- */
+export const IMAGE_CACHE_POLICY_NAME = 'AkliImageCachePolicy'
+
 export function createImageCachePolicy(
   scope: Construct,
   id: string = 'ImageCachePolicy',
 ): cloudfront.CachePolicy {
   return new cloudfront.CachePolicy(scope, id, {
-    cachePolicyName: 'AkliImageCachePolicy',
+    cachePolicyName: IMAGE_CACHE_POLICY_NAME,
     defaultTtl: Duration.days(30),
     maxTtl: Duration.days(365),
     minTtl: Duration.seconds(0),
@@ -22,10 +19,6 @@ export function createImageCachePolicy(
   })
 }
 
-/**
- * Creates the shared response headers policy applied to CloudFront viewer
- * responses (CSP-adjacent security headers, HSTS, frame options, etc.).
- */
 export function createSecurityHeadersPolicy(
   scope: Construct,
   id: string = 'SecurityHeaders',
@@ -42,7 +35,7 @@ export function createSecurityHeadersPolicy(
         override: true,
       },
       strictTransportSecurity: {
-        accessControlMaxAge: Duration.seconds(31536000),
+        accessControlMaxAge: Duration.days(365),
         includeSubdomains: true,
         preload: true,
         override: true,

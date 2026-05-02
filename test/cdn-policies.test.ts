@@ -1,7 +1,11 @@
 import * as cdk from 'aws-cdk-lib'
 import { Match, Template } from 'aws-cdk-lib/assertions'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
-import { createImageCachePolicy, createSecurityHeadersPolicy } from '../lib/cdn-policies'
+import {
+  createImageCachePolicy,
+  createSecurityHeadersPolicy,
+  IMAGE_CACHE_POLICY_NAME,
+} from '../lib/cdn-policies'
 
 function harnessStack(): cdk.Stack {
   const app = new cdk.App()
@@ -12,31 +16,28 @@ function harnessStack(): cdk.Stack {
 
 describe('cdn-policies', () => {
   describe('createImageCachePolicy', () => {
-    it('returns a cloudfront.CachePolicy construct', () => {
+    let policy: cloudfront.CachePolicy
+    let template: Template
+
+    beforeAll(() => {
       const stack = harnessStack()
+      policy = createImageCachePolicy(stack, 'TestImageCachePolicy')
+      template = Template.fromStack(stack)
+    })
 
-      const policy = createImageCachePolicy(stack, 'TestImageCachePolicy')
-
+    it('returns a cloudfront.CachePolicy construct', () => {
       expect(policy).toBeInstanceOf(cloudfront.CachePolicy)
     })
 
-    it('synthesises with the stable name AkliImageCachePolicy', () => {
-      const stack = harnessStack()
-      createImageCachePolicy(stack, 'TestImageCachePolicy')
-
-      const template = Template.fromStack(stack)
+    it('synthesises with the stable name from IMAGE_CACHE_POLICY_NAME', () => {
       template.hasResourceProperties('AWS::CloudFront::CachePolicy', {
         CachePolicyConfig: Match.objectLike({
-          Name: 'AkliImageCachePolicy',
+          Name: IMAGE_CACHE_POLICY_NAME,
         }),
       })
     })
 
     it('configures default 30-day, max 365-day, min 0-second TTLs', () => {
-      const stack = harnessStack()
-      createImageCachePolicy(stack, 'TestImageCachePolicy')
-
-      const template = Template.fromStack(stack)
       template.hasResourceProperties('AWS::CloudFront::CachePolicy', {
         CachePolicyConfig: Match.objectLike({
           DefaultTTL: 30 * 24 * 60 * 60,
@@ -47,10 +48,6 @@ describe('cdn-policies', () => {
     })
 
     it('forwards all query strings, allowlists Accept and CloudFront-Viewer-Country headers, and forwards no cookies', () => {
-      const stack = harnessStack()
-      createImageCachePolicy(stack, 'TestImageCachePolicy')
-
-      const template = Template.fromStack(stack)
       template.hasResourceProperties('AWS::CloudFront::CachePolicy', {
         CachePolicyConfig: Match.objectLike({
           ParametersInCacheKeyAndForwardedToOrigin: Match.objectLike({
@@ -67,19 +64,20 @@ describe('cdn-policies', () => {
   })
 
   describe('createSecurityHeadersPolicy', () => {
-    it('returns a cloudfront.ResponseHeadersPolicy construct', () => {
+    let policy: cloudfront.ResponseHeadersPolicy
+    let template: Template
+
+    beforeAll(() => {
       const stack = harnessStack()
+      policy = createSecurityHeadersPolicy(stack, 'TestSecurityHeaders')
+      template = Template.fromStack(stack)
+    })
 
-      const policy = createSecurityHeadersPolicy(stack, 'TestSecurityHeaders')
-
+    it('returns a cloudfront.ResponseHeadersPolicy construct', () => {
       expect(policy).toBeInstanceOf(cloudfront.ResponseHeadersPolicy)
     })
 
     it('configures the documented security headers (content type, frame options, referrer policy, HSTS)', () => {
-      const stack = harnessStack()
-      createSecurityHeadersPolicy(stack, 'TestSecurityHeaders')
-
-      const template = Template.fromStack(stack)
       template.hasResourceProperties('AWS::CloudFront::ResponseHeadersPolicy', {
         ResponseHeadersPolicyConfig: Match.objectLike({
           SecurityHeadersConfig: Match.objectLike({
