@@ -213,6 +213,16 @@ describe('AkliInfrastructureStack', () => {
     })
   })
 
+  describe('Image cache policy', () => {
+    it('uses the stable name AkliImageCachePolicy so other stacks can reference it', () => {
+      template.hasResourceProperties('AWS::CloudFront::CachePolicy', {
+        CachePolicyConfig: Match.objectLike({
+          Name: 'AkliImageCachePolicy',
+        }),
+      })
+    })
+  })
+
   describe('IAM deploy policy', () => {
     it('grants lambda:UpdateFunctionCode and lambda:GetFunction scoped to the SSR function', () => {
       template.hasResourceProperties('AWS::IAM::Policy', {

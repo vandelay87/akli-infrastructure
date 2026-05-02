@@ -12,6 +12,7 @@ import * as targets from 'aws-cdk-lib/aws-route53-targets'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager'
 import type { Construct } from 'constructs'
+import { createImageCachePolicy, createSecurityHeadersPolicy } from './cdn-policies'
 
 interface AkliInfrastructureStackProps extends StackProps {
   hostedZone: route53.IHostedZone
@@ -50,30 +51,9 @@ export class AkliInfrastructureStack extends Stack {
       description: `OAC for ${DOMAIN_NAME}`,
     })
 
-    const securityHeadersPolicy = new cloudfront.ResponseHeadersPolicy(this, 'SecurityHeaders', {
-      securityHeadersBehavior: {
-        contentTypeOptions: { override: true },
-        frameOptions: { frameOption: cloudfront.HeadersFrameOption.DENY, override: true },
-        referrerPolicy: { referrerPolicy: cloudfront.HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN, override: true },
-        strictTransportSecurity: {
-          accessControlMaxAge: Duration.seconds(31536000),
-          includeSubdomains: true,
-          preload: true,
-          override: true
-        },
-      },
-    })
+    const securityHeadersPolicy = createSecurityHeadersPolicy(this)
 
-    // Cache policy for images with query string support
-    const imageCachePolicy = new cloudfront.CachePolicy(this, 'ImageCachePolicy', {
-      cachePolicyName: 'ImageOptimizationPolicy',
-      defaultTtl: Duration.days(30),
-      maxTtl: Duration.days(365),
-      minTtl: Duration.seconds(0),
-      queryStringBehavior: cloudfront.CacheQueryStringBehavior.all(), // Allow all query params
-      headerBehavior: cloudfront.CacheHeaderBehavior.allowList('Accept', 'CloudFront-Viewer-Country'),
-      cookieBehavior: cloudfront.CacheCookieBehavior.none(),
-    })
+    const imageCachePolicy = createImageCachePolicy(this)
 
     const subdirectoryIndexHandler = new cloudfront.Function(this, 'SubfolderIndexRewrite', {
       code: cloudfront.FunctionCode.fromInline(`
