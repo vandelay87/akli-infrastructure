@@ -20,6 +20,7 @@ interface RecipeStackProps extends StackProps {
 
 export class RecipeStack extends Stack {
   public readonly httpApi: HttpApi
+  public readonly imageBucket: s3.IBucket
 
   constructor(scope: Construct, id: string, props: RecipeStackProps) {
     super(scope, id, props)
@@ -69,6 +70,7 @@ export class RecipeStack extends Stack {
         },
       ],
     })
+    this.imageBucket = imageBucket
 
     // HTTP API with CORS
     this.httpApi = new HttpApi(this, 'RecipeHttpApi', {
