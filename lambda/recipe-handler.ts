@@ -3,7 +3,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3'
 import { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb'
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
-import { VARIANT_SUFFIXES } from './image-variants'
+import { VARIANT_SUFFIXES, PROCESSED_PREFIX } from './image-variants'
 
 const ddbClient = new DynamoDBClient({})
 const docClient = DynamoDBDocumentClient.from(ddbClient)
@@ -638,7 +638,7 @@ async function handleDeleteRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
   const listResult = await s3Client.send(
     new ListObjectsV2Command({
       Bucket: IMAGE_BUCKET_NAME,
-      Prefix: `processed/recipes/${id}/`,
+      Prefix: `${PROCESSED_PREFIX}${id}/`,
     }),
   )
 
