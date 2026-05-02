@@ -75,7 +75,7 @@ describe('Recipe Image handler', () => {
       const body = JSON.parse(result.body as string)
       expect(typeof body.uploadUrl).toBe('string')
       expect(typeof body.key).toBe('string')
-      expect(body.key).toMatch(/^processed\/recipes\/[^/]+\//)
+      expect(body.key).toMatch(/^recipes\/[^/]+\//)
     })
 
     it('generates correct S3 key for cover image', async () => {
@@ -88,7 +88,7 @@ describe('Recipe Image handler', () => {
 
       expect(result.statusCode).toBe(200)
       const body = JSON.parse(result.body as string)
-      expect(body.key).toBe('processed/recipes/abc/cover')
+      expect(body.key).toBe('recipes/abc/cover')
     })
 
     it('generates correct S3 key for step image', async () => {
@@ -101,7 +101,7 @@ describe('Recipe Image handler', () => {
 
       expect(result.statusCode).toBe(200)
       const body = JSON.parse(result.body as string)
-      expect(body.key).toBe('processed/recipes/abc/step-3')
+      expect(body.key).toBe('recipes/abc/step-3')
     })
 
     it('returns 401 without bearer token', async () => {

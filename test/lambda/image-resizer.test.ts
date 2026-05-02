@@ -88,7 +88,7 @@ describe('image-resizer handler', () => {
     expect(mockSharp.webp).toHaveBeenCalledWith({ quality: 90 })
   })
 
-  it('uploads variants to processed/ prefix with correct keys', async () => {
+  it('uploads variants to recipes/ prefix with correct keys', async () => {
     await handler(makeS3Event('uploads/recipes/abc/cover'))
 
     const putCalls = s3Mock.commandCalls(PutObjectCommand)
@@ -96,9 +96,9 @@ describe('image-resizer handler', () => {
 
     const putKeys = putCalls.map((call) => call.args[0].input.Key).sort()
     expect(putKeys).toEqual([
-      'processed/recipes/abc/cover-full.webp',
-      'processed/recipes/abc/cover-medium.webp',
-      'processed/recipes/abc/cover-thumb.webp',
+      'recipes/abc/cover-full.webp',
+      'recipes/abc/cover-medium.webp',
+      'recipes/abc/cover-thumb.webp',
     ])
 
     // All uploads go to the correct bucket
@@ -152,7 +152,7 @@ describe('image-resizer handler', () => {
     expect(input.Key).toEqual({ id: 'abc' })
     expect(input.UpdateExpression).toBe('SET imageStatus.#k = :ts')
     expect(input.ConditionExpression).toBe('attribute_exists(id)')
-    expect(input.ExpressionAttributeNames).toEqual({ '#k': 'processed/recipes/abc/cover' })
+    expect(input.ExpressionAttributeNames).toEqual({ '#k': 'recipes/abc/cover' })
 
     const ts = input.ExpressionAttributeValues?.[':ts']
     expect(typeof ts).toBe('number')
@@ -169,7 +169,7 @@ describe('image-resizer handler', () => {
 
     const input = updateCalls[0].args[0].input
     expect(input.Key).toEqual({ id: 'abc' })
-    expect(input.ExpressionAttributeNames).toEqual({ '#k': 'processed/recipes/abc/step-2' })
+    expect(input.ExpressionAttributeNames).toEqual({ '#k': 'recipes/abc/step-2' })
   })
 
   it('swallows ConditionalCheckFailedException, still deletes source, and logs skip event', async () => {
