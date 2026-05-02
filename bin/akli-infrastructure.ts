@@ -4,6 +4,7 @@ import { AkliInfrastructureStack } from '../lib/akli-infrastructure-stack';
 import { ApiStack } from '../lib/api-stack';
 import { AuthStack } from '../lib/auth-stack';
 import { CertificateStack } from '../lib/certificate-stack';
+import { ImagesStack } from '../lib/images-stack';
 import { PokedexStack } from '../lib/pokedex-stack';
 import { RecipeStack } from '../lib/recipe-stack';
 
@@ -69,6 +70,20 @@ const recipeStack = new RecipeStack(app, 'RecipeStack', {
   userPoolArn: authStack.userPoolArn,
   tags: {
     Project: 'recipes',
+    Environment: 'production',
+    ManagedBy: 'cdk',
+  },
+})
+
+new ImagesStack(app, 'ImagesStack', {
+  env: { account, region: 'eu-west-2' },
+  crossRegionReferences: true,
+  hostedZone: certStack.hostedZone,
+  imagesCertificate: certStack.imagesCertificate,
+  recipeImageBucket: recipeStack.imageBucket,
+  description: 'CloudFront distribution for images.akli.dev (recipe images origin)',
+  tags: {
+    Project: 'akli-images',
     Environment: 'production',
     ManagedBy: 'cdk',
   },
