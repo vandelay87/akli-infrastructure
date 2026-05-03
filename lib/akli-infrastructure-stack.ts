@@ -12,7 +12,7 @@ import * as targets from 'aws-cdk-lib/aws-route53-targets'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager'
 import type { Construct } from 'constructs'
-import { createImageCachePolicy, createSecurityHeadersPolicy } from './cdn-policies'
+import { createCachePolicy, createImageCachePolicy, createSecurityHeadersPolicy } from './cdn-policies'
 
 interface AkliInfrastructureStackProps extends StackProps {
   hostedZone: route53.IHostedZone
@@ -92,14 +92,9 @@ export class AkliInfrastructureStack extends Stack {
       invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
     })
 
-    const ssrCachePolicy = new cloudfront.CachePolicy(this, 'SsrCachePolicy', {
+    const ssrCachePolicy = createCachePolicy(this, 'SsrCachePolicy', {
       cachePolicyName: 'SsrCachePolicy',
       defaultTtl: Duration.seconds(60),
-      maxTtl: Duration.seconds(60),
-      minTtl: Duration.seconds(0),
-      queryStringBehavior: cloudfront.CacheQueryStringBehavior.all(),
-      headerBehavior: cloudfront.CacheHeaderBehavior.none(),
-      cookieBehavior: cloudfront.CacheCookieBehavior.none(),
     })
 
     const s3Origin = origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
