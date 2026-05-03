@@ -214,10 +214,19 @@ describe('AkliInfrastructureStack', () => {
   })
 
   describe('Image cache policy', () => {
-    it('uses the stable name AkliImageCachePolicy so other stacks can reference it', () => {
+    it('configures 30-day default / 365-day max TTL with all-query / Accept+Country header allowlist', () => {
       template.hasResourceProperties('AWS::CloudFront::CachePolicy', {
         CachePolicyConfig: Match.objectLike({
-          Name: 'AkliImageCachePolicy',
+          DefaultTTL: 30 * 24 * 60 * 60,
+          MaxTTL: 365 * 24 * 60 * 60,
+          ParametersInCacheKeyAndForwardedToOrigin: Match.objectLike({
+            QueryStringsConfig: { QueryStringBehavior: 'all' },
+            HeadersConfig: {
+              HeaderBehavior: 'whitelist',
+              Headers: Match.arrayWith(['Accept', 'CloudFront-Viewer-Country']),
+            },
+            CookiesConfig: { CookieBehavior: 'none' },
+          }),
         }),
       })
     })

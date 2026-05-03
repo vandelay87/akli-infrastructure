@@ -2,14 +2,15 @@ import { Duration } from 'aws-cdk-lib'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
 import type { Construct } from 'constructs'
 
-export const IMAGE_CACHE_POLICY_NAME = 'AkliImageCachePolicy'
-
+// CloudFront cache policy names are account-globally unique, so the factory
+// must not set an explicit name — multiple stacks (AkliInfrastructureStack,
+// ImagesStack) each call this factory and would 409 on deploy if they shared
+// a name. CDK auto-generates a unique name per stack.
 export function createImageCachePolicy(
   scope: Construct,
   id: string = 'ImageCachePolicy',
 ): cloudfront.CachePolicy {
   return new cloudfront.CachePolicy(scope, id, {
-    cachePolicyName: IMAGE_CACHE_POLICY_NAME,
     defaultTtl: Duration.days(30),
     maxTtl: Duration.days(365),
     minTtl: Duration.seconds(0),
