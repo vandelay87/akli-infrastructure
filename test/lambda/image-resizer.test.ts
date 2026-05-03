@@ -208,15 +208,14 @@ describe('image-resizer handler', () => {
     await expect(handler(makeS3Event('uploads/recipes/abc/cover'))).rejects.toThrow('boom')
   })
 
-  it('skips the DDB write for a malformed key that does not match uploads/recipes/<id>/...', async () => {
-    // This key passes the toProcessedKey prefix guard but isn't the recipes shape.
-    await handler(makeS3Event('uploads/not-recipes/x'))
+  it('throws and writes nothing for a malformed key that does not match uploads/recipes/<id>/...', async () => {
+    // With UPLOAD_PREFIX = 'uploads/recipes/', this key fails the prefix guard
+    // inside toProcessedKey and the handler now refuses to process it.
+    await expect(handler(makeS3Event('uploads/not-recipes/x'))).rejects.toThrow(/uploads\/recipes\//)
 
     expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0)
-
-    // Variant writes and source-delete still happen.
-    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(3)
-    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1)
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0)
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0)
   })
 
   it('invokes DDB UpdateCommand before the source DeleteObjectCommand', async () => {
