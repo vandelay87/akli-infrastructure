@@ -4,7 +4,6 @@ import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
 import {
   createImageCachePolicy,
   createSecurityHeadersPolicy,
-  IMAGE_CACHE_POLICY_NAME,
 } from '../lib/cdn-policies'
 
 function harnessStack(): cdk.Stack {
@@ -27,14 +26,6 @@ describe('cdn-policies', () => {
 
     it('returns a cloudfront.CachePolicy construct', () => {
       expect(policy).toBeInstanceOf(cloudfront.CachePolicy)
-    })
-
-    it('synthesises with the stable name from IMAGE_CACHE_POLICY_NAME', () => {
-      template.hasResourceProperties('AWS::CloudFront::CachePolicy', {
-        CachePolicyConfig: Match.objectLike({
-          Name: IMAGE_CACHE_POLICY_NAME,
-        }),
-      })
     })
 
     it('configures default 30-day, max 365-day, min 0-second TTLs', () => {

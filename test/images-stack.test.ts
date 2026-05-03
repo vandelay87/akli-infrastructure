@@ -2,7 +2,6 @@ import * as cdk from 'aws-cdk-lib'
 import { Match, Template } from 'aws-cdk-lib/assertions'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as route53 from 'aws-cdk-lib/aws-route53'
-import { IMAGE_CACHE_POLICY_NAME } from '../lib/cdn-policies'
 import { ImagesStack } from '../lib/images-stack'
 import { RecipeStack } from '../lib/recipe-stack'
 
@@ -92,21 +91,26 @@ function findDistribution(template: Template, aliasMatcher: string): CfnDistribu
   throw new Error(`No CloudFront::Distribution with alias ${aliasMatcher} in template`)
 }
 
-function findCachePolicyLogicalIdByName(
-  template: Template,
-  policyName: string,
-): string {
+// Identify the image cache policy by its unique TTLs (30d default / 365d max);
+// other CachePolicy resources in the template have different TTLs (e.g. SSR's
+// 60s default). Cannot match by Name because cache policy names are
+// account-globally unique, so the factory deliberately leaves the name unset
+// and lets CDK auto-generate per-stack.
+const IMAGE_CACHE_DEFAULT_TTL_SEC = 30 * 24 * 60 * 60
+const IMAGE_CACHE_MAX_TTL_SEC = 365 * 24 * 60 * 60
+
+function findImageCachePolicyLogicalId(template: Template): string {
   const resources = template.toJSON().Resources as Record<string, CfnResource>
   for (const [logicalId, resource] of Object.entries(resources)) {
     if (resource.Type !== 'AWS::CloudFront::CachePolicy') continue
     const cfg = (resource.Properties as {
-      CachePolicyConfig?: { Name?: string }
+      CachePolicyConfig?: { DefaultTTL?: number; MaxTTL?: number }
     }).CachePolicyConfig
-    if (cfg?.Name === policyName) {
+    if (cfg?.DefaultTTL === IMAGE_CACHE_DEFAULT_TTL_SEC && cfg?.MaxTTL === IMAGE_CACHE_MAX_TTL_SEC) {
       return logicalId
     }
   }
-  throw new Error(`No CachePolicy with Name=${policyName} in template`)
+  throw new Error('No image cache policy (30d/365d TTL) found in template')
 }
 
 describe('ImagesStack', () => {
@@ -198,11 +202,8 @@ describe('ImagesStack', () => {
       })
     })
 
-    it('recipes/* behaviour CachePolicyId references the shared image cache policy by stable name', () => {
-      const cachePolicyLogicalId = findCachePolicyLogicalIdByName(
-        harness.imagesTemplate,
-        IMAGE_CACHE_POLICY_NAME,
-      )
+    it('recipes/* behaviour CachePolicyId references the shared image cache policy', () => {
+      const cachePolicyLogicalId = findImageCachePolicyLogicalId(harness.imagesTemplate)
       const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
       const recipesBehavior = (distribution.Properties.DistributionConfig.CacheBehaviors ?? [])
         .find((b) => (b as { PathPattern?: string }).PathPattern === 'recipes/*') as
@@ -210,7 +211,6 @@ describe('ImagesStack', () => {
         | undefined
       expect(recipesBehavior).toBeDefined()
       const cachePolicyId = recipesBehavior?.CachePolicyId
-      // CDK typically emits a Ref; assert the Ref points to the cache-policy logical ID
       const ref = (cachePolicyId as { Ref?: string } | undefined)?.Ref
       expect(ref).toBe(cachePolicyLogicalId)
     })
