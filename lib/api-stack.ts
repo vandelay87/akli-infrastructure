@@ -6,6 +6,7 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as targets from 'aws-cdk-lib/aws-route53-targets'
 import type { Construct } from 'constructs'
+import { createSecurityHeadersPolicy } from './cdn-policies'
 import { applyStackTags } from './utils'
 
 const API_DOMAIN_NAME = 'api.akli.dev'
@@ -69,6 +70,8 @@ export class ApiStack extends Stack {
       cookieBehavior: cloudfront.OriginRequestCookieBehavior.none(),
     })
 
+    const securityHeadersPolicy = createSecurityHeadersPolicy(this)
+
     // CloudFront distribution for api.akli.dev
     const distribution = new cloudfront.Distribution(this, 'ApiDistribution', {
       domainNames: [API_DOMAIN_NAME],
@@ -80,6 +83,7 @@ export class ApiStack extends Stack {
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
         allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+        responseHeadersPolicy: securityHeadersPolicy,
       },
       additionalBehaviors: {
         '/pokedex/*': {
@@ -87,6 +91,7 @@ export class ApiStack extends Stack {
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           cachePolicy: apiCachePolicy,
           originRequestPolicy: apiOriginRequestPolicy,
+          responseHeadersPolicy: securityHeadersPolicy,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
           compress: true,
         },
@@ -96,6 +101,7 @@ export class ApiStack extends Stack {
           cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
           // AllViewerExceptHostHeader forwards all viewer headers (including Authorization) except Host
           originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+          responseHeadersPolicy: securityHeadersPolicy,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
           compress: true,
         },
@@ -104,6 +110,7 @@ export class ApiStack extends Stack {
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
           originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+          responseHeadersPolicy: securityHeadersPolicy,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
           compress: true,
         },
@@ -112,6 +119,7 @@ export class ApiStack extends Stack {
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
           originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+          responseHeadersPolicy: securityHeadersPolicy,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
           compress: true,
         },
@@ -120,6 +128,7 @@ export class ApiStack extends Stack {
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
           originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+          responseHeadersPolicy: securityHeadersPolicy,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
           compress: true,
         },

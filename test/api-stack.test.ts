@@ -266,6 +266,104 @@ describe('ApiStack', () => {
     })
   })
 
+  describe('Security headers (response headers policy)', () => {
+    it('creates a ResponseHeadersPolicy with HSTS, frame-options, content-type-options, and referrer-policy', () => {
+      template.hasResourceProperties('AWS::CloudFront::ResponseHeadersPolicy', {
+        ResponseHeadersPolicyConfig: {
+          SecurityHeadersConfig: {
+            ContentTypeOptions: { Override: true },
+            FrameOptions: { FrameOption: 'DENY', Override: true },
+            ReferrerPolicy: Match.objectLike({
+              ReferrerPolicy: 'strict-origin-when-cross-origin',
+              Override: true,
+            }),
+            StrictTransportSecurity: Match.objectLike({
+              AccessControlMaxAgeSec: 31536000,
+              IncludeSubdomains: true,
+              Preload: true,
+              Override: true,
+            }),
+          },
+        },
+      })
+    })
+
+    it('attaches a ResponseHeadersPolicyId to the default behaviour', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({
+          DefaultCacheBehavior: Match.objectLike({
+            ResponseHeadersPolicyId: Match.anyValue(),
+          }),
+        }),
+      })
+    })
+
+    it('attaches a ResponseHeadersPolicyId to the /pokedex/* behaviour', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({
+              PathPattern: '/pokedex/*',
+              ResponseHeadersPolicyId: Match.anyValue(),
+            }),
+          ]),
+        }),
+      })
+    })
+
+    it('attaches a ResponseHeadersPolicyId to the /auth/* behaviour', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({
+              PathPattern: '/auth/*',
+              ResponseHeadersPolicyId: Match.anyValue(),
+            }),
+          ]),
+        }),
+      })
+    })
+
+    it('attaches a ResponseHeadersPolicyId to the /me/* behaviour', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({
+              PathPattern: '/me/*',
+              ResponseHeadersPolicyId: Match.anyValue(),
+            }),
+          ]),
+        }),
+      })
+    })
+
+    it('attaches a ResponseHeadersPolicyId to the /recipes behaviour', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({
+              PathPattern: '/recipes',
+              ResponseHeadersPolicyId: Match.anyValue(),
+            }),
+          ]),
+        }),
+      })
+    })
+
+    it('attaches a ResponseHeadersPolicyId to the /recipes/* behaviour', () => {
+      template.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({
+              PathPattern: '/recipes/*',
+              ResponseHeadersPolicyId: Match.anyValue(),
+            }),
+          ]),
+        }),
+      })
+    })
+  })
+
   describe('Route 53 record', () => {
     it('creates an A record for api.akli.dev', () => {
       template.hasResourceProperties('AWS::Route53::RecordSet', {
