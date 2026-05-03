@@ -4,7 +4,7 @@ AWS CDK infrastructure for [akli.dev](https://akli.dev). Manages static site hos
 
 ## Architecture
 
-Six CDK stacks deployed across regions:
+Seven CDK stacks deployed across regions:
 
 | Stack | Region | Resources |
 |-------|--------|-----------|
@@ -13,6 +13,7 @@ Six CDK stacks deployed across regions:
 | PokedexStack | eu-west-2 | DynamoDB table, HTTP API Gateway, Lambda handlers |
 | AuthStack | eu-west-2 | Cognito user pool, HTTP API Gateway, Lambda handlers, JWT authoriser, CloudWatch alarms |
 | RecipeStack | eu-west-2 | DynamoDB table, S3 image bucket, HTTP API Gateway, Lambda handlers (CRUD, image upload, image resizer), JWT authoriser |
+| ImagesStack | eu-west-2 | CloudFront distribution for images.akli.dev, OAC, Route 53 records — serves recipe images from the recipe-images bucket under `recipes/*` |
 | ApiStack | eu-west-2 | CloudFront distribution for api.akli.dev, routes to Pokedex, Auth, and Recipe APIs |
 
 ```

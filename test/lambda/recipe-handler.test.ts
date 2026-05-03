@@ -738,8 +738,8 @@ describe('Recipe Lambda handler', () => {
     })
 
     it('composes processedAt onto images and strips imageStatus from the response body', async () => {
-      const coverKey = 'processed/recipes/recipe-uuid-1/cover'
-      const step1Key = 'processed/recipes/recipe-uuid-1/step-1'
+      const coverKey = 'recipes/recipe-uuid-1/cover'
+      const step1Key = 'recipes/recipe-uuid-1/step-1'
       const coverTs = 1_745_000_000_001
       const step1Ts = 1_745_000_000_002
 
@@ -1420,9 +1420,9 @@ describe('Recipe Lambda handler', () => {
     })
 
     describe('readiness validation — rejects recipes with unready images', () => {
-      const coverKey = 'processed/recipes/recipe-uuid-1/cover'
-      const step1Key = 'processed/recipes/recipe-uuid-1/step-1'
-      const step2Key = 'processed/recipes/recipe-uuid-1/step-2'
+      const coverKey = 'recipes/recipe-uuid-1/cover'
+      const step1Key = 'recipes/recipe-uuid-1/step-1'
+      const step2Key = 'recipes/recipe-uuid-1/step-2'
       const coverTs = 1_745_000_000_001
       const step1Ts = 1_745_000_000_002
       const step2Ts = 1_745_000_000_003
@@ -1535,8 +1535,8 @@ describe('Recipe Lambda handler', () => {
       })
 
       it('returns 400 when republishing a currently-published recipe whose cover was swapped to an unready new key', async () => {
-        const oldCoverKey = 'processed/recipes/recipe-uuid-1/cover-old'
-        const newCoverKey = 'processed/recipes/recipe-uuid-1/cover'
+        const oldCoverKey = 'recipes/recipe-uuid-1/cover-old'
+        const newCoverKey = 'recipes/recipe-uuid-1/cover'
         ddbMock.on(GetCommand).resolves({
           Item: publishedRecipeItem({
             authorId: 'contributor-user-id',
@@ -1777,9 +1777,9 @@ describe('Recipe Lambda handler', () => {
       ddbMock.on(DeleteCommand).resolves({})
       s3Mock.on(ListObjectsV2Command).resolves({
         Contents: [
-          { Key: 'processed/recipes/recipe-uuid-1/cover-thumb.webp' },
-          { Key: 'processed/recipes/recipe-uuid-1/cover-medium.webp' },
-          { Key: 'processed/recipes/recipe-uuid-1/cover-full.webp' },
+          { Key: 'recipes/recipe-uuid-1/cover-thumb.webp' },
+          { Key: 'recipes/recipe-uuid-1/cover-medium.webp' },
+          { Key: 'recipes/recipe-uuid-1/cover-full.webp' },
         ],
       })
       s3Mock.on(DeleteObjectsCommand).resolves({})
@@ -1797,6 +1797,28 @@ describe('Recipe Lambda handler', () => {
       // Verify S3 cleanup was attempted
       expect(s3Mock.commandCalls(ListObjectsV2Command)).toHaveLength(1)
       expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(1)
+    })
+
+    it('lists S3 objects under the new "recipes/<id>/" prefix (not the old "processed/recipes/...")', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: publishedRecipeItem({ authorId: 'contributor-user-id' }),
+      })
+      ddbMock.on(DeleteCommand).resolves({})
+      s3Mock.on(ListObjectsV2Command).resolves({ Contents: [] })
+
+      const event = makeEvent({
+        routeKey: 'DELETE /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${contributorToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const listCalls = s3Mock.commandCalls(ListObjectsV2Command)
+      expect(listCalls).toHaveLength(1)
+      expect(listCalls[0].args[0].input.Prefix).toBe('recipes/recipe-uuid-1/')
     })
 
     it('returns 403 when contributor deletes another user\'s recipe', async () => {
@@ -1967,9 +1989,9 @@ describe('Recipe Lambda handler', () => {
   describe('Response composition — processedAt + imageStatus stripping', () => {
     // A published recipe whose cover image and one step image both have matching
     // imageStatus entries, plus one step image without a matching entry.
-    const coverKey = 'processed/recipes/recipe-uuid-1/cover'
-    const step1Key = 'processed/recipes/recipe-uuid-1/step-1'
-    const step2Key = 'processed/recipes/recipe-uuid-1/step-2'
+    const coverKey = 'recipes/recipe-uuid-1/cover'
+    const step1Key = 'recipes/recipe-uuid-1/step-1'
+    const step2Key = 'recipes/recipe-uuid-1/step-2'
     const coverTs = 1_745_000_000_001
     const step1Ts = 1_745_000_000_002
 
@@ -2290,14 +2312,38 @@ describe('Recipe Lambda handler', () => {
       const body = JSON.parse(result.body as string)
       expect(body.coverImage).toEqual({ key: coverKey, alt: 'cover alt', processedAt: 0 })
     })
+
+    it('omits processedAt when imageStatus keys do not match coverImage.key', async () => {
+      const newCoverKey = 'recipes/recipe-uuid-1/cover'
+      const staleCoverKey = 'processed/recipes/recipe-uuid-1/cover'
+      const item = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        coverImage: { key: newCoverKey, alt: 'cover alt' },
+        steps: [],
+        imageStatus: { [staleCoverKey]: 1_745_000_000_001 },
+      })
+      ddbMock.on(ScanCommand).resolves({ Items: [item] })
+
+      const result = await handler(makeEvent({
+        routeKey: 'GET /recipes/{slug}',
+        rawPath: '/recipes/slow-cooked-lamb-ragu',
+        pathParameters: { slug: 'slow-cooked-lamb-ragu' },
+      }))
+
+      expect(result.statusCode).toBe(200)
+      expect(result.body).not.toContain('processedAt')
+      const body = JSON.parse(result.body as string)
+      expect(body.coverImage).not.toHaveProperty('processedAt')
+      expect(body.coverImage).toEqual({ key: newCoverKey, alt: 'cover alt' })
+    })
   })
 
   describe('PATCH /recipes/{id} — imageStatus REMOVE on swap and processedAt body strip', () => {
-    const oldCoverKey = 'processed/recipes/recipe-uuid-1/cover'
-    const newCoverKey = 'processed/recipes/recipe-uuid-1/cover-v2'
-    const stepAKey = 'processed/recipes/recipe-uuid-1/step-1'
-    const stepBKey = 'processed/recipes/recipe-uuid-1/step-2'
-    const stepCKey = 'processed/recipes/recipe-uuid-1/step-3'
+    const oldCoverKey = 'recipes/recipe-uuid-1/cover'
+    const newCoverKey = 'recipes/recipe-uuid-1/cover-v2'
+    const stepAKey = 'recipes/recipe-uuid-1/step-1'
+    const stepBKey = 'recipes/recipe-uuid-1/step-2'
+    const stepCKey = 'recipes/recipe-uuid-1/step-3'
 
     it('cover-image swap includes REMOVE imageStatus.#<oldKey> in the same UpdateCommand as SET', async () => {
       const oldItem = publishedRecipeItem({

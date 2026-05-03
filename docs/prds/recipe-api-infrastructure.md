@@ -100,6 +100,8 @@ All endpoints are under the existing `api.akli.dev` CloudFront distribution.
 
 ### Image URLs
 
+> **Superseded by:** [`images-cdn-phase-1.md`](./images-cdn-phase-1.md). The `images/recipes/*` behaviour on the site CloudFront distribution described here was never implemented. Recipe images are now served from a dedicated `images.akli.dev` subdomain with the recipe-images bucket as a first-class origin, and the S3 key shape was flattened (no `processed/` prefix) so URLs map 1:1 to S3 keys.
+
 Images are stored in S3 under the `processed/` prefix and served via the site CloudFront distribution. The image `key` in the data model references the processed path. Three variants are generated on upload:
 
 - `{key}-thumb.webp` — 400px wide (listing cards, thumbnails)
@@ -174,6 +176,8 @@ All Lambda functions use Node.js 22, following existing conventions:
 - CORS: Allow origin `https://akli.dev`, methods GET/POST/PUT/PATCH/DELETE, headers `Content-Type` and `Authorization`.
 
 ### CloudFront/API Stack Changes
+
+> **Superseded by:** [`images-cdn-phase-1.md`](./images-cdn-phase-1.md) for the image-serving bullets below. The `images/recipes/*` behaviour on the site distribution was never implemented; recipe images are served from a dedicated `images.akli.dev` distribution (`ImagesStack`) instead. The API-side bullets (`/recipes/*` on `api.akli.dev`) shipped as described.
 
 - The `ApiStack` receives the recipe API endpoint as a prop (`recipeApiUrl: string`).
 - New CloudFront behaviour: `/recipes/*` routed to the recipe API origin.
