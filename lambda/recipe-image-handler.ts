@@ -54,8 +54,8 @@ async function handleUploadUrl(event: APIGatewayProxyEventV2): Promise<APIGatewa
   if (imageType !== 'cover' && !stepOrder) return json(400, { error: 'stepOrder is required for step images' })
 
   const uploadKey = imageType === 'cover'
-    ? `${UPLOAD_PREFIX}recipes/${recipeId}/cover`
-    : `${UPLOAD_PREFIX}recipes/${recipeId}/step-${stepOrder}`
+    ? `${UPLOAD_PREFIX}${recipeId}/cover`
+    : `${UPLOAD_PREFIX}${recipeId}/step-${stepOrder}`
 
   const uploadUrl = await getSignedUrl(
     s3,

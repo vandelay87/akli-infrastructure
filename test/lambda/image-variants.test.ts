@@ -8,8 +8,8 @@ describe('image-variants', () => {
   })
 
   describe('UPLOAD_PREFIX constant', () => {
-    it('is "uploads/"', () => {
-      expect(UPLOAD_PREFIX).toBe('uploads/')
+    it('is "uploads/recipes/"', () => {
+      expect(UPLOAD_PREFIX).toBe('uploads/recipes/')
     })
   })
 
@@ -22,16 +22,16 @@ describe('image-variants', () => {
       expect(toProcessedKey('uploads/recipes/abc/step-2')).toBe('recipes/abc/step-2')
     })
 
-    it('throws when the upload key does not start with "uploads/"', () => {
-      expect(() => toProcessedKey('not-uploads/foo')).toThrow(/uploads\//)
+    it('throws when the upload key does not start with "uploads/recipes/"', () => {
+      expect(() => toProcessedKey('not-uploads/foo')).toThrow(/uploads\/recipes\//)
     })
 
-    it('throws when the upload key has no suffix after "uploads/"', () => {
-      expect(() => toProcessedKey('uploads/')).toThrow()
+    it('throws when the upload key has no suffix after "uploads/recipes/"', () => {
+      expect(() => toProcessedKey('uploads/recipes/')).toThrow(/content after/)
     })
 
     it('preserves a stray double-slash after the upload prefix', () => {
-      expect(toProcessedKey('uploads//double-slash')).toBe('recipes//double-slash')
+      expect(toProcessedKey('uploads/recipes//double-slash')).toBe('recipes//double-slash')
     })
   })
 })

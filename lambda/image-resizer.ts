@@ -25,15 +25,12 @@ const VARIANTS: readonly ImageVariant[] = VARIANT_SUFFIXES.map((suffix) => ({
   ...VARIANT_SIZING[suffix],
 }))
 
-const RECIPES_SEGMENT = 'recipes'
-
 // Accepts exactly `uploads/recipes/<id>/<type>` — extra trailing segments are rejected.
 function parseRecipeId(uploadKey: string): string | undefined {
   if (!uploadKey.startsWith(UPLOAD_PREFIX)) return undefined
   const segments = uploadKey.slice(UPLOAD_PREFIX.length).split('/')
-  if (segments.length !== 3) return undefined
-  if (segments[0] !== RECIPES_SEGMENT) return undefined
-  const id = segments[1]
+  if (segments.length !== 2) return undefined
+  const id = segments[0]
   if (!id) return undefined
   return id
 }
