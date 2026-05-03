@@ -3,6 +3,8 @@
 > **Sibling PRD:** [`personal-website/docs/prds/image-processing-readiness.md`](../../../personal-website/docs/prds/image-processing-readiness.md) — covers the editor polling hook, processing skeletons across all image surfaces, and client-side publish-guard mirroring.
 >
 > **Context:** Follow-up to [`draft-recipes.md`](./draft-recipes.md), which shipped the async upload contract without a readiness signal, causing processed-variant 404s on admin surfaces.
+>
+> **URL pattern note:** the `https://akli.dev/images/processed/recipes/...` URL referenced in the Problem Statement below is replaced by the new `https://images.akli.dev/recipes/...` shape introduced in [`images-cdn-phase-1.md`](./images-cdn-phase-1.md). The readiness contract — `imageStatus[key]` written by the resizer, composed into `processedAt` on the API response, gating publish — is unaffected; only the URL host and key prefix change.
 
 ## Overview
 The recipes DynamoDB item gains a per-image readiness signal written by the image-resizer Lambda after variant PUTs succeed. The recipe handler composes that signal into the API response, extends publish validation to require readiness on every image, and adds a lightweight admin single-recipe endpoint that the frontend uses for polling.
