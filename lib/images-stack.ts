@@ -92,7 +92,11 @@ export class ImagesStack extends Stack {
       actions: ['s3:GetObject'],
       resources: [`${recipeImageBucket.bucketArn}/*`],
       conditions: {
-        StringEquals: {
+        // StringLike (not StringEquals) is required for the trailing `*` to be
+        // treated as a wildcard. CloudFront sends the specific distribution
+        // ARN as aws:SourceArn; StringEquals would require exact match against
+        // the literal `…/distribution/*` string and the Allow would never fire.
+        StringLike: {
           'aws:SourceArn': `arn:aws:cloudfront::${this.account}:distribution/*`,
         },
       },
