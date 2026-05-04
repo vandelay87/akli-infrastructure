@@ -6,7 +6,7 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as targets from 'aws-cdk-lib/aws-route53-targets'
 import type { Construct } from 'constructs'
-import { createSecurityHeadersPolicy } from './cdn-policies'
+import { createCachePolicy, createSecurityHeadersPolicy } from './cdn-policies'
 import { applyStackTags } from './utils'
 
 const API_DOMAIN_NAME = 'api.akli.dev'
@@ -52,14 +52,9 @@ export class ApiStack extends Stack {
     })
 
     // Cache policy: 5-minute TTL, forward all query strings
-    const apiCachePolicy = new cloudfront.CachePolicy(this, 'ApiCachePolicy', {
+    const apiCachePolicy = createCachePolicy(this, 'ApiCachePolicy', {
       cachePolicyName: 'ApiCachePolicy',
       defaultTtl: Duration.minutes(5),
-      maxTtl: Duration.minutes(5),
-      minTtl: Duration.seconds(0),
-      queryStringBehavior: cloudfront.CacheQueryStringBehavior.all(),
-      headerBehavior: cloudfront.CacheHeaderBehavior.none(),
-      cookieBehavior: cloudfront.CacheCookieBehavior.none(),
     })
 
     // Origin request policy to forward Host header to API Gateway
