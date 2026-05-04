@@ -341,7 +341,7 @@ describe('ImagesStack', () => {
                 ]),
               }),
               Condition: Match.objectLike({
-                StringEquals: Match.objectLike({
+                StringLike: Match.objectLike({
                   'aws:SourceArn': Match.anyValue(),
                 }),
               }),
@@ -415,7 +415,10 @@ describe('ImagesStack', () => {
         for (const stmt of statements) {
           const s = stmt as {
             Principal?: { Service?: string | string[] }
-            Condition?: { StringEquals?: Record<string, unknown> }
+            Condition?: {
+              StringEquals?: Record<string, unknown>
+              StringLike?: Record<string, unknown>
+            }
           }
           const principalService = s.Principal?.Service
           const isCloudFrontPrincipal = principalService === 'cloudfront.amazonaws.com'
@@ -425,6 +428,8 @@ describe('ImagesStack', () => {
           cloudfrontStatementsSeen += 1
           const sourceArn = s.Condition?.StringEquals?.['aws:SourceArn']
             ?? s.Condition?.StringEquals?.['AWS:SourceArn']
+            ?? s.Condition?.StringLike?.['aws:SourceArn']
+            ?? s.Condition?.StringLike?.['AWS:SourceArn']
           if (sourceArn === undefined || sourceArn === null) {
             cloudfrontStatementsWithoutSourceArn.push(s)
           }
