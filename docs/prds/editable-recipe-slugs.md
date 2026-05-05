@@ -30,23 +30,26 @@ A second gap: the slug today is server-generated at `POST /recipes/drafts` time 
 - Recipe image S3 keys use the recipe's slug: `recipes/<slug>/<imageType>-<variant>.webp`. URL maps 1:1 to S3 key — same convention as Phase 1 establishes.
 - The API supports a user-supplied slug at draft creation and PATCH; uniqueness is enforced server-side and collisions return `409 Conflict` (no auto-suffix).
 - The slug is **immutable** once any image has been uploaded for the recipe. Server enforces (`PATCH` rejects with `409`); the sibling frontend PRD enforces in the UI.
-- Stored `coverImage.key` and `step.image.key` fields are dropped from the recipe data model. Image URLs are derived from `(recipe.slug, imageType[, stepOrder])` ("Option B" from the design discussion).
+- Stored `coverImage.key` and `step.image.key` fields are dropped from the recipe data model. Image URLs are derived from `(recipe.slug, imageType[, stepId])` ("Option B" from the design discussion).
+- **Step images use a stable per-step UUID (`stepId`) rather than the step's `order` index** in the URL — so users can reorder steps after uploading images without breaking the image URLs. The cover image still uses the literal `cover` token (one cover per recipe).
 - A new GSI on `slug` allows the resizer Lambda to look up a recipe by slug in O(1) instead of scanning, and replaces the current `Scan`-based `findUniqueSlug`.
 
 ## Non-Goals
 
 - **Migration of existing recipes.** Verified: no production recipes exist (the user confirmed during the Phase 1 cutover). The cutover is "accept breakage"; we do not write a backfill script. Documented and re-confirmed at deploy time.
 - **Slug changes after the first image is uploaded.** Server returns `409` with `error: 'slug_locked'`. Users must delete the image (existing flow — see "Image deletion clears imageStatus" below) before changing the slug. The escape hatch is documented; no atomic batch-rename of S3 objects.
-- **Step reordering with uploaded step images.** Step image keys use `step-<order>`; reordering after upload would orphan S3 objects, identical in shape to the slug-change problem. Out of scope for this PRD — open as a follow-up if users hit it.
+- **Pretty step image URLs.** Step image URLs include a UUID (`recipes/<slug>/step-<uuid>-medium.webp`) rather than a sequential index. The trade-off is reorder-stability over URL aesthetics: a user-friendly `step-1` URL would re-anchor on reorder and break uploaded images. Cover images keep their pretty `cover` token because there's only one per recipe — no positional ambiguity.
 - **Blog images.** Phase 2 sibling PRD. The blog post route already uses slugs (`/blog/<slug>`); the same pattern this PRD establishes will carry over.
 - **Backwards compatibility** with the UUID-based key shape. No production data exists; clean cutover, no shim.
 - **Custom slugs above the 100-character limit** or with non-ASCII characters. Validation rejects.
+- **`stepId` as user-visible identity.** The UUID is internal — frontend never displays it; users see "Step 1, Step 2…" in the editor and on rendered pages.
 
 ## User Stories
 
 - As an admin uploading a recipe, I want my image URLs to use the recipe's slug instead of a UUID so the URL is human-readable, shareable, and consistent with the public recipe page URL.
 - As an admin who's uploaded an image, I want the system to refuse a slug change with a clear error rather than silently break my image URLs.
 - As an admin trying to use a slug another recipe has, I want a clear `409 Conflict` so I can pick a different one — not a silent auto-suffix that gives me a slug I didn't choose.
+- As an admin **reordering steps** in a recipe after uploading step images, I want the images to stay attached to the same steps — not jump to whichever step landed in the original position.
 - As a developer debugging a 404 in production, I want to be able to read the URL and know which recipe's image it points at without having to look up a UUID.
 
 ## Design & UX
@@ -81,13 +84,16 @@ Backend / API only. UI surface lives in the [sibling PRD](../../../personal-webs
 #### `POST /recipes/images/upload-url`
 
 ```diff
-  request: { recipeId: string, imageType: 'cover' | 'step', stepOrder?: number }
+- request: { recipeId: string, imageType: 'cover' | 'step', stepOrder?: number }
++ request: { recipeId: string, imageType: 'cover' | 'step', stepId?: string }
 - response: { uploadUrl: string, key: string }
 + response: { uploadUrl: string }
 ```
 
-- Body is unchanged — frontend still sends `recipeId`. Backend looks up the recipe by id (one extra `GetItem` per upload — negligible) to read its slug, then constructs the upload key as `uploads/recipes/<slug>/<imageType>` (or `uploads/recipes/<slug>/step-<order>`).
-- Response **drops the `key` field**. The frontend derives the public image URL from `(recipe.slug, imageType[, stepOrder])` — see sibling PRD.
+- Frontend now sends `stepId` (UUID, generated client-side via `crypto.randomUUID()` when the step is first added) instead of `stepOrder` for step images. The cover-image branch ignores both fields.
+- Backend looks up the recipe by id (one extra `GetItem` per upload — negligible) to read its slug, then constructs the upload key as `uploads/recipes/<slug>/cover` for cover or `uploads/recipes/<slug>/step-<stepId>` for steps.
+- For step uploads, the backend validates that the supplied `stepId` exists in the recipe's `steps` array (404/400 otherwise — see ACs). This prevents writing images for steps that don't exist.
+- Response **drops the `key` field**. The frontend derives the public image URL from `(recipe.slug, imageType[, stepId])` — see sibling PRD.
 
 #### `DELETE /recipes/{id}` (existing — internals change)
 
@@ -100,10 +106,15 @@ S3 list-and-delete prefix flips from `recipes/${id}/` to `recipes/${slug}/`. Sam
 | `coverImage.key` | `string` (`recipes/<id>/cover`) | **dropped** |
 | `coverImage.alt` | `string` | unchanged |
 | `coverImage.processedAt` | `number?` (composed by handler) | unchanged — composed from a derived key |
+| `step.stepId` | (did not exist) | `string` (UUID) — **new, required** |
 | `step.image.key` | `string` (`recipes/<id>/step-N`) | **dropped** |
 | `step.image.alt` | `string` | unchanged |
 | `step.image.processedAt` | `number?` (composed by handler) | unchanged — composed from a derived key |
-| `imageStatus` map | server-only, keyed by processed-key | unchanged shape; key now `recipes/<slug>/<type>` |
+| `imageStatus` map | server-only, keyed by processed-key | unchanged shape; keys now `recipes/<slug>/cover` and `recipes/<slug>/step-<stepId>` |
+
+`step.stepId` is generated client-side when a new step is created (`crypto.randomUUID()`) and is the canonical step identity from that point forward. The existing `step.order` field continues to drive sort order in the rendered recipe but does NOT participate in image keys — reorder is free.
+
+**stepId validation (server-side)**: must match `/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i` (RFC 4122 UUID v1–v5; v4 is the expected source). PATCH bodies that include a step without a `stepId` are rejected with 400. Server does **not** generate stepIds — frontend is the source of truth.
 
 ### Slug validation rules
 
@@ -164,16 +175,18 @@ const coverDerivedKey = `recipes/${recipe.slug}/cover`
 const coverProcessedAt = imageStatus[coverDerivedKey]
 ```
 
-Step images: derived key `recipes/${recipe.slug}/step-${step.order}`.
+**Step images**: derived key `recipes/${recipe.slug}/step-${step.stepId}`. The step's `stepId` (a UUID stored on each step) is the stable identifier; `step.order` is sort metadata only and never appears in image keys.
 
-The `coverImage.key` field is no longer read from the item; the function works off `recipe.slug` (already in the item). Helper signature changes to take the full recipe, not just the cover image / step.
+The `coverImage.key` and `step.image.key` fields are no longer read from the item; the function works off `recipe.slug` and per-step `stepId` (already in the item). Helper signature changes to take the full recipe, not just the cover image / step.
 
 ### Image deletion clears `imageStatus`
 
 The existing PATCH flow that handles "swap cover image" and "remove step image" (`recipe-handler.ts` — see step-image swap test fixtures) updates `imageStatus` via `REMOVE imageStatus.#<oldKey>`. This pattern continues — but the keys are now derived. After this PRD, deleting an image:
 
-1. Removes the matching `imageStatus[<derivedKey>]` entry.
-2. Issues an S3 `DeleteObjects` for the variant files at `recipes/<slug>/<imageType>-{thumb,medium,full}.webp`.
+1. Removes the matching `imageStatus[<derivedKey>]` entry — `recipes/${slug}/cover` for cover or `recipes/${slug}/step-${stepId}` for steps.
+2. Issues an S3 `DeleteObjects` for the variant files at `recipes/<slug>/cover-{thumb,medium,full}.webp` (or `recipes/<slug>/step-<stepId>-{thumb,medium,full}.webp`).
+
+**Step deletion** is the same pattern: when a PATCH drops a step from the array (the step's `stepId` is no longer present in the new `steps`), the handler treats it as an image deletion and runs the cleanup above. The check is "stepId-was-present-and-is-now-gone" — keyed off `stepId`, not `order`, because reordering must NOT trigger deletion.
 
 Once the last `imageStatus` entry is removed, the slug-lock condition becomes false and the slug is editable again. This is the **escape hatch** referenced in non-goals.
 
@@ -258,13 +271,19 @@ await docClient.send(new UpdateCommand({
 ```ts
 async function handleUploadUrl(event) {
   // ... existing auth/parse ...
+  const { recipeId, imageType, stepId } = body
   const recipe = await getRecipeById(recipeId)
   if (!recipe) return json(404, { error: 'Recipe not found' })
 
   const slug = recipe.slug as string
-  const uploadKey = imageType === 'cover'
-    ? `${UPLOAD_PREFIX}${slug}/cover`
-    : `${UPLOAD_PREFIX}${slug}/step-${stepOrder}`
+  if (imageType === 'cover') {
+    var uploadKey = `${UPLOAD_PREFIX}${slug}/cover`
+  } else {
+    if (!stepId || !isValidUuid(stepId)) return json(400, { error: 'invalid_stepId' })
+    const steps = recipe.steps as Array<{ stepId: string }> | undefined
+    if (!steps?.some((s) => s.stepId === stepId)) return json(404, { error: 'step_not_found' })
+    var uploadKey = `${UPLOAD_PREFIX}${slug}/step-${stepId}`
+  }
 
   const uploadUrl = await getSignedUrl(s3, new PutObjectCommand({ Bucket, Key: uploadKey }), { expiresIn: 900 })
 
@@ -282,9 +301,13 @@ One extra `GetItem` per upload-URL request. Acceptable cost (~5–10 ms inside L
 ### Recipe-handler changes
 
 - `createDraft`: accept optional `slug` in body. If supplied, validate + uniqueness-check, return 400/409 as appropriate. If absent, default to `draft-${id.slice(0, 8)}`.
-- `handlePatchRecipe`: add the slug-lock + uniqueness branch described above.
-- `handleDeleteRecipe`: list/delete by `recipes/${slug}/` prefix.
-- `composeImageProcessedAt`: derive image key from `(recipe.slug, imageType[, stepOrder])`. Drop reads of `coverImage.key` / `step.image.key`.
+- `handlePatchRecipe`:
+  - Add the slug-lock + uniqueness branch described above.
+  - **Validate every step in the patch body has a valid `stepId` UUID**: 400 with body `{ error: 'invalid_stepId', message: 'Step at index <n> is missing a stepId.' }` if any step is missing one, or `{ error: 'invalid_stepId', message: 'Step at index <n> has a stepId that is not a valid UUID.' }` if the value isn't a UUID.
+  - **Validate stepIds are unique within the steps array**: 400 with body `{ error: 'duplicate_stepId', message: 'Steps at indices <i> and <j> share the same stepId.' }`.
+  - Detect dropped steps (stepIds that were present in the existing item but not in the patch body) and run the image-deletion cleanup for each one (S3 delete + `imageStatus` entry remove).
+- `handleDeleteRecipe`: list/delete by `recipes/${slug}/` prefix (catches cover + all step images regardless of stepId).
+- `composeImageProcessedAt`: derive image key from `(recipe.slug, imageType[, step.stepId])`. Drop reads of `coverImage.key` / `step.image.key`.
 
 ### Cross-stack contract change
 
@@ -296,9 +319,9 @@ Per `CLAUDE.md` and Phase 1 precedent:
 
 - Stack synthesis tests in `test/recipe-stack.test.ts` assert the new GSI exists with the expected partition key + projection. Use `Match.objectLike` against the table's `GlobalSecondaryIndexes` array entry — see existing patterns in the same file.
 - Lambda unit tests in `test/lambda/` use `aws-sdk-client-mock` for DynamoDB / S3 mocking, matching the existing pattern across `recipe-handler.test.ts`, `image-resizer.test.ts`, and `recipe-image-handler.test.ts`:
-  - `recipe-handler.test.ts` — new tests for slug-validation, slug-collision (409), slug-lock-on-patch (409 with `ConditionalCheckFailedException` mapping), draft-default-slug shape (`/^draft-[a-z0-9]{8}$/`), GSI-backed uniqueness check via `QueryCommand` mock.
+  - `recipe-handler.test.ts` — new tests for slug-validation, slug-collision (409), slug-lock-on-patch (409 with `ConditionalCheckFailedException` mapping), draft-default-slug shape (`/^draft-[a-z0-9]{8}$/`), GSI-backed uniqueness check via `QueryCommand` mock, **stepId UUID validation on PATCH (400)**, **duplicate-stepId rejection (400)**, **dropped-step image cleanup (S3 delete + imageStatus REMOVE keyed by stepId)**, **step reordering preserves images (no S3 delete fires when only `order` changes)**.
   - `image-resizer.test.ts` — replace `parseRecipeId` tests with `parseRecipeSlug`; add tests for the slug → id GSI lookup; add a `recipe_not_found` skip test.
-  - `recipe-image-handler.test.ts` — assert response shape `{ uploadUrl }` (no `key`); upload key is built from a `GetItem`-fetched slug; 404 if the recipe doesn't exist.
+  - `recipe-image-handler.test.ts` — assert response shape `{ uploadUrl }` (no `key`); upload key is built from a `GetItem`-fetched slug; 404 if the recipe doesn't exist; **cover upload key shape `uploads/recipes/<slug>/cover`**; **step upload key shape `uploads/recipes/<slug>/step-<stepId>`**; **400 if step upload arrives without a valid stepId**; **404 if step upload arrives with a stepId not present in the recipe's steps array**.
   - `image-variants.test.ts` — unchanged (the prefix constants stay the same).
 
 ### Performance
@@ -353,17 +376,28 @@ ACs are split into automated (Jest + `aws-cdk-lib/assertions` + Lambda unit test
 - [ ] When the `UpdateCommand` throws `ConditionalCheckFailedException`, the handler maps to `409 slug_locked` (re-reads to confirm) or `409 conflict` (slug changed underneath).
 - [ ] `PATCH /recipes/{id}` with `{ slug: existingOtherSlug }` returns 409 with `{ error: 'slug_taken', ... }`.
 - [ ] `PATCH /recipes/{id}` with `{ slug: existing.slug }` (same value) returns 200 (no-op, not a collision against itself).
-- [ ] `composeImageProcessedAt(recipe)` accepts a recipe object and derives the cover key from `recipes/${recipe.slug}/cover`; new signature replaces the old per-image-passing form.
+- [ ] `composeImageProcessedAt(recipe)` accepts a recipe object and derives the cover key from `recipes/${recipe.slug}/cover` and step keys from `recipes/${recipe.slug}/step-${step.stepId}`; new signature replaces the old per-image-passing form.
 - [ ] `composeImageProcessedAt` no longer reads `coverImage.key` or `step.image.key`.
 - [ ] A regression test asserts that a recipe with `imageStatus = { 'recipes/<slug>/cover': <ts> }` and no stored `coverImage.key` produces a `coverImage.processedAt` value on the response.
+- [ ] A regression test asserts that a recipe with a step whose `stepId` is `'9d904a59-…'` and `imageStatus = { 'recipes/<slug>/step-9d904a59-…': <ts> }` produces `step.image.processedAt` on the response.
 - [ ] DELETE handler issues `ListObjectsV2Command` with `Prefix: \`recipes/${recipe.slug}/\`` — asserted via `s3Mock.commandCalls(ListObjectsV2Command)[0].args[0].input.Prefix`, not via `expect.stringContaining`.
 - [ ] PATCH handler with `coverImage: undefined` (cover removal) deletes S3 variants under `recipes/${slug}/cover-*` and removes the matching `imageStatus` entry, restoring the slug-lock-unlock condition.
+- [ ] PATCH handler with a steps array that drops a step (its `stepId` is no longer present) deletes that step's S3 variants under `recipes/${slug}/step-${droppedStepId}-*` and removes `imageStatus[recipes/${slug}/step-${droppedStepId}]`.
+- [ ] PATCH handler with a steps array that **reorders** existing steps (same `stepId`s, different `order`) does NOT fire any S3 delete and does NOT modify `imageStatus`.
+- [ ] PATCH handler rejects (400) with body `{ error: 'invalid_stepId', message: ... }` any step body without a `stepId` field.
+- [ ] PATCH handler rejects (400) with body `{ error: 'invalid_stepId', message: ... }` any step body whose `stepId` is not a valid UUID (matching the documented regex).
+- [ ] PATCH handler rejects (400) with body `{ error: 'duplicate_stepId', message: ... }` a steps array containing two or more steps with the same `stepId`.
 
 ### Automated — `lambda/recipe-image-handler.ts`
 
 - [ ] Response body has shape `{ uploadUrl: string }` and **does not** include a `key` field.
-- [ ] The presigned `PutObjectCommand` is invoked with `Key: \`uploads/recipes/${slug}/${imageType}\`` for cover, and `Key: \`uploads/recipes/${slug}/step-${order}\`` for steps. Slug is read from a `GetItem` on the recipes table, not from the request body.
-- [ ] If the recipe doesn't exist, returns 404.
+- [ ] Cover upload: presigned `PutObjectCommand` is invoked with `Key: \`uploads/recipes/${slug}/cover\``. Slug is read from a `GetItem` on the recipes table, not from the request body.
+- [ ] Step upload: presigned `PutObjectCommand` is invoked with `Key: \`uploads/recipes/${slug}/step-${stepId}\``. Slug is from the `GetItem`; `stepId` is from the request body.
+- [ ] Step upload returns 400 if `stepId` is missing from the body.
+- [ ] Step upload returns 400 if `stepId` is not a valid UUID (matching the documented regex).
+- [ ] Step upload returns 404 if `stepId` is not present in the recipe's `steps` array.
+- [ ] Cover upload ignores any supplied `stepId` (no validation error from a stray field).
+- [ ] If the recipe doesn't exist, returns 404 regardless of `imageType`.
 
 ### Automated — `lambda/image-resizer.ts`
 
@@ -376,15 +410,22 @@ ACs are split into automated (Jest + `aws-cdk-lib/assertions` + Lambda unit test
 
 ### Automated — fixture sweep
 
-- [ ] All Lambda test fixtures drop the `coverImage.key` and `step.image.key` fields. Fixtures use realistic slug-based `imageStatus` keys (e.g. `'recipes/spaghetti-bolognese/cover': <ts>`).
+- [ ] All Lambda test fixtures drop the `coverImage.key` and `step.image.key` fields.
+- [ ] All step fixtures include a `stepId` field with a valid UUID value.
+- [ ] Fixtures use realistic slug-based `imageStatus` keys (e.g. `'recipes/spaghetti-bolognese/cover': <ts>`, `'recipes/spaghetti-bolognese/step-9d904a59-e83f-43b8-9f40-fbdb3008974c': <ts>`).
 - [ ] `grep -rn "coverImage.key\|coverImage\.key" lambda/ test/` returns zero matches in production code (test scaffolding that explicitly tests removal of the field is allowed).
+- [ ] `grep -rn "step-\${.*order}\|step-\${order}\|step-1\|step-2\|step-3" lambda/` returns zero matches in production code (no order-based step image keys remain).
 
 ### Manual — Post-deploy
 
 - [ ] After this PR ships, uploading a fresh recipe in the admin produces variant files at `recipes/<slug>/cover-{thumb,medium,full}.webp`. Verified by `aws s3 ls s3://akli-recipe-images-<account>-eu-west-2/recipes/<slug>/`.
+- [ ] Uploading a step image for a recipe with slug `<slug>` and step `stepId = <uuid>` produces variant files at `recipes/<slug>/step-<uuid>-{thumb,medium,full}.webp`.
 - [ ] `curl -I https://images.akli.dev/recipes/<slug>/cover-medium.webp` returns `HTTP/2 200`.
-- [ ] `aws dynamodb get-item --table recipes --key '{"id":{"S":"<id>"}}' --query Item.imageStatus` returns a map keyed by `recipes/<slug>/<type>`.
+- [ ] `curl -I https://images.akli.dev/recipes/<slug>/step-<uuid>-medium.webp` returns `HTTP/2 200`.
+- [ ] `aws dynamodb get-item --table recipes --key '{"id":{"S":"<id>"}}' --query Item.imageStatus` returns a map keyed by `recipes/<slug>/cover` and `recipes/<slug>/step-<uuid>` entries.
+- [ ] **Step reordering smoke test**: in the admin, upload images to steps 1 and 2, then drag step 2 to first position. After save + refresh, both step images still render correctly (the image originally on step 2 is now on step 1; URLs unchanged).
 - [ ] No items in the `recipes` table contain a `coverImage.key` field after the cutover (verified via `aws dynamodb scan --projection-expression coverImage`).
+- [ ] All existing recipe items have a `stepId` UUID on every step (`aws dynamodb scan --projection-expression steps` shows each step object includes `stepId`).
 
 ### Process
 
