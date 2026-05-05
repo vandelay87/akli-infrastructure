@@ -63,7 +63,7 @@ Backend / API only. UI surface lives in the [sibling PRD](../../../personal-webs
   response: { id: string, slug: string }
 ```
 
-- If `slug` is omitted, the server returns `slug = 'draft-<8 chars of id>'` (e.g. `draft-8f005719`). The frontend overrides it on first title input; the placeholder rarely reaches a saved state but is a valid slug if it does.
+- If `slug` is omitted, the server returns `slug = \`draft-${id.slice(0, 8)}\`` (e.g. `draft-8f005719`). The existing implementation at `lambda/recipe-handler.ts` uses the full UUID — the slice change is part of this PRD. The frontend overrides on first title input; the placeholder rarely reaches a saved state but is a valid slug if it does.
 - If `slug` is supplied, it is validated (see "Slug validation" below) and uniqueness-checked. On collision, return `409 Conflict` with body `{ error: 'slug_taken', message: 'Slug "beans-on-toast" is already in use.' }`.
 
 #### `PATCH /recipes/{id}`
@@ -135,7 +135,21 @@ if (patch.slug !== undefined && patch.slug !== existing.slug) {
 }
 ```
 
-Frontend mirrors the rule for UX (see sibling PRD); server is the source of truth.
+**TOCTOU race protection.** Two concurrent PATCHes could both pass the in-memory `imageStatus`-empty check and race to set different slugs. The actual `UpdateCommand` writes a `ConditionExpression`:
+
+```ts
+ConditionExpression:
+  'attribute_exists(id) AND ' +
+  '(attribute_not_exists(imageStatus) OR size(imageStatus) = :zero) AND ' +
+  'slug = :expectedOldSlug',
+ExpressionAttributeValues: {
+  ':zero': 0,
+  ':expectedOldSlug': existing.slug,
+  // ...
+}
+```
+
+A `ConditionalCheckFailedException` is mapped to `409 slug_locked` (if `imageStatus` no longer empty) or to a generic `409 conflict` (if `slug` changed underneath). Frontend mirrors the rule for UX (see sibling PRD); server is the source of truth.
 
 ### `imageStatus` → `processedAt` composition
 
@@ -258,7 +272,12 @@ async function handleUploadUrl(event) {
 }
 ```
 
-One extra `GetItem` per upload-URL request. Acceptable cost.
+**New IAM + env requirements.** The current `recipe-image-handler` has no DynamoDB integration. This PRD adds:
+
+- `TABLE_NAME` environment variable on the Lambda (existing pattern at `lib/recipe-stack.ts` `recipeHandler`).
+- `dynamodb:GetItem` IAM grant on the Recipes table ARN. Add via `table.grantReadData(recipeImageHandler)` — the read includes `BatchGetItem`/`Query`/`Scan` but is acceptable for this Lambda; alternatively scope tighter via an explicit `addToRolePolicy` with `actions: ['dynamodb:GetItem']` and `resources: [table.tableArn]`. Pick the explicit form to match the existing narrow-scoping pattern at `lib/recipe-stack.ts:155`.
+
+One extra `GetItem` per upload-URL request. Acceptable cost (~5–10 ms inside Lambda).
 
 ### Recipe-handler changes
 
@@ -275,18 +294,19 @@ The frontend (sibling PRD) drops reads of `coverImage.key`. Both PRDs deploy in 
 
 Per `CLAUDE.md` and Phase 1 precedent:
 
-- Stack synthesis tests in `test/recipe-stack.test.ts` assert the new GSI exists with the expected partition key + projection.
-- Lambda unit tests in `test/lambda/`:
-  - `recipe-handler.test.ts` — new tests for slug-validation, slug-collision (409), slug-lock-on-patch (409), draft-default-slug shape, GSI-backed uniqueness check.
-  - `image-resizer.test.ts` — replace `parseRecipeId` tests with `parseRecipeSlug`; add tests for the slug → id GSI lookup.
-  - `recipe-image-handler.test.ts` — assert response shape `{ uploadUrl }` (no `key`); upload key is built from looked-up slug.
+- Stack synthesis tests in `test/recipe-stack.test.ts` assert the new GSI exists with the expected partition key + projection. Use `Match.objectLike` against the table's `GlobalSecondaryIndexes` array entry — see existing patterns in the same file.
+- Lambda unit tests in `test/lambda/` use `aws-sdk-client-mock` for DynamoDB / S3 mocking, matching the existing pattern across `recipe-handler.test.ts`, `image-resizer.test.ts`, and `recipe-image-handler.test.ts`:
+  - `recipe-handler.test.ts` — new tests for slug-validation, slug-collision (409), slug-lock-on-patch (409 with `ConditionalCheckFailedException` mapping), draft-default-slug shape (`/^draft-[a-z0-9]{8}$/`), GSI-backed uniqueness check via `QueryCommand` mock.
+  - `image-resizer.test.ts` — replace `parseRecipeId` tests with `parseRecipeSlug`; add tests for the slug → id GSI lookup; add a `recipe_not_found` skip test.
+  - `recipe-image-handler.test.ts` — assert response shape `{ uploadUrl }` (no `key`); upload key is built from a `GetItem`-fetched slug; 404 if the recipe doesn't exist.
   - `image-variants.test.ts` — unchanged (the prefix constants stay the same).
 
 ### Performance
 
-- Adding a GSI doubles WCU/RCU charges on the Recipes table proportionally to slug-write activity. Pay-per-request mode → flat marginal cost per request.
-- One extra `GetItem` in the upload-URL endpoint and one extra `Query` on the GSI in the resizer. Both are sub-10ms inside Lambda; total upload-URL latency unchanged within the noise floor.
-- `findUniqueSlug`'s old `Scan` is removed. Net win.
+- Each recipe write incurs an additional GSI write unit (`KEYS_ONLY` projection — the cheapest option) under `PAY_PER_REQUEST`. No upfront capacity provisioning.
+- One extra `GetItem` in the upload-URL endpoint and one extra `Query` on the GSI in the resizer. Both are sub-10 ms inside Lambda; total upload-URL latency unchanged within the noise floor.
+- `findUniqueSlug`'s old `Scan` is removed. Net win — `Scan` is O(table size); `Query` on the new GSI is O(matches).
+- No backfill needed: production has no recipes; the GSI populates lazily on write. (Pre-existing items in a non-prod environment without a `slug` attribute won't appear in the index — they would need a one-shot UpdateItem to backfill.)
 
 ### Security
 
@@ -303,23 +323,41 @@ ACs are split into automated (Jest + `aws-cdk-lib/assertions` + Lambda unit test
 - [ ] `test/recipe-stack.test.ts` asserts the Recipes table has a GSI with `IndexName: 'slug-index'`.
 - [ ] The GSI has `KeySchema: [{ AttributeName: 'slug', KeyType: 'HASH' }]`.
 - [ ] The GSI has `Projection: { ProjectionType: 'KEYS_ONLY' }`.
-- [ ] The image-resizer Lambda's IAM role gains `dynamodb:Query` on the GSI ARN (asserted via `template.hasResourceProperties('AWS::IAM::Policy', ...)`).
+- [ ] The table's `AttributeDefinitions` includes `{ AttributeName: 'slug', AttributeType: 'S' }`.
+- [ ] The image-resizer Lambda's IAM policy includes a statement matching:
+  ```ts
+  Match.objectLike({
+    Action: 'dynamodb:Query',
+    Effect: 'Allow',
+    Resource: Match.objectLike({
+      'Fn::Join': Match.arrayWith([Match.arrayWith([Match.stringLikeRegexp('/index/slug-index$')])])
+    }),
+  })
+  ```
+- [ ] The recipe-image-handler Lambda's IAM policy includes a statement granting `dynamodb:GetItem` (or `BatchGetItem`/equivalent) on the Recipes table ARN (table-level, not GSI).
+- [ ] The recipe-image-handler Lambda has `TABLE_NAME` in its `Environment.Variables`.
 
 ### Automated — `lambda/recipe-handler.ts` slug enforcement
 
-- [ ] `POST /recipes/drafts` with no body returns `slug` matching `/^draft-[a-z0-9]{8}$/`.
+- [ ] `POST /recipes/drafts` with no body returns `slug` matching `/^draft-[a-z0-9]{8}$/` (server slices `id.slice(0, 8)`).
 - [ ] `POST /recipes/drafts` with `{ slug: 'beans-on-toast' }` (unused) returns the same slug.
 - [ ] `POST /recipes/drafts` with `{ slug: 'BEANS' }` returns 400 (validation: lowercase only).
-- [ ] `POST /recipes/drafts` with `{ slug: 'admin' }` returns 400 (reserved word).
+- [ ] `POST /recipes/drafts` with `{ slug: '  beans  ' }` returns 400 (whitespace not permitted by regex).
+- [ ] `POST /recipes/drafts` with `{ slug: 'admin' }` returns 400 (reserved word — collides with `GET /recipes/admin`).
+- [ ] `POST /recipes/drafts` with `{ slug: 'drafts' }` returns 400 (reserved word — collides with `POST /recipes/drafts`).
 - [ ] `POST /recipes/drafts` with `{ slug: 'beans-on-toast' }` while another recipe has that slug returns 409 with body `{ error: 'slug_taken', message: ... }`.
 - [ ] `PATCH /recipes/{id}` with `{ slug: 'new-slug' }` on a recipe with empty `imageStatus` map and unique slug returns 200 and the updated recipe.
+- [ ] `PATCH /recipes/{id}` with `{ slug: 'INVALID' }` returns 400 (PATCH validation symmetry with POST).
 - [ ] `PATCH /recipes/{id}` with `{ slug: 'new-slug' }` on a recipe with at least one `imageStatus` entry returns 409 with `{ error: 'slug_locked', ... }`.
+- [ ] `PATCH /recipes/{id}` `UpdateCommand` includes a `ConditionExpression` that gates on `size(imageStatus) = 0` AND `slug = :expectedOldSlug` (TOCTOU race protection).
+- [ ] When the `UpdateCommand` throws `ConditionalCheckFailedException`, the handler maps to `409 slug_locked` (re-reads to confirm) or `409 conflict` (slug changed underneath).
 - [ ] `PATCH /recipes/{id}` with `{ slug: existingOtherSlug }` returns 409 with `{ error: 'slug_taken', ... }`.
 - [ ] `PATCH /recipes/{id}` with `{ slug: existing.slug }` (same value) returns 200 (no-op, not a collision against itself).
-- [ ] `composeImageProcessedAt` derives the cover key from `recipes/${recipe.slug}/cover` and looks up `imageStatus[derivedKey]`.
+- [ ] `composeImageProcessedAt(recipe)` accepts a recipe object and derives the cover key from `recipes/${recipe.slug}/cover`; new signature replaces the old per-image-passing form.
 - [ ] `composeImageProcessedAt` no longer reads `coverImage.key` or `step.image.key`.
 - [ ] A regression test asserts that a recipe with `imageStatus = { 'recipes/<slug>/cover': <ts> }` and no stored `coverImage.key` produces a `coverImage.processedAt` value on the response.
-- [ ] DELETE handler issues `ListObjectsV2Command` with `Prefix: \`recipes/${recipe.slug}/\`` (asserted on `s3Mock.commandCalls`).
+- [ ] DELETE handler issues `ListObjectsV2Command` with `Prefix: \`recipes/${recipe.slug}/\`` — asserted via `s3Mock.commandCalls(ListObjectsV2Command)[0].args[0].input.Prefix`, not via `expect.stringContaining`.
+- [ ] PATCH handler with `coverImage: undefined` (cover removal) deletes S3 variants under `recipes/${slug}/cover-*` and removes the matching `imageStatus` entry, restoring the slug-lock-unlock condition.
 
 ### Automated — `lambda/recipe-image-handler.ts`
 
@@ -331,8 +369,10 @@ ACs are split into automated (Jest + `aws-cdk-lib/assertions` + Lambda unit test
 
 - [ ] `parseRecipeSlug('uploads/recipes/beans-on-toast/cover')` returns `'beans-on-toast'`.
 - [ ] `parseRecipeSlug('uploads/something-else/...')` returns `undefined`.
+- [ ] Resizer **flow order** (asserted via mock-call ordering): write variants → delete source → query GSI → update DDB. The variant PUTs and source delete fire regardless of whether the GSI lookup succeeds.
 - [ ] Resizer queries `slug-index` GSI to resolve slug → id; the resulting `id` is used in the `UpdateCommand.Key`.
-- [ ] If no recipe has the slug, the resizer logs `recipe_not_found` and skips the DDB write (still writes variant PUTs and deletes the source — same shape as the existing `recipe_deleted` skip).
+- [ ] If no recipe has the slug, the resizer logs `recipe_not_found` and skips the DDB write — variant PUTs and source delete still fire.
+- [ ] Documented edge case (no test required): if a slug is changed between upload-URL request and resizer execution, variants land under the old slug and stay orphaned. Frontend mitigates via pessimistic upload lock (sibling PRD).
 
 ### Automated — fixture sweep
 
