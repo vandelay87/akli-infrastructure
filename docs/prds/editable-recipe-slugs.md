@@ -393,12 +393,3 @@ ACs are split into automated (Jest + `aws-cdk-lib/assertions` + Lambda unit test
 - [ ] `pnpm lint` passes locally.
 - [ ] `cdk synth` produces a clean template (only the intended additions).
 
-## Open Questions
-
-All resolved during design discussion:
-
-- **Default slug at draft creation** → `draft-<8 chars of id>` placeholder, frontend overrides on first title input.
-- **Slug-collision error shape** → `409 Conflict` with `{ error: 'slug_taken', message: ... }`. No auto-suffix.
-- **Slug-lock signal** → "any entry in `imageStatus` map" (server-side source of truth; frontend mirrors).
-- **Step-image stability under reordering** → out of scope; documented as a known constraint with the same shape as slug-change.
-- **Store vs derive image keys** → derive (Option B). `coverImage.key` and `step.image.key` are dropped from the data model.
