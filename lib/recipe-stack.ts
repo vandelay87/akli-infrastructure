@@ -49,6 +49,12 @@ export class RecipeStack extends Stack {
       sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
     })
 
+    table.addGlobalSecondaryIndex({
+      indexName: 'slug-index',
+      partitionKey: { name: 'slug', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.KEYS_ONLY,
+    })
+
     // S3 image bucket
     const imageBucket = new s3.Bucket(this, 'RecipeImagesBucket', {
       bucketName: `akli-recipe-images-${this.account}-${this.region}`,
@@ -115,10 +121,15 @@ export class RecipeStack extends Stack {
       functionName: 'akli-recipe-image-handler',
       environment: {
         IMAGE_BUCKET_NAME: imageBucket.bucketName,
+        TABLE_NAME: table.tableName,
       },
     })
 
     imageBucket.grantPut(recipeImageHandler)
+    recipeImageHandler.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem'],
+      resources: [table.tableArn],
+    }))
 
     const imageResizer = new NodejsFunction(this, 'ImageResizer', {
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -157,6 +168,10 @@ export class RecipeStack extends Stack {
     imageResizer.addToRolePolicy(new iam.PolicyStatement({
       actions: ['dynamodb:UpdateItem'],
       resources: [table.tableArn],
+    }))
+    imageResizer.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:Query'],
+      resources: [`${table.tableArn}/index/slug-index`],
     }))
 
     // S3 event notification for image uploads
