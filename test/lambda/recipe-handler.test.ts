@@ -11,7 +11,7 @@ process.env.TABLE_NAME = 'test-recipes-table'
 process.env.IMAGE_BUCKET_NAME = 'test-recipe-images-bucket'
 
 // Import handler after mock setup
-import { handler } from '../../lambda/recipe-handler'
+import { handler, isValidSlug, RESERVED_SLUGS } from '../../lambda/recipe-handler'
 
 // Build a fake JWT with the given payload (header.payload.signature)
 function fakeJwt(payload: Record<string, unknown>): string {
@@ -335,6 +335,52 @@ describe('Recipe Lambda handler', () => {
     })
   })
 
+  // ─── isValidSlug helper (issue #147 AC1, AC2) ───────────────────────
+  describe('isValidSlug', () => {
+    it('accepts simple lowercase ASCII slugs', () => {
+      expect(isValidSlug('beans-on-toast')).toBe(true)
+      expect(isValidSlug('a')).toBe(true)
+      expect(isValidSlug('recipe-1')).toBe(true)
+      expect(isValidSlug('123')).toBe(true)
+    })
+
+    it('rejects uppercase letters', () => {
+      expect(isValidSlug('BEANS')).toBe(false)
+      expect(isValidSlug('Beans-On-Toast')).toBe(false)
+    })
+
+    it('rejects whitespace', () => {
+      expect(isValidSlug('  beans  ')).toBe(false)
+      expect(isValidSlug('beans on toast')).toBe(false)
+    })
+
+    it('rejects leading or trailing hyphens', () => {
+      expect(isValidSlug('-beans')).toBe(false)
+      expect(isValidSlug('beans-')).toBe(false)
+      expect(isValidSlug('-beans-')).toBe(false)
+    })
+
+    it('rejects non-ASCII characters and punctuation', () => {
+      expect(isValidSlug('beans!')).toBe(false)
+      expect(isValidSlug('beans/toast')).toBe(false)
+      expect(isValidSlug('café')).toBe(false)
+      expect(isValidSlug('beans_on_toast')).toBe(false)
+    })
+
+    it('rejects empty string and slugs longer than 100 characters', () => {
+      expect(isValidSlug('')).toBe(false)
+      expect(isValidSlug('a'.repeat(100))).toBe(true)
+      expect(isValidSlug('a'.repeat(101))).toBe(false)
+    })
+
+    it('rejects reserved slugs', () => {
+      expect(RESERVED_SLUGS).toEqual(expect.arrayContaining(['new', 'admin', 'drafts', 'images']))
+      for (const reserved of ['new', 'admin', 'drafts', 'images']) {
+        expect(isValidSlug(reserved)).toBe(false)
+      }
+    })
+  })
+
   // ─── POST /recipes/drafts — create draft ────────────────────────────
   describe('POST /recipes/drafts — create draft', () => {
     it('returns 401 without a valid token', async () => {
@@ -368,7 +414,7 @@ describe('Recipe Lambda handler', () => {
     })
 
     it('returns 201 with { id, slug } in the body on success', async () => {
-      ddbMock.on(ScanCommand).resolves({ Items: [] })
+      ddbMock.on(QueryCommand).resolves({ Items: [] })
       ddbMock.on(PutCommand).resolves({})
 
       const event = makeEvent({
@@ -390,7 +436,7 @@ describe('Recipe Lambda handler', () => {
     it('writes status=draft and ttl=now+30d to DynamoDB', async () => {
       jest.useFakeTimers().setSystemTime(new Date('2026-04-19T12:00:00Z'))
       try {
-        ddbMock.on(ScanCommand).resolves({ Items: [] })
+        ddbMock.on(QueryCommand).resolves({ Items: [] })
         ddbMock.on(PutCommand).resolves({})
 
         const event = makeEvent({
@@ -418,7 +464,7 @@ describe('Recipe Lambda handler', () => {
     })
 
     it('initialises imageStatus as an empty map on the new item', async () => {
-      ddbMock.on(ScanCommand).resolves({ Items: [] })
+      ddbMock.on(QueryCommand).resolves({ Items: [] })
       ddbMock.on(PutCommand).resolves({})
 
       const event = makeEvent({
@@ -439,8 +485,9 @@ describe('Recipe Lambda handler', () => {
       expect(item.imageStatus).toEqual({})
     })
 
-    it('defaults slug to draft-<uuid> when no title is provided', async () => {
-      ddbMock.on(ScanCommand).resolves({ Items: [] })
+    // AC4: server-generated default slug shape is `draft-<8 hex chars>`.
+    it('defaults slug to /^draft-[a-z0-9]{8}$/ when no slug is provided', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [] })
       ddbMock.on(PutCommand).resolves({})
 
       const event = makeEvent({
@@ -454,25 +501,155 @@ describe('Recipe Lambda handler', () => {
 
       expect(result.statusCode).toBe(201)
       const body = JSON.parse(result.body as string)
-      expect(body.slug).toMatch(/^draft-/)
+      expect(body.slug).toMatch(/^draft-[a-z0-9]{8}$/)
+      // Default slug is derived from id.slice(0, 8) — first 8 chars of the UUID with hyphens stripped or sliced.
+      expect(typeof body.id).toBe('string')
+      expect(body.slug).toBe(`draft-${(body.id as string).slice(0, 8)}`)
     })
 
-    it('derives slug from the title when one is provided', async () => {
-      ddbMock.on(ScanCommand).resolves({ Items: [] })
+    // AC5: caller-supplied slug is echoed back when valid and unused.
+    it('returns 201 with the caller-supplied slug when it is valid and unused', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [] })
       ddbMock.on(PutCommand).resolves({})
 
       const event = makeEvent({
         routeKey: 'POST /recipes/drafts',
         rawPath: '/recipes/drafts',
         headers: { authorization: `Bearer ${adminToken}` },
-        body: JSON.stringify({ title: 'My New Recipe' }),
+        body: JSON.stringify({ slug: 'beans-on-toast' }),
       })
 
       const result = await handler(event)
 
       expect(result.statusCode).toBe(201)
       const body = JSON.parse(result.body as string)
-      expect(body.slug).toBe('my-new-recipe')
+      expect(body.slug).toBe('beans-on-toast')
+
+      // Persisted item also has the caller-supplied slug
+      const putCalls = ddbMock.commandCalls(PutCommand)
+      expect(putCalls).toHaveLength(1)
+      const item = putCalls[0].args[0].input.Item as Record<string, unknown>
+      expect(item.slug).toBe('beans-on-toast')
+    })
+
+    // AC3: uniqueness lookup uses the slug-index GSI via QueryCommand (NOT ScanCommand).
+    it('checks slug uniqueness via QueryCommand against IndexName: slug-index', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [] })
+      ddbMock.on(PutCommand).resolves({})
+
+      const event = makeEvent({
+        routeKey: 'POST /recipes/drafts',
+        rawPath: '/recipes/drafts',
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ slug: 'beans-on-toast' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(201)
+
+      const queryCalls = ddbMock.commandCalls(QueryCommand)
+      expect(queryCalls).toHaveLength(1)
+      const input = queryCalls[0].args[0].input
+      expect(input.TableName).toBe('test-recipes-table')
+      expect(input.IndexName).toBe('slug-index')
+      expect(input.KeyConditionExpression).toBe('slug = :slug')
+      expect(input.ExpressionAttributeValues).toEqual({ ':slug': 'beans-on-toast' })
+
+      // Must NOT use a ScanCommand for uniqueness lookup.
+      expect(ddbMock.commandCalls(ScanCommand)).toHaveLength(0)
+    })
+
+    // AC6: lowercase enforcement via regex.
+    it('returns 400 for an uppercase slug', async () => {
+      const event = makeEvent({
+        routeKey: 'POST /recipes/drafts',
+        rawPath: '/recipes/drafts',
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ slug: 'BEANS' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(400)
+      const body = JSON.parse(result.body as string)
+      expect(body).toHaveProperty('error')
+      // Must not have written the item.
+      expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0)
+    })
+
+    // AC7: whitespace rejected by regex.
+    it('returns 400 for a slug containing whitespace', async () => {
+      const event = makeEvent({
+        routeKey: 'POST /recipes/drafts',
+        rawPath: '/recipes/drafts',
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ slug: '  beans  ' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(400)
+      const body = JSON.parse(result.body as string)
+      expect(body).toHaveProperty('error')
+      expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0)
+    })
+
+    // AC8: reserved word "admin" rejected.
+    it('returns 400 for the reserved slug "admin"', async () => {
+      const event = makeEvent({
+        routeKey: 'POST /recipes/drafts',
+        rawPath: '/recipes/drafts',
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ slug: 'admin' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(400)
+      const body = JSON.parse(result.body as string)
+      expect(body).toHaveProperty('error')
+      expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0)
+    })
+
+    // AC9: reserved word "drafts" rejected.
+    it('returns 400 for the reserved slug "drafts"', async () => {
+      const event = makeEvent({
+        routeKey: 'POST /recipes/drafts',
+        rawPath: '/recipes/drafts',
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ slug: 'drafts' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(400)
+      const body = JSON.parse(result.body as string)
+      expect(body).toHaveProperty('error')
+      expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0)
+    })
+
+    // AC10: collision returns 409 with the exact error body.
+    it('returns 409 slug_taken when the supplied slug is already in use', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [{ id: 'some-other-recipe-id' }] })
+
+      const event = makeEvent({
+        routeKey: 'POST /recipes/drafts',
+        rawPath: '/recipes/drafts',
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ slug: 'beans-on-toast' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(409)
+      const body = JSON.parse(result.body as string)
+      expect(body).toEqual({
+        error: 'slug_taken',
+        message: 'Slug "beans-on-toast" is already in use.',
+      })
+      // Must not persist the colliding draft.
+      expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0)
     })
   })
 

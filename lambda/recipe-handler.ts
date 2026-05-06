@@ -86,6 +86,18 @@ async function findUniqueSlug(baseSlug: string): Promise<string> {
   }
 }
 
+// ── Slug validation (issue #147) ────────────────────────────────────────────
+// Stubs: deliberately unimplemented so TDD tests fail at runtime, not compile.
+export const RESERVED_SLUGS: readonly string[] = []
+
+export function isValidSlug(_slug: string): boolean {
+  throw new Error('isValidSlug not implemented')
+}
+
+export async function slugExists(_slug: string, _excludeId?: string): Promise<boolean> {
+  throw new Error('slugExists not implemented')
+}
+
 function imageStatusOf(item: Record<string, unknown>): Record<string, number> {
   return (item.imageStatus as Record<string, number> | undefined) ?? {}
 }
