@@ -60,42 +60,31 @@ function tagsToArray(tags: unknown): string[] {
   return []
 }
 
-function generateSlug(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-}
-
-async function findUniqueSlug(baseSlug: string): Promise<string> {
-  let candidate = baseSlug
-  let suffix = 2
-
-  while (true) {
-    const result = await docClient.send(
-      new ScanCommand({
-        TableName: TABLE_NAME,
-        FilterExpression: 'slug = :slug',
-        ExpressionAttributeValues: { ':slug': candidate },
-      }),
-    )
-
-    if (!result.Items || result.Items.length === 0) return candidate
-    candidate = `${baseSlug}-${suffix}`
-    suffix += 1
-  }
-}
-
 // ── Slug validation (issue #147) ────────────────────────────────────────────
-// Stubs: deliberately unimplemented so TDD tests fail at runtime, not compile.
-export const RESERVED_SLUGS: readonly string[] = []
+export const RESERVED_SLUGS = ['new', 'admin', 'drafts', 'images'] as const
 
-export function isValidSlug(_slug: string): boolean {
-  throw new Error('isValidSlug not implemented')
+const SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
+
+export function isValidSlug(slug: string): boolean {
+  if (typeof slug !== 'string') return false
+  if (slug.length < 1 || slug.length > 100) return false
+  if (!SLUG_REGEX.test(slug)) return false
+  if ((RESERVED_SLUGS as readonly string[]).includes(slug)) return false
+  return true
 }
 
-export async function slugExists(_slug: string, _excludeId?: string): Promise<boolean> {
-  throw new Error('slugExists not implemented')
+export async function slugExists(slug: string, excludeId?: string): Promise<boolean> {
+  const result = await docClient.send(
+    new QueryCommand({
+      TableName: TABLE_NAME,
+      IndexName: 'slug-index',
+      KeyConditionExpression: 'slug = :slug',
+      ExpressionAttributeValues: { ':slug': slug },
+    }),
+  )
+  if (!result.Items || result.Items.length === 0) return false
+  if (excludeId) return result.Items.some((i) => (i as { id: string }).id !== excludeId)
+  return true
 }
 
 function imageStatusOf(item: Record<string, unknown>): Record<string, number> {
@@ -309,11 +298,21 @@ async function handleCreateDraft(event: APIGatewayProxyEventV2): Promise<APIGate
   if (!payload) return json(401, { error: 'Unauthorised' })
   if (!isAdmin(event)) return json(403, { error: 'Forbidden' })
 
-  const input = JSON.parse(event.body ?? '{}') as { title?: string }
-  const title = typeof input.title === 'string' ? input.title : ''
-
+  const input = JSON.parse(event.body ?? '{}') as { slug?: unknown }
   const id = randomUUID()
-  const slug = title.length > 0 ? await findUniqueSlug(generateSlug(title)) : `draft-${id}`
+  const requestedSlug = typeof input.slug === 'string' ? input.slug : undefined
+
+  let slug: string
+  if (requestedSlug !== undefined) {
+    if (!isValidSlug(requestedSlug)) return json(400, { error: 'invalid_slug' })
+    if (await slugExists(requestedSlug)) {
+      return json(409, { error: 'slug_taken', message: `Slug "${requestedSlug}" is already in use.` })
+    }
+    slug = requestedSlug
+  } else {
+    slug = `draft-${id.slice(0, 8)}`
+  }
+
   const ttl = Math.floor(Date.now() / 1000) + DRAFT_TTL_SECONDS
   const now = new Date().toISOString()
 
@@ -322,7 +321,7 @@ async function handleCreateDraft(event: APIGatewayProxyEventV2): Promise<APIGate
     slug,
     status: DRAFT,
     ttl,
-    title,
+    title: '',
     intro: '',
     ingredients: [],
     steps: [],
