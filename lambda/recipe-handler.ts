@@ -60,16 +60,14 @@ function tagsToArray(tags: unknown): string[] {
   return []
 }
 
-// ── Slug validation (issue #147) ────────────────────────────────────────────
-export const RESERVED_SLUGS = ['new', 'admin', 'drafts', 'images'] as const
+export const RESERVED_SLUGS: readonly string[] = ['new', 'admin', 'drafts', 'images']
 
 const SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
 
 export function isValidSlug(slug: string): boolean {
-  if (typeof slug !== 'string') return false
   if (slug.length < 1 || slug.length > 100) return false
   if (!SLUG_REGEX.test(slug)) return false
-  if ((RESERVED_SLUGS as readonly string[]).includes(slug)) return false
+  if (RESERVED_SLUGS.includes(slug)) return false
   return true
 }
 
