@@ -172,6 +172,45 @@ describe('RecipeStack', () => {
     })
   })
 
+  describe('GSI slug-index', () => {
+    it('creates GSI with name slug-index', () => {
+      template.hasResourceProperties('AWS::DynamoDB::Table', {
+        GlobalSecondaryIndexes: Match.arrayWith([
+          Match.objectLike({
+            IndexName: 'slug-index',
+          }),
+        ]),
+      })
+    })
+
+    it('has partition key slug (String)', () => {
+      template.hasResourceProperties('AWS::DynamoDB::Table', {
+        GlobalSecondaryIndexes: Match.arrayWith([
+          Match.objectLike({
+            IndexName: 'slug-index',
+            KeySchema: [
+              { AttributeName: 'slug', KeyType: 'HASH' },
+            ],
+          }),
+        ]),
+        AttributeDefinitions: Match.arrayWith([
+          { AttributeName: 'slug', AttributeType: 'S' },
+        ]),
+      })
+    })
+
+    it('uses KEYS_ONLY projection', () => {
+      template.hasResourceProperties('AWS::DynamoDB::Table', {
+        GlobalSecondaryIndexes: Match.arrayWith([
+          Match.objectLike({
+            IndexName: 'slug-index',
+            Projection: { ProjectionType: 'KEYS_ONLY' },
+          }),
+        ]),
+      })
+    })
+  })
+
   describe('S3 image bucket', () => {
     it('creates an S3 bucket named akli-recipe-images-{account-id}-eu-west-2', () => {
       template.hasResourceProperties('AWS::S3::Bucket', {
@@ -421,6 +460,27 @@ describe('RecipeStack', () => {
       })
     })
 
+    it('grants dynamodb:Query on the slug-index GSI ARN', () => {
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        Roles: Match.arrayWith([
+          { Ref: Match.stringLikeRegexp('^ImageResizerServiceRole.*') },
+        ]),
+        PolicyDocument: Match.objectLike({
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: 'dynamodb:Query',
+              Effect: 'Allow',
+              Resource: Match.objectLike({
+                'Fn::Join': Match.arrayWith([
+                  Match.arrayWith([Match.stringLikeRegexp('/index/slug-index$')]),
+                ]),
+              }),
+            }),
+          ]),
+        }),
+      })
+    })
+
     it('does not grant dynamodb:PutItem, dynamodb:DeleteItem, or dynamodb:Scan on the image-resizer role', () => {
       const assertResizerLacks = (action: string) => {
         // CDK consolidates actions into either a string or string[] — assert both forms.
@@ -441,6 +501,36 @@ describe('RecipeStack', () => {
       for (const action of ['dynamodb:PutItem', 'dynamodb:DeleteItem', 'dynamodb:Scan']) {
         assertResizerLacks(action)
       }
+    })
+  })
+
+  describe('IAM — recipe-image-handler role', () => {
+    it('recipe-image-handler Lambda environment includes TABLE_NAME set to the recipes table name', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', Match.objectLike({
+        FunctionName: 'akli-recipe-image-handler',
+        Environment: {
+          Variables: Match.objectLike({
+            TABLE_NAME: { Ref: Match.stringLikeRegexp('^RecipesTable.*') },
+          }),
+        },
+      }))
+    })
+
+    it('grants dynamodb:GetItem on the recipes table ARN (table-level, not GSI)', () => {
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        Roles: Match.arrayWith([
+          { Ref: Match.stringLikeRegexp('^RecipeImageHandlerServiceRole.*') },
+        ]),
+        PolicyDocument: Match.objectLike({
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: 'dynamodb:GetItem',
+              Effect: 'Allow',
+              Resource: { 'Fn::GetAtt': [Match.stringLikeRegexp('^RecipesTable.*'), 'Arn'] },
+            }),
+          ]),
+        }),
+      })
     })
   })
 
