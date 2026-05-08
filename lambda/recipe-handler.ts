@@ -62,6 +62,11 @@ function tagsToArray(tags: unknown): string[] {
 
 export const RESERVED_SLUGS: readonly string[] = ['new', 'admin', 'drafts', 'images']
 
+const SLUG_LOCKED_RESPONSE = {
+  error: 'slug_locked',
+  message: 'Cannot change slug after images have been uploaded. Delete uploaded images first.',
+} as const
+
 const SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
 
 export function isValidSlug(slug: string): boolean {
@@ -421,20 +426,14 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
   if (slugChanging) {
     if (!isValidSlug(requestedSlug)) return json(400, { error: 'invalid_slug' })
 
-    const imageStatusMap = (existing.imageStatus as Record<string, unknown> | undefined) ?? {}
-    if (Object.keys(imageStatusMap).length > 0) {
-      return json(409, {
-        error: 'slug_locked',
-        message: 'Cannot change slug after images have been uploaded. Delete uploaded images first.',
-      })
+    if (Object.keys(imageStatusOf(existing)).length > 0) {
+      return json(409, SLUG_LOCKED_RESPONSE)
     }
 
     if (await slugExists(requestedSlug, id)) {
       return json(409, { error: 'slug_taken', message: `Slug "${requestedSlug}" is already in use.` })
     }
-  }
-
-  if (!slugChanging) {
+  } else {
     delete updates.slug
   }
 
@@ -500,12 +499,8 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
   } catch (err) {
     if (err instanceof ConditionalCheckFailedException || (err as { name?: string }).name === 'ConditionalCheckFailedException') {
       const reRead = await getRecipeById(id)
-      const reReadImageStatus = (reRead?.imageStatus as Record<string, unknown> | undefined) ?? {}
-      if (Object.keys(reReadImageStatus).length > 0) {
-        return json(409, {
-          error: 'slug_locked',
-          message: 'Cannot change slug after images have been uploaded. Delete uploaded images first.',
-        })
+      if (reRead && Object.keys(imageStatusOf(reRead)).length > 0) {
+        return json(409, SLUG_LOCKED_RESPONSE)
       }
       return json(409, { error: 'conflict', message: 'Recipe was modified by another request. Please retry.' })
     }
