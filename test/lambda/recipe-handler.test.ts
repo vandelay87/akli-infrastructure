@@ -1,3 +1,4 @@
+import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb'
 import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3'
 import { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb'
 import type { APIGatewayProxyEventV2 } from 'aws-lambda'
@@ -1429,6 +1430,311 @@ describe('Recipe Lambda handler', () => {
       // The user-supplied ttl value must not be present
       expect((input.ExpressionAttributeNames as Record<string, string>)['#ttl']).toBeUndefined()
       expect((input.ExpressionAttributeValues as Record<string, unknown>)[':ttl']).toBe(undefined)
+    })
+  })
+
+  // ─── PATCH /recipes/{id} — slug acceptance and lock ─────────────────
+  describe('PATCH /recipes/{id} — slug acceptance and lock', () => {
+    it('returns 200 and updates the slug when imageStatus is empty and the new slug is unique', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        slug: 'old-slug',
+        authorId: 'contributor-user-id',
+        imageStatus: {},
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(QueryCommand).resolves({ Items: [] })
+      // Mock returns the OLD item — so the new slug only ends up in the response if the
+      // handler actually puts it into `updates` (rather than stripping it).
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${contributorToken}` },
+        body: JSON.stringify({ slug: 'new-slug' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body.slug).toBe('new-slug')
+
+      // The UpdateCommand should be invoked exactly once and must actually carry the new slug.
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      expect(updateCalls).toHaveLength(1)
+      const values = updateCalls[0].args[0].input.ExpressionAttributeValues as Record<string, unknown>
+      expect(values[':slug']).toBe('new-slug')
+    })
+
+    it('returns 409 slug_locked when imageStatus has at least one entry', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        slug: 'old-slug',
+        authorId: 'contributor-user-id',
+        imageStatus: { 'recipes/old-slug/cover': 1_745_000_000_000 },
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${contributorToken}` },
+        body: JSON.stringify({ slug: 'new-slug' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(409)
+      const body = JSON.parse(result.body as string)
+      expect(body).toEqual({
+        error: 'slug_locked',
+        message: 'Cannot change slug after images have been uploaded. Delete uploaded images first.',
+      })
+
+      // In-memory check fails first — no UpdateCommand should be issued.
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0)
+    })
+
+    it('returns 400 when the supplied slug is invalid', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        slug: 'old-slug',
+        authorId: 'contributor-user-id',
+        imageStatus: {},
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${contributorToken}` },
+        body: JSON.stringify({ slug: 'INVALID' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(400)
+      // Validation must happen before any write.
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0)
+    })
+
+    it('returns 409 slug_taken when the new slug is already in use by another recipe', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        slug: 'old-slug',
+        authorId: 'contributor-user-id',
+        imageStatus: {},
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      // Slug-index returns a different recipe owning the desired slug.
+      ddbMock.on(QueryCommand).resolves({ Items: [{ id: 'some-other-recipe-id' }] })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${contributorToken}` },
+        body: JSON.stringify({ slug: 'taken-slug' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(409)
+      const body = JSON.parse(result.body as string)
+      expect(body).toEqual({
+        error: 'slug_taken',
+        message: 'Slug "taken-slug" is already in use.',
+      })
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0)
+    })
+
+    it('returns 200 when the slug-index returns the recipe being patched (excludeId ignores self)', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        slug: 'old-slug',
+        authorId: 'contributor-user-id',
+        imageStatus: {},
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      // Slug-index returns ONLY the recipe being patched — must not be treated as a collision.
+      ddbMock.on(QueryCommand).resolves({ Items: [{ id: 'recipe-uuid-1' }] })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${contributorToken}` },
+        body: JSON.stringify({ slug: 'new-slug' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      // The handler must have queried the slug-index (proving slugExists ran with excludeId).
+      const queryCalls = ddbMock.commandCalls(QueryCommand)
+      expect(queryCalls.length).toBeGreaterThanOrEqual(1)
+      const slugQuery = queryCalls.find((c) => c.args[0].input.IndexName === 'slug-index')
+      expect(slugQuery).toBeDefined()
+
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      expect(updateCalls).toHaveLength(1)
+      const values = updateCalls[0].args[0].input.ExpressionAttributeValues as Record<string, unknown>
+      expect(values[':slug']).toBe('new-slug')
+    })
+
+    it('UpdateCommand for a slug-changing PATCH includes a TOCTOU ConditionExpression with all three clauses', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        slug: 'old-slug',
+        authorId: 'contributor-user-id',
+        imageStatus: {},
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(QueryCommand).resolves({ Items: [] })
+      ddbMock.on(UpdateCommand).resolves({
+        Attributes: { ...oldItem, slug: 'new-slug' },
+      })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${contributorToken}` },
+        body: JSON.stringify({ slug: 'new-slug' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      expect(updateCalls).toHaveLength(1)
+      const input = updateCalls[0].args[0].input
+      const condition = input.ConditionExpression
+      expect(typeof condition).toBe('string')
+      // attribute_exists(id) clause
+      expect(condition).toMatch(/attribute_exists\s*\(\s*id\s*\)/)
+      // imageStatus-empty clause: attribute_not_exists OR size = :zero
+      expect(condition).toMatch(/attribute_not_exists\s*\(\s*imageStatus\s*\)\s+OR\s+size\s*\(\s*imageStatus\s*\)\s*=\s*:zero/)
+      // expected old slug clause (PRD specifies :expectedOldSlug, but accept :oldSlug for flexibility).
+      expect(condition).toMatch(/slug\s*=\s*:(?:expectedOldSlug|oldSlug)/)
+
+      const values = input.ExpressionAttributeValues as Record<string, unknown>
+      expect(values[':zero']).toBe(0)
+      // The expected-old-slug binding must be present and match the existing slug.
+      const expectedOldSlugValue = values[':expectedOldSlug'] ?? values[':oldSlug']
+      expect(expectedOldSlugValue).toBe('old-slug')
+    })
+
+    it('maps ConditionalCheckFailedException to 409 slug_locked when re-read shows imageStatus has been populated', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        slug: 'old-slug',
+        authorId: 'contributor-user-id',
+        imageStatus: {},
+      })
+      const reReadItem = {
+        ...oldItem,
+        imageStatus: { 'recipes/old-slug/cover': 1_745_000_000_000 },
+      }
+      // First Get is the pre-read; second Get is the re-read after the conditional failure.
+      ddbMock
+        .on(GetCommand)
+        .resolvesOnce({ Item: oldItem })
+        .resolvesOnce({ Item: reReadItem })
+      ddbMock.on(QueryCommand).resolves({ Items: [] })
+      ddbMock.on(UpdateCommand).rejects(
+        new ConditionalCheckFailedException({
+          $metadata: {},
+          message: 'The conditional request failed',
+        }),
+      )
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${contributorToken}` },
+        body: JSON.stringify({ slug: 'new-slug' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(409)
+      const body = JSON.parse(result.body as string)
+      expect(body.error).toBe('slug_locked')
+    })
+
+    it('maps ConditionalCheckFailedException to 409 conflict when re-read shows the slug changed underneath', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        slug: 'old-slug',
+        authorId: 'contributor-user-id',
+        imageStatus: {},
+      })
+      const reReadItem = {
+        ...oldItem,
+        slug: 'someone-else-changed-it',
+        imageStatus: {},
+      }
+      ddbMock
+        .on(GetCommand)
+        .resolvesOnce({ Item: oldItem })
+        .resolvesOnce({ Item: reReadItem })
+      ddbMock.on(QueryCommand).resolves({ Items: [] })
+      ddbMock.on(UpdateCommand).rejects(
+        new ConditionalCheckFailedException({
+          $metadata: {},
+          message: 'The conditional request failed',
+        }),
+      )
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${contributorToken}` },
+        body: JSON.stringify({ slug: 'new-slug' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(409)
+      const body = JSON.parse(result.body as string)
+      expect(body.error).toBe('conflict')
+    })
+
+    it('does NOT add a ConditionExpression when slug is omitted from the patch body', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        slug: 'old-slug',
+        authorId: 'contributor-user-id',
+        imageStatus: { 'recipes/old-slug/cover': 1_745_000_000_000 },
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${contributorToken}` },
+        body: JSON.stringify({ title: 'Just a title change' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      expect(updateCalls).toHaveLength(1)
+      expect(updateCalls[0].args[0].input.ConditionExpression).toBeUndefined()
     })
   })
 
