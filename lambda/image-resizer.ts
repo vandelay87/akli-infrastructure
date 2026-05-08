@@ -25,6 +25,8 @@ const VARIANTS: readonly ImageVariant[] = VARIANT_SUFFIXES.map((suffix) => ({
   ...VARIANT_SIZING[suffix],
 }))
 
+type SkipReason = 'unrecognised_key_shape' | 'recipe_not_found' | 'recipe_deleted'
+
 // Accepts exactly `uploads/recipes/<slug>/<type>` — extra trailing segments are rejected.
 export function parseRecipeSlug(uploadKey: string): string | undefined {
   if (!uploadKey.startsWith(UPLOAD_PREFIX)) return undefined
@@ -73,7 +75,7 @@ export async function handler(event: S3Event): Promise<void> {
       }),
     )
 
-    const logSkip = (reason: string) =>
+    const logSkip = (reason: SkipReason) =>
       console.info({ event: 'resizer.writeback.skipped', reason, key })
 
     await s3.send(
@@ -94,7 +96,8 @@ export async function handler(event: S3Event): Promise<void> {
         ExpressionAttributeValues: { ':slug': slug },
       }),
     )
-    const recipeId = (lookup.Items?.[0] as { id?: string } | undefined)?.id
+    const [item] = lookup.Items ?? []
+    const recipeId = (item as { id?: string } | undefined)?.id
     if (!recipeId) {
       logSkip('recipe_not_found')
       continue
