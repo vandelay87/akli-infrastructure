@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { ConditionalCheckFailedException, DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3'
 import { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb'
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
@@ -61,6 +61,11 @@ function tagsToArray(tags: unknown): string[] {
 }
 
 export const RESERVED_SLUGS: readonly string[] = ['new', 'admin', 'drafts', 'images']
+
+const SLUG_LOCKED_RESPONSE = {
+  error: 'slug_locked',
+  message: 'Cannot change slug after images have been uploaded. Delete uploaded images first.',
+} as const
 
 const SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
 
@@ -408,13 +413,29 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
   }
 
   const updates = JSON.parse(event.body ?? '{}') as Record<string, unknown>
-  delete updates.slug
   delete updates.id
   delete updates.authorId
   delete updates.createdAt
   delete updates.status
   delete updates.ttl
   stripProcessedAtFromBody(updates)
+
+  const requestedSlug = typeof updates.slug === 'string' ? updates.slug : undefined
+  const slugChanging = requestedSlug !== undefined && requestedSlug !== existing.slug
+
+  if (slugChanging) {
+    if (!isValidSlug(requestedSlug)) return json(400, { error: 'invalid_slug' })
+
+    if (Object.keys(imageStatusOf(existing)).length > 0) {
+      return json(409, SLUG_LOCKED_RESPONSE)
+    }
+
+    if (await slugExists(requestedSlug, id)) {
+      return json(409, { error: 'slug_taken', message: `Slug "${requestedSlug}" is already in use.` })
+    }
+  } else {
+    delete updates.slug
+  }
 
   const now = new Date().toISOString()
   const setParts: string[] = []
@@ -453,16 +474,38 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
     ? `SET ${setParts.join(', ')} REMOVE ${removeParts.join(', ')}`
     : `SET ${setParts.join(', ')}`
 
-  const updateResult = await docClient.send(
-    new UpdateCommand({
-      TableName: TABLE_NAME,
-      Key: { id },
-      UpdateExpression: updateExpression,
-      ExpressionAttributeNames: expressionNames,
-      ExpressionAttributeValues: expressionValues,
-      ReturnValues: 'ALL_OLD',
-    }),
-  )
+  const conditionExpression = slugChanging
+    ? 'attribute_exists(id) AND (attribute_not_exists(imageStatus) OR size(imageStatus) = :zero) AND slug = :expectedOldSlug'
+    : undefined
+
+  if (slugChanging) {
+    expressionValues[':zero'] = 0
+    expressionValues[':expectedOldSlug'] = existing.slug
+  }
+
+  let updateResult
+  try {
+    updateResult = await docClient.send(
+      new UpdateCommand({
+        TableName: TABLE_NAME,
+        Key: { id },
+        UpdateExpression: updateExpression,
+        ExpressionAttributeNames: expressionNames,
+        ExpressionAttributeValues: expressionValues,
+        ConditionExpression: conditionExpression,
+        ReturnValues: 'ALL_OLD',
+      }),
+    )
+  } catch (err) {
+    if (err instanceof ConditionalCheckFailedException || (err as { name?: string }).name === 'ConditionalCheckFailedException') {
+      const reRead = await getRecipeById(id)
+      if (reRead && Object.keys(imageStatusOf(reRead)).length > 0) {
+        return json(409, SLUG_LOCKED_RESPONSE)
+      }
+      return json(409, { error: 'conflict', message: 'Recipe was modified by another request. Please retry.' })
+    }
+    throw err
+  }
 
   const atomicOld = updateResult.Attributes as Record<string, unknown>
 
