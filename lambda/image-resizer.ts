@@ -1,6 +1,6 @@
 import { ConditionalCheckFailedException, DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
-import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb'
+import { DynamoDBDocumentClient, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb'
 import type { S3Event } from 'aws-lambda'
 import sharp from 'sharp'
 import { VARIANT_SUFFIXES, toProcessedKey, UPLOAD_PREFIX, type VariantSuffix } from './image-variants'
@@ -25,14 +25,14 @@ const VARIANTS: readonly ImageVariant[] = VARIANT_SUFFIXES.map((suffix) => ({
   ...VARIANT_SIZING[suffix],
 }))
 
-// Accepts exactly `uploads/recipes/<id>/<type>` — extra trailing segments are rejected.
-function parseRecipeId(uploadKey: string): string | undefined {
+// Accepts exactly `uploads/recipes/<slug>/<type>` — extra trailing segments are rejected.
+export function parseRecipeSlug(uploadKey: string): string | undefined {
   if (!uploadKey.startsWith(UPLOAD_PREFIX)) return undefined
   const segments = uploadKey.slice(UPLOAD_PREFIX.length).split('/')
   if (segments.length !== 2) return undefined
-  const id = segments[0]
-  if (!id) return undefined
-  return id
+  const slug = segments[0]
+  if (!slug) return undefined
+  return slug
 }
 
 export async function handler(event: S3Event): Promise<void> {
@@ -76,32 +76,47 @@ export async function handler(event: S3Event): Promise<void> {
     const logSkip = (reason: string) =>
       console.info({ event: 'resizer.writeback.skipped', reason, key })
 
-    const recipeId = parseRecipeId(key)
-    if (recipeId === undefined) {
-      logSkip('unrecognised_key_shape')
-    } else {
-      try {
-        await docClient.send(
-          new UpdateCommand({
-            TableName: tableName,
-            Key: { id: recipeId },
-            UpdateExpression: 'SET imageStatus.#k = :ts',
-            ConditionExpression: 'attribute_exists(id)',
-            ExpressionAttributeNames: { '#k': processedKey },
-            ExpressionAttributeValues: { ':ts': Date.now() },
-          }),
-        )
-      } catch (error) {
-        if (error instanceof ConditionalCheckFailedException) {
-          logSkip('recipe_deleted')
-        } else {
-          throw error
-        }
-      }
-    }
-
     await s3.send(
       new DeleteObjectCommand({ Bucket: sourceBucket, Key: key }),
     )
+
+    const slug = parseRecipeSlug(key)
+    if (slug === undefined) {
+      logSkip('unrecognised_key_shape')
+      continue
+    }
+
+    const lookup = await docClient.send(
+      new QueryCommand({
+        TableName: tableName,
+        IndexName: 'slug-index',
+        KeyConditionExpression: 'slug = :slug',
+        ExpressionAttributeValues: { ':slug': slug },
+      }),
+    )
+    const recipeId = (lookup.Items?.[0] as { id?: string } | undefined)?.id
+    if (!recipeId) {
+      logSkip('recipe_not_found')
+      continue
+    }
+
+    try {
+      await docClient.send(
+        new UpdateCommand({
+          TableName: tableName,
+          Key: { id: recipeId },
+          UpdateExpression: 'SET imageStatus.#k = :ts',
+          ConditionExpression: 'attribute_exists(id)',
+          ExpressionAttributeNames: { '#k': processedKey },
+          ExpressionAttributeValues: { ':ts': Date.now() },
+        }),
+      )
+    } catch (error) {
+      if (error instanceof ConditionalCheckFailedException) {
+        logSkip('recipe_deleted')
+      } else {
+        throw error
+      }
+    }
   }
 }
