@@ -916,16 +916,19 @@ describe('Recipe Lambda handler', () => {
     })
 
     it('composes processedAt onto images and strips imageStatus from the response body', async () => {
-      const coverKey = 'recipes/recipe-uuid-1/cover'
-      const step1Key = 'recipes/recipe-uuid-1/step-1'
+      const slug = 'slow-cooked-lamb-ragu'
+      const stepId = 'a0000000-0000-4000-8000-000000000001'
+      const coverKey = `recipes/${slug}/cover`
+      const step1Key = `recipes/${slug}/step-${stepId}`
       const coverTs = 1_745_000_000_001
       const step1Ts = 1_745_000_000_002
 
       const item = publishedRecipeItem({
         id: 'recipe-uuid-1',
-        coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+        slug,
+        coverImage: { alt: 'A bowl of lamb ragu' },
         steps: [
-          { order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared lamb' } },
+          { stepId, order: 1, text: 'Sear.', image: { alt: 'seared lamb' } },
         ],
         imageStatus: { [coverKey]: coverTs, [step1Key]: step1Ts },
       })
@@ -944,8 +947,8 @@ describe('Recipe Lambda handler', () => {
       expect(result.body).not.toContain('imageStatus')
       const body = JSON.parse(result.body as string)
       expect(body).not.toHaveProperty('imageStatus')
-      expect(body.coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
-      expect(body.steps[0].image).toEqual({ key: step1Key, alt: 'seared lamb', processedAt: step1Ts })
+      expect(body.coverImage).toEqual({ alt: 'A bowl of lamb ragu', processedAt: coverTs })
+      expect(body.steps[0].image).toEqual({ alt: 'seared lamb', processedAt: step1Ts })
     })
   })
 
@@ -1132,15 +1135,27 @@ describe('Recipe Lambda handler', () => {
       expect(updateCalls[0].args[0].input.ReturnValues).toBe('ALL_OLD')
     })
 
-    it('diffs image swap against the UpdateCommand ALL_OLD snapshot, not the pre-read', async () => {
+    it('diffs image-removal against the UpdateCommand ALL_OLD snapshot, not the pre-read', async () => {
+      // The pre-read has stepId-X but the atomic-old (the ALL_OLD snapshot) has stepId-Y.
+      // The PATCH body drops both, but the cleanup must target the keys present in the
+      // atomic-old snapshot — that's the source of truth for what was actually removed.
+      const stepIdX = 'a0000000-0000-4000-8000-00000000000a'
+      const stepIdY = 'a0000000-0000-4000-8000-00000000000b'
+      const slug = 'lamb-ragu'
+
       const preReadItem = publishedRecipeItem({
         id: 'recipe-uuid-1',
+        slug,
         authorId: 'contributor-user-id',
-        coverImage: { key: 'keyA', alt: 'Pre-read alt' },
+        steps: [
+          { stepId: stepIdX, order: 1, text: 'Pre-read step', image: { alt: 'pre-read alt' } },
+        ],
       })
       const atomicOldItem = {
         ...preReadItem,
-        coverImage: { key: 'keyB', alt: 'Atomic-old alt' },
+        steps: [
+          { stepId: stepIdY, order: 1, text: 'Atomic-old step', image: { alt: 'atomic-old alt' } },
+        ],
       }
       ddbMock.on(GetCommand).resolves({ Item: preReadItem })
       ddbMock.on(UpdateCommand).resolves({ Attributes: atomicOldItem })
@@ -1151,7 +1166,7 @@ describe('Recipe Lambda handler', () => {
         rawPath: '/recipes/recipe-uuid-1',
         pathParameters: { id: 'recipe-uuid-1' },
         headers: { authorization: `Bearer ${adminToken}` },
-        body: JSON.stringify({ coverImage: { key: 'keyC', alt: 'New alt' } }),
+        body: JSON.stringify({ steps: [] }),
       })
 
       const result = await handler(event)
@@ -1161,132 +1176,26 @@ describe('Recipe Lambda handler', () => {
       const deleteCalls = s3Mock.commandCalls(DeleteObjectsCommand)
       expect(deleteCalls).toHaveLength(1)
       const keys = (deleteCalls[0].args[0].input.Delete?.Objects ?? []).map((o) => o.Key)
-      // Diff must be against the atomic-old snapshot (keyB), not the pre-read (keyA).
-      expect(keys).toContain('keyB-thumb.webp')
-      expect(keys).toContain('keyB-medium.webp')
-      expect(keys).toContain('keyB-full.webp')
-      expect(keys).not.toContain('keyA-thumb.webp')
-      expect(keys).not.toContain('keyA-medium.webp')
-      expect(keys).not.toContain('keyA-full.webp')
+      // Diff must be against the atomic-old snapshot (stepIdY), not the pre-read (stepIdX).
+      expect(keys).toContain(`recipes/${slug}/step-${stepIdY}-thumb.webp`)
+      expect(keys).toContain(`recipes/${slug}/step-${stepIdY}-medium.webp`)
+      expect(keys).toContain(`recipes/${slug}/step-${stepIdY}-full.webp`)
+      expect(keys).not.toContain(`recipes/${slug}/step-${stepIdX}-thumb.webp`)
+      expect(keys).not.toContain(`recipes/${slug}/step-${stepIdX}-medium.webp`)
+      expect(keys).not.toContain(`recipes/${slug}/step-${stepIdX}-full.webp`)
       expect(keys).toHaveLength(3)
     })
 
-    it('cover-image swap deletes the three old variants from S3', async () => {
+    it('PATCH that does not drop any cover or step image triggers no S3 delete', async () => {
+      const stepIdA = 'a0000000-0000-4000-8000-000000000001'
+      const slug = 'lamb-ragu'
       const oldItem = publishedRecipeItem({
         id: 'recipe-uuid-1',
+        slug,
         authorId: 'contributor-user-id',
-        coverImage: { key: 'recipes/images/recipe-1/cover', alt: 'Old alt' },
-      })
-      ddbMock.on(GetCommand).resolves({ Item: oldItem })
-      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
-      s3Mock.on(DeleteObjectsCommand).resolves({})
-
-      const event = makeEvent({
-        routeKey: 'PATCH /recipes/{id}',
-        rawPath: '/recipes/recipe-uuid-1',
-        pathParameters: { id: 'recipe-uuid-1' },
-        headers: { authorization: `Bearer ${adminToken}` },
-        body: JSON.stringify({ coverImage: { key: 'recipes/images/recipe-1/cover-v2', alt: 'New alt' } }),
-      })
-
-      const result = await handler(event)
-
-      expect(result.statusCode).toBe(200)
-
-      const deleteCalls = s3Mock.commandCalls(DeleteObjectsCommand)
-      expect(deleteCalls).toHaveLength(1)
-      const deleteInput = deleteCalls[0].args[0].input
-      const keys = (deleteInput.Delete?.Objects ?? []).map((o) => o.Key)
-      expect(keys).toContain('recipes/images/recipe-1/cover-thumb.webp')
-      expect(keys).toContain('recipes/images/recipe-1/cover-medium.webp')
-      expect(keys).toContain('recipes/images/recipe-1/cover-full.webp')
-      expect(keys).toHaveLength(3)
-    })
-
-    it('same cover-image key triggers no S3 delete', async () => {
-      const oldItem = publishedRecipeItem({
-        id: 'recipe-uuid-1',
-        authorId: 'contributor-user-id',
-        coverImage: { key: 'recipes/images/recipe-1/cover', alt: 'Old alt' },
-      })
-      ddbMock.on(GetCommand).resolves({ Item: oldItem })
-      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
-
-      const event = makeEvent({
-        routeKey: 'PATCH /recipes/{id}',
-        rawPath: '/recipes/recipe-uuid-1',
-        pathParameters: { id: 'recipe-uuid-1' },
-        headers: { authorization: `Bearer ${adminToken}` },
-        body: JSON.stringify({ coverImage: { key: 'recipes/images/recipe-1/cover', alt: 'Same key' } }),
-      })
-
-      const result = await handler(event)
-
-      expect(result.statusCode).toBe(200)
-      expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(0)
-    })
-
-    it('step-image swap deletes old variants by key-set (reorder-safe)', async () => {
-      const oldItem = publishedRecipeItem({
-        id: 'recipe-uuid-1',
-        authorId: 'contributor-user-id',
+        coverImage: { alt: 'Old alt' },
         steps: [
-          { order: 1, text: 'A', image: { key: 'step-a', alt: 'a' } },
-          { order: 2, text: 'B', image: { key: 'step-b', alt: 'b' } },
-          { order: 3, text: 'C', image: { key: 'step-c', alt: 'c' } },
-        ],
-      })
-      ddbMock.on(GetCommand).resolves({ Item: oldItem })
-      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
-      s3Mock.on(DeleteObjectsCommand).resolves({})
-
-      const event = makeEvent({
-        routeKey: 'PATCH /recipes/{id}',
-        rawPath: '/recipes/recipe-uuid-1',
-        pathParameters: { id: 'recipe-uuid-1' },
-        headers: { authorization: `Bearer ${adminToken}` },
-        body: JSON.stringify({
-          steps: [
-            { order: 1, text: 'C', image: { key: 'step-c', alt: 'c' } },
-            { order: 2, text: 'D', image: { key: 'step-d', alt: 'd' } },
-          ],
-        }),
-      })
-
-      const result = await handler(event)
-
-      expect(result.statusCode).toBe(200)
-
-      const deleteCalls = s3Mock.commandCalls(DeleteObjectsCommand)
-      expect(deleteCalls).toHaveLength(1)
-      const keys = (deleteCalls[0].args[0].input.Delete?.Objects ?? []).map((o) => o.Key)
-      // step-a variants must be scheduled for deletion
-      expect(keys).toContain('step-a-thumb.webp')
-      expect(keys).toContain('step-a-medium.webp')
-      expect(keys).toContain('step-a-full.webp')
-      // step-b variants must be scheduled for deletion
-      expect(keys).toContain('step-b-thumb.webp')
-      expect(keys).toContain('step-b-medium.webp')
-      expect(keys).toContain('step-b-full.webp')
-      // step-c is still referenced — its variants must NOT be deleted
-      expect(keys).not.toContain('step-c-thumb.webp')
-      expect(keys).not.toContain('step-c-medium.webp')
-      expect(keys).not.toContain('step-c-full.webp')
-      // step-d is newly added — its variants must NOT be deleted
-      expect(keys).not.toContain('step-d-thumb.webp')
-      expect(keys).not.toContain('step-d-medium.webp')
-      expect(keys).not.toContain('step-d-full.webp')
-      expect(keys).toHaveLength(6)
-    })
-
-    it('pure step reorder (same key-set) triggers no S3 delete', async () => {
-      const oldItem = publishedRecipeItem({
-        id: 'recipe-uuid-1',
-        authorId: 'contributor-user-id',
-        steps: [
-          { order: 1, text: 'A', image: { key: 'step-a', alt: 'a' } },
-          { order: 2, text: 'B', image: { key: 'step-b', alt: 'b' } },
-          { order: 3, text: 'C', image: { key: 'step-c', alt: 'c' } },
+          { stepId: stepIdA, order: 1, text: 'A', image: { alt: 'a' } },
         ],
       })
       ddbMock.on(GetCommand).resolves({ Item: oldItem })
@@ -1297,11 +1206,11 @@ describe('Recipe Lambda handler', () => {
         rawPath: '/recipes/recipe-uuid-1',
         pathParameters: { id: 'recipe-uuid-1' },
         headers: { authorization: `Bearer ${adminToken}` },
+        // Updating only the cover alt and step text — no images dropped.
         body: JSON.stringify({
+          coverImage: { alt: 'New alt' },
           steps: [
-            { order: 1, text: 'C', image: { key: 'step-c', alt: 'c' } },
-            { order: 2, text: 'A', image: { key: 'step-a', alt: 'a' } },
-            { order: 3, text: 'B', image: { key: 'step-b', alt: 'b' } },
+            { stepId: stepIdA, order: 1, text: 'A updated', image: { alt: 'a updated' } },
           ],
         }),
       })
@@ -1313,10 +1222,12 @@ describe('Recipe Lambda handler', () => {
     })
 
     it('invokes UpdateCommand before DeleteObjectsCommand', async () => {
+      const slug = 'lamb-ragu'
       const oldItem = publishedRecipeItem({
         id: 'recipe-uuid-1',
+        slug,
         authorId: 'contributor-user-id',
-        coverImage: { key: 'recipes/images/recipe-1/cover', alt: 'Old alt' },
+        coverImage: { alt: 'Old alt' },
       })
       ddbMock.on(GetCommand).resolves({ Item: oldItem })
 
@@ -1335,7 +1246,8 @@ describe('Recipe Lambda handler', () => {
         rawPath: '/recipes/recipe-uuid-1',
         pathParameters: { id: 'recipe-uuid-1' },
         headers: { authorization: `Bearer ${adminToken}` },
-        body: JSON.stringify({ coverImage: { key: 'recipes/images/recipe-1/cover-v2', alt: 'New alt' } }),
+        // Cover removal triggers the S3 delete under the new model.
+        body: JSON.stringify({ coverImage: null }),
       })
 
       const result = await handler(event)
@@ -1350,15 +1262,17 @@ describe('Recipe Lambda handler', () => {
       const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
       try {
+        const slug = 'lamb-ragu'
         const oldItem = publishedRecipeItem({
           id: 'recipe-uuid-1',
+          slug,
           authorId: 'contributor-user-id',
-          coverImage: { key: 'recipes/images/recipe-1/cover', alt: 'Old alt' },
+          coverImage: { alt: 'Old alt' },
         })
         ddbMock.on(GetCommand).resolves({ Item: oldItem })
         ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
         s3Mock.on(DeleteObjectsCommand).resolves({
-          Errors: [{ Key: 'recipes/images/recipe-1/cover-thumb.webp', Code: 'AccessDenied', Message: 'nope' }],
+          Errors: [{ Key: `recipes/${slug}/cover-thumb.webp`, Code: 'AccessDenied', Message: 'nope' }],
         })
 
         const event = makeEvent({
@@ -1366,7 +1280,7 @@ describe('Recipe Lambda handler', () => {
           rawPath: '/recipes/recipe-uuid-1',
           pathParameters: { id: 'recipe-uuid-1' },
           headers: { authorization: `Bearer ${adminToken}` },
-          body: JSON.stringify({ coverImage: { key: 'recipes/images/recipe-1/cover-v2', alt: 'New alt' } }),
+          body: JSON.stringify({ coverImage: null }),
         })
 
         const result = await handler(event)
@@ -1374,7 +1288,6 @@ describe('Recipe Lambda handler', () => {
         expect(result.statusCode).toBe(200)
         const body = JSON.parse(result.body as string)
         expect(body.id).toBe('recipe-uuid-1')
-        expect(body.coverImage).toEqual({ key: 'recipes/images/recipe-1/cover-v2', alt: 'New alt' })
 
         // Must have logged the partial failure somewhere observable.
         const logged = errorSpy.mock.calls.length + warnSpy.mock.calls.length
@@ -2282,7 +2195,7 @@ describe('Recipe Lambda handler', () => {
       expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(1)
     })
 
-    it('lists S3 objects under the new "recipes/<id>/" prefix (not the old "processed/recipes/...")', async () => {
+    it('lists S3 objects under the slug-derived "recipes/<slug>/" prefix', async () => {
       ddbMock.on(GetCommand).resolves({
         Item: publishedRecipeItem({ authorId: 'contributor-user-id' }),
       })
@@ -2301,7 +2214,8 @@ describe('Recipe Lambda handler', () => {
       expect(result.statusCode).toBe(200)
       const listCalls = s3Mock.commandCalls(ListObjectsV2Command)
       expect(listCalls).toHaveLength(1)
-      expect(listCalls[0].args[0].input.Prefix).toBe('recipes/recipe-uuid-1/')
+      // publishedRecipeItem default slug is 'slow-cooked-lamb-ragu'.
+      expect(listCalls[0].args[0].input.Prefix).toBe('recipes/slow-cooked-lamb-ragu/')
     })
 
     it('returns 403 when contributor deletes another user\'s recipe', async () => {
@@ -2472,19 +2386,23 @@ describe('Recipe Lambda handler', () => {
   describe('Response composition — processedAt + imageStatus stripping', () => {
     // A published recipe whose cover image and one step image both have matching
     // imageStatus entries, plus one step image without a matching entry.
-    const coverKey = 'recipes/recipe-uuid-1/cover'
-    const step1Key = 'recipes/recipe-uuid-1/step-1'
-    const step2Key = 'recipes/recipe-uuid-1/step-2'
+    // Keys are derived from (slug, imageType[, stepId]).
+    const composeSlug = 'slow-cooked-lamb-ragu'
+    const stepId1 = 'a0000000-0000-4000-8000-000000000001'
+    const stepId2 = 'a0000000-0000-4000-8000-000000000002'
+    const coverKey = `recipes/${composeSlug}/cover`
+    const step1Key = `recipes/${composeSlug}/step-${stepId1}`
     const coverTs = 1_745_000_000_001
     const step1Ts = 1_745_000_000_002
 
     function recipeWithImageStatus(overrides: Record<string, unknown> = {}): Record<string, unknown> {
       return publishedRecipeItem({
         id: 'recipe-uuid-1',
-        coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+        slug: composeSlug,
+        coverImage: { alt: 'A bowl of lamb ragu' },
         steps: [
-          { order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared lamb' } },
-          { order: 2, text: 'Simmer.', image: { key: step2Key, alt: 'simmering' } },
+          { stepId: stepId1, order: 1, text: 'Sear.', image: { alt: 'seared lamb' } },
+          { stepId: stepId2, order: 2, text: 'Simmer.', image: { alt: 'simmering' } },
         ],
         imageStatus: { [coverKey]: coverTs, [step1Key]: step1Ts },
         ...overrides,
@@ -2499,7 +2417,7 @@ describe('Recipe Lambda handler', () => {
 
       expect(result.statusCode).toBe(200)
       const body = JSON.parse(result.body as string)
-      expect(body[0].coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
+      expect(body[0].coverImage).toEqual({ alt: 'A bowl of lamb ragu', processedAt: coverTs })
     })
 
     // AC 2: GET /recipes/{slug} composes onto cover AND each step.image.
@@ -2508,17 +2426,17 @@ describe('Recipe Lambda handler', () => {
 
       const result = await handler(makeEvent({
         routeKey: 'GET /recipes/{slug}',
-        rawPath: '/recipes/slow-cooked-lamb-ragu',
-        pathParameters: { slug: 'slow-cooked-lamb-ragu' },
+        rawPath: `/recipes/${composeSlug}`,
+        pathParameters: { slug: composeSlug },
       }))
 
       expect(result.statusCode).toBe(200)
       const body = JSON.parse(result.body as string)
-      expect(body.coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
+      expect(body.coverImage).toEqual({ alt: 'A bowl of lamb ragu', processedAt: coverTs })
       // step 1 has a matching imageStatus entry → processedAt composed
-      expect(body.steps[0].image).toEqual({ key: step1Key, alt: 'seared lamb', processedAt: step1Ts })
+      expect(body.steps[0].image).toEqual({ alt: 'seared lamb', processedAt: step1Ts })
       // step 2 has no matching entry → processedAt absent (not null, not undefined-serialised)
-      expect(body.steps[1].image).toEqual({ key: step2Key, alt: 'simmering' })
+      expect(body.steps[1].image).toEqual({ alt: 'simmering' })
       expect(body.steps[1].image).not.toHaveProperty('processedAt')
     })
 
@@ -2535,7 +2453,7 @@ describe('Recipe Lambda handler', () => {
       expect(result.statusCode).toBe(200)
       const body = JSON.parse(result.body as string)
       expect(body).toHaveLength(1)
-      expect(body[0].coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
+      expect(body[0].coverImage).toEqual({ alt: 'A bowl of lamb ragu', processedAt: coverTs })
     })
 
     // AC 4: GET /recipes/admin composes processedAt on returned items.
@@ -2553,7 +2471,7 @@ describe('Recipe Lambda handler', () => {
       expect(result.statusCode).toBe(200)
       const body = JSON.parse(result.body as string)
       expect(body).toHaveLength(1)
-      expect(body[0].coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
+      expect(body[0].coverImage).toEqual({ alt: 'A bowl of lamb ragu', processedAt: coverTs })
     })
 
     // AC 5: PATCH /recipes/{id} response composes processedAt.
@@ -2572,24 +2490,27 @@ describe('Recipe Lambda handler', () => {
 
       expect(result.statusCode).toBe(200)
       const body = JSON.parse(result.body as string)
-      expect(body.coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
-      expect(body.steps[0].image).toEqual({ key: step1Key, alt: 'seared lamb', processedAt: step1Ts })
+      expect(body.coverImage).toEqual({ alt: 'A bowl of lamb ragu', processedAt: coverTs })
+      expect(body.steps[0].image).toEqual({ alt: 'seared lamb', processedAt: step1Ts })
     })
 
     // AC 6: PATCH /recipes/{id}/publish response composes processedAt.
     it('PATCH /recipes/{id}/publish response composes processedAt onto the returned recipe', async () => {
       // Draft we read for validation passes all existing checks AND has readiness on every image.
+      // Note: validatePublishInput still reads `coverImage.key` / `step.image.key` (not in scope
+      // for this issue) — keep those literal keys present in the validation fixture so it passes.
       const fullyReadyDraft = recipeWithImageStatus({
         status: 'draft',
         authorId: 'contributor-user-id',
+        coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
         steps: [
-          { order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared lamb' } },
+          { stepId: stepId1, order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared lamb' } },
         ],
         imageStatus: { [coverKey]: coverTs, [step1Key]: step1Ts },
       })
       ddbMock.on(GetCommand).resolves({ Item: fullyReadyDraft })
       ddbMock.on(UpdateCommand).resolves({
-        Attributes: { ...fullyReadyDraft, status: 'published' },
+        Attributes: { ...fullyReadyDraft, status: 'published', coverImage: { alt: 'A bowl of lamb ragu' }, steps: [{ stepId: stepId1, order: 1, text: 'Sear.', image: { alt: 'seared lamb' } }] },
       })
 
       const result = await handler(makeEvent({
@@ -2601,8 +2522,8 @@ describe('Recipe Lambda handler', () => {
 
       expect(result.statusCode).toBe(200)
       const body = JSON.parse(result.body as string)
-      expect(body.coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
-      expect(body.steps[0].image).toEqual({ key: step1Key, alt: 'seared lamb', processedAt: step1Ts })
+      expect(body.coverImage).toEqual({ alt: 'A bowl of lamb ragu', processedAt: coverTs })
+      expect(body.steps[0].image).toEqual({ alt: 'seared lamb', processedAt: step1Ts })
     })
 
     // AC 7: PATCH /recipes/{id}/unpublish response composes processedAt.
@@ -2622,7 +2543,7 @@ describe('Recipe Lambda handler', () => {
 
       expect(result.statusCode).toBe(200)
       const body = JSON.parse(result.body as string)
-      expect(body.coverImage).toEqual({ key: coverKey, alt: 'A bowl of lamb ragu', processedAt: coverTs })
+      expect(body.coverImage).toEqual({ alt: 'A bowl of lamb ragu', processedAt: coverTs })
     })
 
     // AC 8: imageStatus is stripped from every response body.
@@ -2705,10 +2626,12 @@ describe('Recipe Lambda handler', () => {
       })
 
       it('PATCH /recipes/{id}/publish strips imageStatus', async () => {
+        // Validation still uses coverImage.key/step.image.key — keep them populated for this fixture.
         const fullyReadyDraft = recipeWithImageStatus({
           status: 'draft',
           authorId: 'contributor-user-id',
-          steps: [{ order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared lamb' } }],
+          coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+          steps: [{ stepId: stepId1, order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared lamb' } }],
           imageStatus: { [coverKey]: coverTs, [step1Key]: step1Ts },
         })
         ddbMock.on(GetCommand).resolves({ Item: fullyReadyDraft })
@@ -2747,20 +2670,21 @@ describe('Recipe Lambda handler', () => {
     })
 
     // AC 9: No processedAt added when imageStatus entry missing.
-    it('GET /recipes/{slug} omits processedAt when imageStatus has no entry for the cover key', async () => {
+    it('GET /recipes/{slug} omits processedAt when imageStatus has no entry for the slug-derived cover key', async () => {
       const item = publishedRecipeItem({
         id: 'recipe-uuid-1',
-        coverImage: { key: coverKey, alt: 'no-entry alt' },
-        steps: [{ order: 1, text: 'step', image: { key: step1Key, alt: 'step alt' } }],
-        // imageStatus is an empty map — no entries for either key.
+        slug: composeSlug,
+        coverImage: { alt: 'no-entry alt' },
+        steps: [{ stepId: stepId1, order: 1, text: 'step', image: { alt: 'step alt' } }],
+        // imageStatus is an empty map — no entries for either derived key.
         imageStatus: {},
       })
       ddbMock.on(ScanCommand).resolves({ Items: [item] })
 
       const result = await handler(makeEvent({
         routeKey: 'GET /recipes/{slug}',
-        rawPath: '/recipes/slow-cooked-lamb-ragu',
-        pathParameters: { slug: 'slow-cooked-lamb-ragu' },
+        rawPath: `/recipes/${composeSlug}`,
+        pathParameters: { slug: composeSlug },
       }))
 
       expect(result.statusCode).toBe(200)
@@ -2769,9 +2693,9 @@ describe('Recipe Lambda handler', () => {
       expect(result.body).not.toContain('processedAt')
       const body = JSON.parse(result.body as string)
       expect(body.coverImage).not.toHaveProperty('processedAt')
-      expect(body.coverImage).toEqual({ key: coverKey, alt: 'no-entry alt' })
+      expect(body.coverImage).toEqual({ alt: 'no-entry alt' })
       expect(body.steps[0].image).not.toHaveProperty('processedAt')
-      expect(body.steps[0].image).toEqual({ key: step1Key, alt: 'step alt' })
+      expect(body.steps[0].image).toEqual({ alt: 'step alt' })
     })
 
     it('preserves processedAt: 0 when imageStatus records a falsy-but-valid timestamp', async () => {
@@ -2779,7 +2703,8 @@ describe('Recipe Lambda handler', () => {
       // must keep the `!== undefined` check so 0 is treated as "ready", not "missing".
       const item = publishedRecipeItem({
         id: 'recipe-uuid-1',
-        coverImage: { key: coverKey, alt: 'cover alt' },
+        slug: composeSlug,
+        coverImage: { alt: 'cover alt' },
         steps: [],
         imageStatus: { [coverKey]: 0 },
       })
@@ -2787,101 +2712,67 @@ describe('Recipe Lambda handler', () => {
 
       const result = await handler(makeEvent({
         routeKey: 'GET /recipes/{slug}',
-        rawPath: '/recipes/slow-cooked-lamb-ragu',
-        pathParameters: { slug: 'slow-cooked-lamb-ragu' },
+        rawPath: `/recipes/${composeSlug}`,
+        pathParameters: { slug: composeSlug },
       }))
 
       expect(result.statusCode).toBe(200)
       const body = JSON.parse(result.body as string)
-      expect(body.coverImage).toEqual({ key: coverKey, alt: 'cover alt', processedAt: 0 })
+      expect(body.coverImage).toEqual({ alt: 'cover alt', processedAt: 0 })
     })
 
-    it('omits processedAt when imageStatus keys do not match coverImage.key', async () => {
-      const newCoverKey = 'recipes/recipe-uuid-1/cover'
-      const staleCoverKey = 'processed/recipes/recipe-uuid-1/cover'
+    it('omits processedAt when imageStatus has no entry for the slug-derived cover key (stale legacy entries are ignored)', async () => {
+      // Replaces the obsolete "imageStatus keys do not match coverImage.key" test —
+      // composeImageProcessedAt no longer reads `coverImage.key`, so the analog under
+      // the new model is "imageStatus has no entry for `recipes/<slug>/cover`".
+      const staleLegacyKey = 'recipes/recipe-uuid-1/cover'
       const item = publishedRecipeItem({
         id: 'recipe-uuid-1',
-        coverImage: { key: newCoverKey, alt: 'cover alt' },
+        slug: composeSlug,
+        coverImage: { alt: 'cover alt' },
         steps: [],
-        imageStatus: { [staleCoverKey]: 1_745_000_000_001 },
+        // Stale entry under a non-derived key — must NOT be picked up.
+        imageStatus: { [staleLegacyKey]: 1_745_000_000_001 },
       })
       ddbMock.on(ScanCommand).resolves({ Items: [item] })
 
       const result = await handler(makeEvent({
         routeKey: 'GET /recipes/{slug}',
-        rawPath: '/recipes/slow-cooked-lamb-ragu',
-        pathParameters: { slug: 'slow-cooked-lamb-ragu' },
+        rawPath: `/recipes/${composeSlug}`,
+        pathParameters: { slug: composeSlug },
       }))
 
       expect(result.statusCode).toBe(200)
       expect(result.body).not.toContain('processedAt')
       const body = JSON.parse(result.body as string)
       expect(body.coverImage).not.toHaveProperty('processedAt')
-      expect(body.coverImage).toEqual({ key: newCoverKey, alt: 'cover alt' })
+      expect(body.coverImage).toEqual({ alt: 'cover alt' })
     })
   })
 
   describe('PATCH /recipes/{id} — imageStatus REMOVE on swap and processedAt body strip', () => {
-    const oldCoverKey = 'recipes/recipe-uuid-1/cover'
-    const newCoverKey = 'recipes/recipe-uuid-1/cover-v2'
-    const stepAKey = 'recipes/recipe-uuid-1/step-1'
-    const stepBKey = 'recipes/recipe-uuid-1/step-2'
-    const stepCKey = 'recipes/recipe-uuid-1/step-3'
+    const slug = 'recipe-slug'
+    const stepIdA = 'a0000000-0000-4000-8000-000000000001'
+    const stepIdB = 'a0000000-0000-4000-8000-000000000002'
+    const stepIdC = 'a0000000-0000-4000-8000-000000000003'
+    const coverKey = `recipes/${slug}/cover`
+    const stepAKey = `recipes/${slug}/step-${stepIdA}`
+    const stepBKey = `recipes/${slug}/step-${stepIdB}`
+    const stepCKey = `recipes/${slug}/step-${stepIdC}`
 
-    it('cover-image swap includes REMOVE imageStatus.#<oldKey> in the same UpdateCommand as SET', async () => {
+    it('step-image drop REMOVEs imageStatus entries for dropped stepIds only, preserving kept stepIds', async () => {
       const oldItem = publishedRecipeItem({
         id: 'recipe-uuid-1',
+        slug,
         authorId: 'contributor-user-id',
-        coverImage: { key: oldCoverKey, alt: 'Old alt' },
-        imageStatus: { [oldCoverKey]: 1_745_000_000_001 },
-      })
-      ddbMock.on(GetCommand).resolves({ Item: oldItem })
-      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
-      s3Mock.on(DeleteObjectsCommand).resolves({})
-
-      const event = makeEvent({
-        routeKey: 'PATCH /recipes/{id}',
-        rawPath: '/recipes/recipe-uuid-1',
-        pathParameters: { id: 'recipe-uuid-1' },
-        headers: { authorization: `Bearer ${adminToken}` },
-        body: JSON.stringify({ coverImage: { key: newCoverKey, alt: 'New alt' } }),
-      })
-
-      const result = await handler(event)
-
-      expect(result.statusCode).toBe(200)
-
-      const updateCalls = ddbMock.commandCalls(UpdateCommand)
-      expect(updateCalls).toHaveLength(1)
-      const input = updateCalls[0].args[0].input
-      const expr = input.UpdateExpression as string
-
-      expect(expr).toMatch(/\bSET\b/)
-      expect(expr).toMatch(/\bREMOVE\b/)
-      expect(expr).toMatch(/REMOVE\s+imageStatus\.#/)
-
-      const names = input.ExpressionAttributeNames as Record<string, string>
-      const nameValues = Object.values(names)
-      expect(nameValues).toContain(oldCoverKey)
-
-      const removeMatch = expr.match(/REMOVE\s+imageStatus\.(#[a-zA-Z0-9_]+)/)
-      expect(removeMatch).not.toBeNull()
-      const removePlaceholder = removeMatch![1]
-      expect(names[removePlaceholder]).toBe(oldCoverKey)
-    })
-
-    it('step-image swap REMOVEs imageStatus entries for dropped keys only, preserving kept keys', async () => {
-      const oldItem = publishedRecipeItem({
-        id: 'recipe-uuid-1',
-        authorId: 'contributor-user-id',
-        coverImage: { key: oldCoverKey, alt: 'Cover alt' },
+        coverImage: { alt: 'Cover alt' },
         steps: [
-          { order: 1, text: 'A', image: { key: stepAKey, alt: 'a' } },
-          { order: 2, text: 'B', image: { key: stepBKey, alt: 'b' } },
-          { order: 3, text: 'C', image: { key: stepCKey, alt: 'c' } },
+          { stepId: stepIdA, order: 1, text: 'A', image: { alt: 'a' } },
+          { stepId: stepIdB, order: 2, text: 'B', image: { alt: 'b' } },
+          { stepId: stepIdC, order: 3, text: 'C', image: { alt: 'c' } },
         ],
         imageStatus: {
-          [oldCoverKey]: 1_745_000_000_000,
+          [coverKey]: 1_745_000_000_000,
           [stepAKey]: 1_745_000_000_001,
           [stepBKey]: 1_745_000_000_002,
           [stepCKey]: 1_745_000_000_003,
@@ -2898,7 +2789,7 @@ describe('Recipe Lambda handler', () => {
         headers: { authorization: `Bearer ${adminToken}` },
         body: JSON.stringify({
           steps: [
-            { order: 1, text: 'C', image: { key: stepCKey, alt: 'c' } },
+            { stepId: stepIdC, order: 1, text: 'C', image: { alt: 'c' } },
           ],
         }),
       })
@@ -2924,17 +2815,18 @@ describe('Recipe Lambda handler', () => {
       expect(removedKeys).toContain(stepAKey)
       expect(removedKeys).toContain(stepBKey)
       expect(removedKeys).not.toContain(stepCKey)
-      expect(removedKeys).not.toContain(oldCoverKey)
+      expect(removedKeys).not.toContain(coverKey)
       expect(removedKeys).toHaveLength(2)
     })
 
     it('strips client-supplied processedAt from coverImage and step.image before the UpdateCommand runs', async () => {
       const oldItem = publishedRecipeItem({
         id: 'recipe-uuid-1',
+        slug,
         authorId: 'contributor-user-id',
-        coverImage: { key: oldCoverKey, alt: 'Old cover alt' },
-        steps: [{ order: 1, text: 'A', image: { key: stepAKey, alt: 'a' } }],
-        imageStatus: { [oldCoverKey]: 1_745_000_000_000, [stepAKey]: 1_745_000_000_001 },
+        coverImage: { alt: 'Old cover alt' },
+        steps: [{ stepId: stepIdA, order: 1, text: 'A', image: { alt: 'a' } }],
+        imageStatus: { [coverKey]: 1_745_000_000_000, [stepAKey]: 1_745_000_000_001 },
       })
       ddbMock.on(GetCommand).resolves({ Item: oldItem })
       ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
@@ -2945,9 +2837,9 @@ describe('Recipe Lambda handler', () => {
         pathParameters: { id: 'recipe-uuid-1' },
         headers: { authorization: `Bearer ${adminToken}` },
         body: JSON.stringify({
-          coverImage: { key: oldCoverKey, alt: 'Cover alt', processedAt: 9_999_999_999_999 },
+          coverImage: { alt: 'Cover alt', processedAt: 9_999_999_999_999 },
           steps: [
-            { order: 1, text: 'A', image: { key: stepAKey, alt: 'a', processedAt: 9_999_999_999_998 } },
+            { stepId: stepIdA, order: 1, text: 'A', image: { alt: 'a', processedAt: 9_999_999_999_998 } },
           ],
         }),
       })
@@ -2966,7 +2858,7 @@ describe('Recipe Lambda handler', () => {
       const coverValue = values[':coverImage'] as Record<string, unknown> | undefined
       expect(coverValue).toBeDefined()
       expect(coverValue).not.toHaveProperty('processedAt')
-      expect(coverValue).toEqual({ key: oldCoverKey, alt: 'Cover alt' })
+      expect(coverValue).toEqual({ alt: 'Cover alt' })
 
       const stepsValue = values[':steps'] as Array<{ image?: Record<string, unknown> }> | undefined
       expect(stepsValue).toBeDefined()
@@ -2974,7 +2866,385 @@ describe('Recipe Lambda handler', () => {
       const stepImage = stepsValue![0].image
       expect(stepImage).toBeDefined()
       expect(stepImage).not.toHaveProperty('processedAt')
-      expect(stepImage).toEqual({ key: stepAKey, alt: 'a' })
+      expect(stepImage).toEqual({ alt: 'a' })
+    })
+  })
+
+  // ─── Issue #151: derive image keys from slug + stepId ───────────────
+  describe('composeImageProcessedAt — derives keys from (slug, imageType[, stepId])', () => {
+    it('composes coverImage.processedAt from imageStatus[recipes/<slug>/cover] when coverImage has no .key field', async () => {
+      const slug = 'beans-on-toast'
+      const coverKey = `recipes/${slug}/cover`
+      const ts = 1_745_000_000_000
+
+      ddbMock.on(ScanCommand).resolves({
+        Items: [
+          publishedRecipeItem({
+            id: 'recipe-uuid-1',
+            slug,
+            // No `.key` on coverImage.
+            coverImage: { alt: 'Beans on toast' },
+            steps: [],
+            imageStatus: { [coverKey]: ts },
+          }),
+        ],
+      })
+
+      const result = await handler(makeEvent({
+        routeKey: 'GET /recipes/{slug}',
+        rawPath: `/recipes/${slug}`,
+        pathParameters: { slug },
+      }))
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body.coverImage).toEqual({ alt: 'Beans on toast', processedAt: ts })
+    })
+
+    it('composes step.image.processedAt from imageStatus[recipes/<slug>/step-<stepId>] when step.image has no .key field', async () => {
+      const slug = 'beans-on-toast'
+      const stepId = '9d904a59-e83f-43b8-9f40-fbdb3008974c'
+      const stepKey = `recipes/${slug}/step-${stepId}`
+      const ts = 1_745_000_000_000
+
+      ddbMock.on(ScanCommand).resolves({
+        Items: [
+          publishedRecipeItem({
+            id: 'recipe-uuid-1',
+            slug,
+            coverImage: { alt: 'cover alt' },
+            steps: [
+              // No `.key` on step.image.
+              { stepId, order: 1, text: 'Boil water', image: { alt: 'water boiling' } },
+            ],
+            imageStatus: { [stepKey]: ts },
+          }),
+        ],
+      })
+
+      const result = await handler(makeEvent({
+        routeKey: 'GET /recipes/{slug}',
+        rawPath: `/recipes/${slug}`,
+        pathParameters: { slug },
+      }))
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body.steps).toHaveLength(1)
+      expect(body.steps[0].image).toEqual({ alt: 'water boiling', processedAt: ts })
+    })
+
+    it('ignores legacy coverImage.key when the matching imageStatus entry is under the derived (slug-based) key', async () => {
+      // Half-migrated item: the legacy `.key` field is still present on the recipe object,
+      // but only the new slug-derived imageStatus entry exists. Composition must use the
+      // derived key — the function MUST NOT read `.key` even when populated.
+      const slug = 'beans-on-toast'
+      const legacyKey = 'recipes/recipe-uuid-1/cover'
+      const derivedKey = `recipes/${slug}/cover`
+      const ts = 1_745_000_000_000
+
+      ddbMock.on(ScanCommand).resolves({
+        Items: [
+          publishedRecipeItem({
+            id: 'recipe-uuid-1',
+            slug,
+            // Legacy .key field present — must be ignored by composeImageProcessedAt.
+            coverImage: { key: legacyKey, alt: 'cover alt' },
+            steps: [],
+            // No entry under the legacy key, only under the derived key.
+            imageStatus: { [derivedKey]: ts },
+          }),
+        ],
+      })
+
+      const result = await handler(makeEvent({
+        routeKey: 'GET /recipes/{slug}',
+        rawPath: `/recipes/${slug}`,
+        pathParameters: { slug },
+      }))
+
+      expect(result.statusCode).toBe(200)
+      const body = JSON.parse(result.body as string)
+      expect(body.coverImage.processedAt).toBe(ts)
+    })
+  })
+
+  describe('DELETE /recipes/{id} — slug-derived prefix', () => {
+    it('lists S3 objects under "recipes/<slug>/" using the recipe.slug (not recipe.id)', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: publishedRecipeItem({
+          id: 'recipe-uuid-1',
+          slug: 'beans-on-toast',
+          authorId: 'contributor-user-id',
+        }),
+      })
+      ddbMock.on(DeleteCommand).resolves({})
+      s3Mock.on(ListObjectsV2Command).resolves({ Contents: [] })
+
+      const event = makeEvent({
+        routeKey: 'DELETE /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${contributorToken}` },
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+      const listCalls = s3Mock.commandCalls(ListObjectsV2Command)
+      expect(listCalls).toHaveLength(1)
+      expect(listCalls[0].args[0].input.Prefix).toBe('recipes/beans-on-toast/')
+    })
+  })
+
+  describe('PATCH /recipes/{id} — cover-image removal cleanup', () => {
+    it('PATCH coverImage: null deletes the three slug-derived cover variants and REMOVEs the matching imageStatus entry', async () => {
+      const slug = 'beans-on-toast'
+      const coverKey = `recipes/${slug}/cover`
+
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        slug,
+        authorId: 'contributor-user-id',
+        coverImage: { alt: 'Beans on toast' },
+        imageStatus: { [coverKey]: 1_745_000_000_000 },
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+      s3Mock.on(DeleteObjectsCommand).resolves({})
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ coverImage: null }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+
+      // S3: the three cover variants must be scheduled for deletion under the slug-derived key.
+      const deleteCalls = s3Mock.commandCalls(DeleteObjectsCommand)
+      expect(deleteCalls).toHaveLength(1)
+      const deletedKeys = (deleteCalls[0].args[0].input.Delete?.Objects ?? []).map((o) => o.Key)
+      expect(deletedKeys).toEqual(expect.arrayContaining([
+        `recipes/${slug}/cover-thumb.webp`,
+        `recipes/${slug}/cover-medium.webp`,
+        `recipes/${slug}/cover-full.webp`,
+      ]))
+      expect(deletedKeys).toHaveLength(3)
+
+      // DDB: the UpdateExpression must REMOVE imageStatus.#<key> for the cover key.
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      expect(updateCalls).toHaveLength(1)
+      const input = updateCalls[0].args[0].input
+      const expr = input.UpdateExpression as string
+      const names = input.ExpressionAttributeNames as Record<string, string>
+
+      expect(expr).toMatch(/\bREMOVE\b/)
+      const removeMatch = expr.match(/REMOVE\s+imageStatus\.(#[a-zA-Z0-9_]+)/)
+      expect(removeMatch).not.toBeNull()
+      const placeholder = removeMatch![1]
+      expect(names[placeholder]).toBe(coverKey)
+    })
+  })
+
+  describe('PATCH /recipes/{id} — step drop and reorder cleanup', () => {
+    it('PATCH that drops a step deletes that step\'s slug+stepId-derived variants and REMOVEs the matching imageStatus entry', async () => {
+      const slug = 'beans-on-toast'
+      const stepIdA = 'a0000000-0000-4000-8000-000000000001'
+      const stepIdB = 'a0000000-0000-4000-8000-000000000002'
+      const stepAKey = `recipes/${slug}/step-${stepIdA}`
+      const stepBKey = `recipes/${slug}/step-${stepIdB}`
+
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        slug,
+        authorId: 'contributor-user-id',
+        steps: [
+          { stepId: stepIdA, order: 1, text: 'A', image: { alt: 'a' } },
+          { stepId: stepIdB, order: 2, text: 'B', image: { alt: 'b' } },
+        ],
+        imageStatus: {
+          [stepAKey]: 1_745_000_000_001,
+          [stepBKey]: 1_745_000_000_002,
+        },
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+      s3Mock.on(DeleteObjectsCommand).resolves({})
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        // Drop stepIdB; keep stepIdA.
+        body: JSON.stringify({
+          steps: [
+            { stepId: stepIdA, order: 1, text: 'A', image: { alt: 'a' } },
+          ],
+        }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+
+      // S3: only stepB variants are deleted; stepA variants are preserved.
+      const deleteCalls = s3Mock.commandCalls(DeleteObjectsCommand)
+      expect(deleteCalls).toHaveLength(1)
+      const deletedKeys = (deleteCalls[0].args[0].input.Delete?.Objects ?? []).map((o) => o.Key)
+      expect(deletedKeys).toEqual(expect.arrayContaining([
+        `recipes/${slug}/step-${stepIdB}-thumb.webp`,
+        `recipes/${slug}/step-${stepIdB}-medium.webp`,
+        `recipes/${slug}/step-${stepIdB}-full.webp`,
+      ]))
+      expect(deletedKeys).not.toEqual(expect.arrayContaining([
+        `recipes/${slug}/step-${stepIdA}-thumb.webp`,
+      ]))
+      expect(deletedKeys).toHaveLength(3)
+
+      // DDB: REMOVE imageStatus entry for stepB only.
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      expect(updateCalls).toHaveLength(1)
+      const input = updateCalls[0].args[0].input
+      const expr = input.UpdateExpression as string
+      const names = input.ExpressionAttributeNames as Record<string, string>
+
+      expect(expr).toMatch(/\bREMOVE\b/)
+      const removeSegmentMatch = expr.match(/REMOVE\s+(.+)$/)
+      expect(removeSegmentMatch).not.toBeNull()
+      const placeholderMatches = Array.from(removeSegmentMatch![1].matchAll(/imageStatus\.(#[a-zA-Z0-9_]+)/g))
+      const removedKeys = placeholderMatches.map((m) => names[m[1]])
+      expect(removedKeys).toEqual([stepBKey])
+    })
+
+    it('PATCH that reorders steps (same stepIds, different order) fires no S3 delete and no imageStatus REMOVE', async () => {
+      const slug = 'beans-on-toast'
+      const stepIdA = 'a0000000-0000-4000-8000-000000000001'
+      const stepIdB = 'a0000000-0000-4000-8000-000000000002'
+      const stepAKey = `recipes/${slug}/step-${stepIdA}`
+      const stepBKey = `recipes/${slug}/step-${stepIdB}`
+
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        slug,
+        authorId: 'contributor-user-id',
+        steps: [
+          { stepId: stepIdA, order: 1, text: 'A', image: { alt: 'a' } },
+          { stepId: stepIdB, order: 2, text: 'B', image: { alt: 'b' } },
+        ],
+        imageStatus: {
+          [stepAKey]: 1_745_000_000_001,
+          [stepBKey]: 1_745_000_000_002,
+        },
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(UpdateCommand).resolves({ Attributes: oldItem })
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        // Same stepIds, swapped order — pure reorder.
+        body: JSON.stringify({
+          steps: [
+            { stepId: stepIdB, order: 1, text: 'B', image: { alt: 'b' } },
+            { stepId: stepIdA, order: 2, text: 'A', image: { alt: 'a' } },
+          ],
+        }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(200)
+
+      expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(0)
+
+      const updateCalls = ddbMock.commandCalls(UpdateCommand)
+      expect(updateCalls).toHaveLength(1)
+      const expr = updateCalls[0].args[0].input.UpdateExpression as string
+      // Must NOT contain a REMOVE clause targeting any imageStatus entry.
+      expect(expr).not.toMatch(/REMOVE\s+[^]*imageStatus\./)
+    })
+  })
+
+  describe('PATCH /recipes/{id} — stepId validation', () => {
+    function patchEvent(body: unknown) {
+      return makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify(body),
+      })
+    }
+
+    it('returns 400 invalid_stepId when a step in the patch body has no stepId', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: publishedRecipeItem({
+          id: 'recipe-uuid-1',
+          slug: 'beans-on-toast',
+          authorId: 'contributor-user-id',
+        }),
+      })
+
+      const result = await handler(patchEvent({
+        steps: [{ instructions: 'Boil water', order: 1 }],
+      }))
+
+      expect(result.statusCode).toBe(400)
+      const body = JSON.parse(result.body as string)
+      expect(body.error).toBe('invalid_stepId')
+      // No write should happen on validation failure.
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0)
+    })
+
+    it('returns 400 invalid_stepId when a step has a stepId that is not a valid UUID', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: publishedRecipeItem({
+          id: 'recipe-uuid-1',
+          slug: 'beans-on-toast',
+          authorId: 'contributor-user-id',
+        }),
+      })
+
+      const result = await handler(patchEvent({
+        steps: [{ stepId: 'not-a-uuid', order: 1, text: 'Boil water', image: { alt: 'a' } }],
+      }))
+
+      expect(result.statusCode).toBe(400)
+      const body = JSON.parse(result.body as string)
+      expect(body.error).toBe('invalid_stepId')
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0)
+    })
+
+    it('returns 400 duplicate_stepId when two steps in the patch body share the same stepId', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: publishedRecipeItem({
+          id: 'recipe-uuid-1',
+          slug: 'beans-on-toast',
+          authorId: 'contributor-user-id',
+        }),
+      })
+
+      const sharedStepId = '9d904a59-e83f-43b8-9f40-fbdb3008974c'
+
+      const result = await handler(patchEvent({
+        steps: [
+          { stepId: sharedStepId, order: 1, text: 'Boil water', image: { alt: 'a' } },
+          { stepId: sharedStepId, order: 2, text: 'Add tea', image: { alt: 'b' } },
+        ],
+      }))
+
+      expect(result.statusCode).toBe(400)
+      const body = JSON.parse(result.body as string)
+      expect(body.error).toBe('duplicate_stepId')
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0)
     })
   })
 })

@@ -68,6 +68,7 @@ const SLUG_LOCKED_RESPONSE = {
 } as const
 
 const SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
+const STEP_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 export function isValidSlug(slug: string): boolean {
   if (slug.length < 1 || slug.length > 100) return false
@@ -96,16 +97,24 @@ function imageStatusOf(item: Record<string, unknown>): Record<string, number> {
 
 function composeImageProcessedAt<T extends Record<string, unknown>>(item: T): Omit<T, 'imageStatus'> {
   const imageStatus = imageStatusOf(item)
-  const coverImage = item.coverImage as { key?: string } | undefined
-  const coverProcessedAt = coverImage?.key ? imageStatus[coverImage.key] : undefined
+  const slug = typeof item.slug === 'string' ? item.slug : undefined
+  const coverImage = item.coverImage as Record<string, unknown> | undefined
+
+  const coverDerivedKey = slug ? `${PROCESSED_PREFIX}${slug}/cover` : undefined
+  const coverProcessedAt = coverDerivedKey ? imageStatus[coverDerivedKey] : undefined
+
   const steps = Array.isArray(item.steps)
     ? item.steps.map((step) => {
-        const img = (step as { image?: { key?: string } }).image
-        if (!img?.key) return step
-        const processedAt = imageStatus[img.key]
-        return processedAt !== undefined ? { ...(step as object), image: { ...img, processedAt } } : step
+        const s = step as { stepId?: unknown; image?: Record<string, unknown> }
+        if (!slug || typeof s.stepId !== 'string' || !s.image) return step
+        const stepDerivedKey = `${PROCESSED_PREFIX}${slug}/step-${s.stepId}`
+        const processedAt = imageStatus[stepDerivedKey]
+        return processedAt !== undefined
+          ? { ...(step as object), image: { ...s.image, processedAt } }
+          : step
       })
     : item.steps
+
   const nextCover = coverImage && coverProcessedAt !== undefined
     ? { ...coverImage, processedAt: coverProcessedAt }
     : coverImage
@@ -340,40 +349,34 @@ async function handleCreateDraft(event: APIGatewayProxyEventV2): Promise<APIGate
   return json(201, { id, slug })
 }
 
-function imageKeyOf(obj: unknown): string | undefined {
-  if (!obj || typeof obj !== 'object') return undefined
-  const key = (obj as { key?: unknown }).key
-  return typeof key === 'string' ? key : undefined
-}
-
 function variantKeysFor(key: string): readonly string[] {
   return VARIANT_SUFFIXES.map((suffix) => `${key}-${suffix}.webp`)
 }
 
-function stepImageKeySet(steps: unknown): Set<string> {
-  const keys = new Set<string>()
-  if (!Array.isArray(steps)) return keys
-  for (const step of steps) {
-    const key = imageKeyOf((step as { image?: unknown }).image)
-    if (key) keys.add(key)
-  }
-  return keys
-}
-
 function droppedImageBaseKeys(oldItem: Record<string, unknown>, updates: Record<string, unknown>): string[] {
+  const slug = typeof oldItem.slug === 'string' ? oldItem.slug : undefined
+  if (!slug) return []
   const droppedKeys: string[] = []
 
   if ('coverImage' in updates) {
-    const oldKey = imageKeyOf(oldItem.coverImage)
-    const newKey = imageKeyOf(updates.coverImage)
-    if (oldKey && oldKey !== newKey) droppedKeys.push(oldKey)
+    const newCover = updates.coverImage
+    const coverRemoved = newCover === null || newCover === undefined
+    if (coverRemoved) {
+      droppedKeys.push(`${PROCESSED_PREFIX}${slug}/cover`)
+    }
   }
 
-  if ('steps' in updates) {
-    const oldKeys = stepImageKeySet(oldItem.steps)
-    const newKeys = stepImageKeySet(updates.steps)
-    for (const oldKey of oldKeys) {
-      if (!newKeys.has(oldKey)) droppedKeys.push(oldKey)
+  if ('steps' in updates && Array.isArray(updates.steps)) {
+    const newStepIds = new Set(
+      (updates.steps as Array<{ stepId?: unknown }>).flatMap((s) =>
+        typeof s.stepId === 'string' ? [s.stepId] : [],
+      ),
+    )
+    const oldSteps = (Array.isArray(oldItem.steps) ? oldItem.steps : []) as Array<{ stepId?: unknown }>
+    for (const oldStep of oldSteps) {
+      const oldStepId = typeof oldStep.stepId === 'string' ? oldStep.stepId : undefined
+      if (!oldStepId || newStepIds.has(oldStepId)) continue
+      droppedKeys.push(`${PROCESSED_PREFIX}${slug}/step-${oldStepId}`)
     }
   }
 
@@ -419,6 +422,20 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
   delete updates.status
   delete updates.ttl
   stripProcessedAtFromBody(updates)
+
+  if ('steps' in updates && Array.isArray(updates.steps)) {
+    const seenStepIds = new Set<string>()
+    for (const step of updates.steps as Array<Record<string, unknown>>) {
+      const stepId = step.stepId
+      if (typeof stepId !== 'string' || !STEP_ID_REGEX.test(stepId)) {
+        return json(400, { error: 'invalid_stepId' })
+      }
+      if (seenStepIds.has(stepId)) {
+        return json(400, { error: 'duplicate_stepId' })
+      }
+      seenStepIds.add(stepId)
+    }
+  }
 
   const requestedSlug = typeof updates.slug === 'string' ? updates.slug : undefined
   const slugChanging = requestedSlug !== undefined && requestedSlug !== existing.slug
@@ -687,22 +704,25 @@ async function handleDeleteRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
     return json(403, { error: 'Forbidden' })
   }
 
-  const listResult = await s3Client.send(
-    new ListObjectsV2Command({
-      Bucket: IMAGE_BUCKET_NAME,
-      Prefix: `${PROCESSED_PREFIX}${id}/`,
-    }),
-  )
-
-  if (listResult.Contents && listResult.Contents.length > 0) {
-    await s3Client.send(
-      new DeleteObjectsCommand({
+  const slug = typeof existing.slug === 'string' ? existing.slug : undefined
+  if (slug) {
+    const listResult = await s3Client.send(
+      new ListObjectsV2Command({
         Bucket: IMAGE_BUCKET_NAME,
-        Delete: {
-          Objects: listResult.Contents.map((obj) => ({ Key: obj.Key })),
-        },
+        Prefix: `${PROCESSED_PREFIX}${slug}/`,
       }),
     )
+
+    if (listResult.Contents && listResult.Contents.length > 0) {
+      await s3Client.send(
+        new DeleteObjectsCommand({
+          Bucket: IMAGE_BUCKET_NAME,
+          Delete: {
+            Objects: listResult.Contents.map((obj) => ({ Key: obj.Key })),
+          },
+        }),
+      )
+    }
   }
 
   await docClient.send(new DeleteCommand({ TableName: TABLE_NAME, Key: { id } }))
