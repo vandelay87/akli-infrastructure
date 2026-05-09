@@ -552,7 +552,7 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
 interface PublishErrors {
   title?: string
   intro?: string
-  coverImage?: { key?: string; alt?: string; processedAt?: string }
+  coverImage?: { alt?: string; processedAt?: string }
   ingredients?: string
   steps?: string
   stepImages?: Array<{ order: number; processedAt: string }>
@@ -571,24 +571,19 @@ function validatePublishInput(item: Record<string, unknown>): PublishErrors {
     errors.intro = 'intro is required'
   }
 
-  const coverImage = item.coverImage as { key?: unknown; alt?: unknown } | undefined
-  const coverErrors: { key?: string; alt?: string; processedAt?: string } = {}
-  const coverKey = coverImage?.key
-  if (typeof coverKey !== 'string' || coverKey.trim().length === 0) {
-    coverErrors.key = 'coverImage.key is required'
-  }
+  const slug = typeof item.slug === 'string' ? item.slug : undefined
+  const imageStatus = imageStatusOf(item)
+  const coverImage = item.coverImage as { alt?: unknown } | undefined
+  const coverErrors: { alt?: string; processedAt?: string } = {}
+
   const coverAlt = coverImage?.alt
   if (typeof coverAlt !== 'string' || coverAlt.trim().length === 0) {
     coverErrors.alt = 'coverImage.alt is required'
-  }
-
-  const imageStatus = imageStatusOf(item)
-
-  if (!coverErrors.key && imageStatus[coverKey as string] === undefined) {
+  } else if (slug && imageStatus[`${PROCESSED_PREFIX}${slug}/cover`] === undefined) {
     coverErrors.processedAt = 'Cover image still processing'
   }
 
-  if (coverErrors.key || coverErrors.alt || coverErrors.processedAt) {
+  if (coverErrors.alt || coverErrors.processedAt) {
     errors.coverImage = coverErrors
   }
 
@@ -610,13 +605,15 @@ function validatePublishInput(item: Record<string, unknown>): PublishErrors {
     }
 
     const stepImageErrors: Array<{ order: number; processedAt: string }> = []
-    for (const step of steps) {
-      const typedStep = step as { order?: unknown; image?: { key?: unknown } }
-      const imageKey = typedStep.image?.key
-      if (typeof imageKey !== 'string' || imageKey.trim().length === 0) continue
-      if (imageStatus[imageKey] !== undefined) continue
-      const order = typeof typedStep.order === 'number' ? typedStep.order : 0
-      stepImageErrors.push({ order, processedAt: 'Step image still processing' })
+    if (slug) {
+      for (const step of steps) {
+        const typedStep = step as { order?: unknown; stepId?: unknown; image?: unknown }
+        if (!typedStep.image || typeof typedStep.stepId !== 'string') continue
+        const stepKey = `${PROCESSED_PREFIX}${slug}/step-${typedStep.stepId}`
+        if (imageStatus[stepKey] !== undefined) continue
+        const order = typeof typedStep.order === 'number' ? typedStep.order : 0
+        stepImageErrors.push({ order, processedAt: 'Step image still processing' })
+      }
     }
     if (stepImageErrors.length > 0) {
       errors.stepImages = stepImageErrors
