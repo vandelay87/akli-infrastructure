@@ -68,6 +68,7 @@ const SLUG_LOCKED_RESPONSE = {
 } as const
 
 const SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
+const STEP_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 export function isValidSlug(slug: string): boolean {
   if (slug.length < 1 || slug.length > 100) return false
@@ -423,7 +424,6 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
   stripProcessedAtFromBody(updates)
 
   if ('steps' in updates && Array.isArray(updates.steps)) {
-    const STEP_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     const seenStepIds = new Set<string>()
     for (const step of updates.steps as Array<Record<string, unknown>>) {
       const stepId = step.stepId
@@ -704,23 +704,25 @@ async function handleDeleteRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
     return json(403, { error: 'Forbidden' })
   }
 
-  const slug = existing.slug as string
-  const listResult = await s3Client.send(
-    new ListObjectsV2Command({
-      Bucket: IMAGE_BUCKET_NAME,
-      Prefix: `${PROCESSED_PREFIX}${slug}/`,
-    }),
-  )
-
-  if (listResult.Contents && listResult.Contents.length > 0) {
-    await s3Client.send(
-      new DeleteObjectsCommand({
+  const slug = typeof existing.slug === 'string' ? existing.slug : undefined
+  if (slug) {
+    const listResult = await s3Client.send(
+      new ListObjectsV2Command({
         Bucket: IMAGE_BUCKET_NAME,
-        Delete: {
-          Objects: listResult.Contents.map((obj) => ({ Key: obj.Key })),
-        },
+        Prefix: `${PROCESSED_PREFIX}${slug}/`,
       }),
     )
+
+    if (listResult.Contents && listResult.Contents.length > 0) {
+      await s3Client.send(
+        new DeleteObjectsCommand({
+          Bucket: IMAGE_BUCKET_NAME,
+          Delete: {
+            Objects: listResult.Contents.map((obj) => ({ Key: obj.Key })),
+          },
+        }),
+      )
+    }
   }
 
   await docClient.send(new DeleteCommand({ TableName: TABLE_NAME, Key: { id } }))
