@@ -95,9 +95,13 @@ function imageStatusOf(item: Record<string, unknown>): Record<string, number> {
   return (item.imageStatus as Record<string, number> | undefined) ?? {}
 }
 
+function slugOf(item: Record<string, unknown>): string | undefined {
+  return typeof item.slug === 'string' ? item.slug : undefined
+}
+
 function composeImageProcessedAt<T extends Record<string, unknown>>(item: T): Omit<T, 'imageStatus'> {
   const imageStatus = imageStatusOf(item)
-  const slug = typeof item.slug === 'string' ? item.slug : undefined
+  const slug = slugOf(item)
   const coverImage = item.coverImage as Record<string, unknown> | undefined
 
   const coverDerivedKey = slug ? `${PROCESSED_PREFIX}${slug}/cover` : undefined
@@ -354,7 +358,7 @@ function variantKeysFor(key: string): readonly string[] {
 }
 
 function droppedImageBaseKeys(oldItem: Record<string, unknown>, updates: Record<string, unknown>): string[] {
-  const slug = typeof oldItem.slug === 'string' ? oldItem.slug : undefined
+  const slug = slugOf(oldItem)
   if (!slug) return []
   const droppedKeys: string[] = []
 
@@ -571,7 +575,7 @@ function validatePublishInput(item: Record<string, unknown>): PublishErrors {
     errors.intro = 'intro is required'
   }
 
-  const slug = typeof item.slug === 'string' ? item.slug : undefined
+  const slug = slugOf(item)
   const imageStatus = imageStatusOf(item)
   const coverImage = item.coverImage as { alt?: unknown } | undefined
   const coverErrors: { alt?: string; processedAt?: string } = {}
@@ -701,7 +705,7 @@ async function handleDeleteRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
     return json(403, { error: 'Forbidden' })
   }
 
-  const slug = typeof existing.slug === 'string' ? existing.slug : undefined
+  const slug = slugOf(existing)
   if (slug) {
     const listResult = await s3Client.send(
       new ListObjectsV2Command({
