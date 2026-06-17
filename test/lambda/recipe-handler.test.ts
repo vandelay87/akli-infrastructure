@@ -62,9 +62,9 @@ function publishedRecipeItem(overrides: Record<string, unknown> = {}): Record<st
     slug: 'slow-cooked-lamb-ragu',
     title: 'Slow-Cooked Lamb Ragu',
     intro: 'A rich, hearty ragu.',
-    coverImage: { key: 'recipes/images/recipe-uuid-1/cover', alt: 'A bowl of lamb ragu' },
+    coverImage: { alt: 'A bowl of lamb ragu' },
     ingredients: [{ item: 'lamb shoulder', quantity: '1', unit: 'kg' }],
-    steps: [{ order: 1, text: 'Season the lamb and sear.' }],
+    steps: [{ stepId: 'a0000000-0000-4000-8000-000000000001', order: 1, text: 'Season the lamb and sear.' }],
     tags: new Set(['Italian', 'Slow Cook']),
     prepTime: 20,
     cookTime: 240,
@@ -111,7 +111,7 @@ describe('Recipe Lambda handler', () => {
         id: 'recipe-uuid-1',
         title: 'Slow-Cooked Lamb Ragu',
         slug: 'slow-cooked-lamb-ragu',
-        coverImage: { key: 'recipes/images/recipe-uuid-1/cover', alt: 'A bowl of lamb ragu' },
+        coverImage: { alt: 'A bowl of lamb ragu' },
         tags: ['Italian', 'Slow Cook'],
         prepTime: 20,
         cookTime: 240,
@@ -1657,7 +1657,7 @@ describe('Recipe Lambda handler', () => {
       ddbMock.on(GetCommand).resolves({
         Item: draftRecipeItem({
           authorId: 'contributor-user-id',
-          imageStatus: { 'recipes/images/recipe-uuid-1/cover': 1_745_000_000_000 },
+          imageStatus: { 'recipes/my-draft-recipe/cover': 1_745_000_000_000 },
         }),
       })
       ddbMock.on(UpdateCommand).resolves({
@@ -1682,7 +1682,7 @@ describe('Recipe Lambda handler', () => {
       ddbMock.on(GetCommand).resolves({
         Item: draftRecipeItem({
           authorId: 'contributor-user-id',
-          imageStatus: { 'recipes/images/recipe-uuid-1/cover': 1_745_000_000_000 },
+          imageStatus: { 'recipes/my-draft-recipe/cover': 1_745_000_000_000 },
         }),
       })
       ddbMock.on(UpdateCommand).resolves({
@@ -1745,11 +1745,11 @@ describe('Recipe Lambda handler', () => {
         expect(body.errors).toHaveProperty('intro')
       })
 
-      it('returns 400 with a `coverImage.key` error when cover key is missing', async () => {
+      it('returns 400 with a `coverImage.alt` error when alt is missing', async () => {
         ddbMock.on(GetCommand).resolves({
           Item: draftRecipeItem({
             authorId: 'contributor-user-id',
-            coverImage: { key: '', alt: 'alt' },
+            coverImage: {},
           }),
         })
 
@@ -1757,14 +1757,15 @@ describe('Recipe Lambda handler', () => {
 
         expect(result.statusCode).toBe(400)
         const body = JSON.parse(result.body as string)
-        expect(body.errors).toHaveProperty('coverImage.key')
+        expect(body.errors.coverImage).toBeDefined()
+        expect(body.errors.coverImage.alt).toBe('coverImage.alt is required')
       })
 
-      it('returns 400 with a `coverImage.alt` error when cover alt is missing', async () => {
+      it('returns 400 with a `coverImage.alt` error when cover alt is empty', async () => {
         ddbMock.on(GetCommand).resolves({
           Item: draftRecipeItem({
             authorId: 'contributor-user-id',
-            coverImage: { key: 'recipes/images/recipe-uuid-1/cover', alt: '' },
+            coverImage: { alt: '' },
           }),
         })
 
@@ -1772,7 +1773,8 @@ describe('Recipe Lambda handler', () => {
 
         expect(result.statusCode).toBe(400)
         const body = JSON.parse(result.body as string)
-        expect(body.errors).toHaveProperty('coverImage.alt')
+        expect(body.errors.coverImage).toBeDefined()
+        expect(body.errors.coverImage.alt).toBe('coverImage.alt is required')
       })
 
       it('returns 400 with an `ingredients` error when ingredients list is empty', async () => {
@@ -1816,9 +1818,13 @@ describe('Recipe Lambda handler', () => {
     })
 
     describe('readiness validation — rejects recipes with unready images', () => {
-      const coverKey = 'recipes/recipe-uuid-1/cover'
-      const step1Key = 'recipes/recipe-uuid-1/step-1'
-      const step2Key = 'recipes/recipe-uuid-1/step-2'
+      const draftSlug = 'my-draft-recipe'
+      const publishedSlug = 'slow-cooked-lamb-ragu'
+      const stepIdA = 'a0000000-0000-4000-8000-000000000001'
+      const stepIdB = 'a0000000-0000-4000-8000-000000000002'
+      const coverKey = `recipes/${draftSlug}/cover`
+      const step1Key = `recipes/${draftSlug}/step-${stepIdA}`
+      const step2Key = `recipes/${draftSlug}/step-${stepIdB}`
       const coverTs = 1_745_000_000_001
       const step1Ts = 1_745_000_000_002
       const step2Ts = 1_745_000_000_003
@@ -1836,9 +1842,9 @@ describe('Recipe Lambda handler', () => {
         ddbMock.on(GetCommand).resolves({
           Item: draftRecipeItem({
             authorId: 'contributor-user-id',
-            coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+            coverImage: { alt: 'A bowl of lamb ragu' },
             steps: [
-              { order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared' } },
+              { stepId: stepIdA, order: 1, text: 'Sear.', image: { alt: 'seared' } },
             ],
             imageStatus: { [step1Key]: step1Ts },
           }),
@@ -1857,14 +1863,14 @@ describe('Recipe Lambda handler', () => {
         expect(body.errors).not.toHaveProperty('stepImages')
       })
 
-      it('returns 400 with errors.stepImages for each step whose image key has no imageStatus entry (cover ready)', async () => {
+      it('returns 400 with errors.stepImages for each step whose image has no imageStatus entry (cover ready)', async () => {
         ddbMock.on(GetCommand).resolves({
           Item: draftRecipeItem({
             authorId: 'contributor-user-id',
-            coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+            coverImage: { alt: 'A bowl of lamb ragu' },
             steps: [
-              { order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared' } },
-              { order: 2, text: 'Simmer.', image: { key: step2Key, alt: 'simmering' } },
+              { stepId: stepIdA, order: 1, text: 'Sear.', image: { alt: 'seared' } },
+              { stepId: stepIdB, order: 2, text: 'Simmer.', image: { alt: 'simmering' } },
             ],
             imageStatus: { [coverKey]: coverTs, [step1Key]: step1Ts },
           }),
@@ -1888,10 +1894,10 @@ describe('Recipe Lambda handler', () => {
         ddbMock.on(GetCommand).resolves({
           Item: draftRecipeItem({
             authorId: 'contributor-user-id',
-            coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+            coverImage: { alt: 'A bowl of lamb ragu' },
             steps: [
-              { order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared' } },
-              { order: 2, text: 'Simmer.', image: { key: step2Key, alt: 'simmering' } },
+              { stepId: stepIdA, order: 1, text: 'Sear.', image: { alt: 'seared' } },
+              { stepId: stepIdB, order: 2, text: 'Simmer.', image: { alt: 'simmering' } },
             ],
             imageStatus: {},
           }),
@@ -1916,7 +1922,7 @@ describe('Recipe Lambda handler', () => {
           Item: draftRecipeItem({
             authorId: 'contributor-user-id',
             title: '',
-            coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+            coverImage: { alt: 'A bowl of lamb ragu' },
             imageStatus: {},
           }),
         })
@@ -1930,14 +1936,13 @@ describe('Recipe Lambda handler', () => {
         expect(body.errors.coverImage.processedAt).toBe('Cover image still processing')
       })
 
-      it('returns 400 when republishing a currently-published recipe whose cover was swapped to an unready new key', async () => {
-        const oldCoverKey = 'recipes/recipe-uuid-1/cover-old'
-        const newCoverKey = 'recipes/recipe-uuid-1/cover'
+      it('returns 400 when republishing a currently-published recipe whose cover has no imageStatus entry under the slug-derived key', async () => {
+        const staleLegacyKey = 'recipes/recipe-uuid-1/cover'
         ddbMock.on(GetCommand).resolves({
           Item: publishedRecipeItem({
             authorId: 'contributor-user-id',
-            coverImage: { key: newCoverKey, alt: 'New cover' },
-            imageStatus: { [oldCoverKey]: coverTs },
+            coverImage: { alt: 'New cover' },
+            imageStatus: { [staleLegacyKey]: coverTs },
           }),
         })
 
@@ -1954,8 +1959,11 @@ describe('Recipe Lambda handler', () => {
         ddbMock.on(GetCommand).resolves({
           Item: draftRecipeItem({
             authorId: 'contributor-user-id',
-            coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
-            steps: [{ order: 1, text: '' }, { order: 2, text: '   ' }],
+            coverImage: { alt: 'A bowl of lamb ragu' },
+            steps: [
+              { stepId: stepIdA, order: 1, text: '' },
+              { stepId: stepIdB, order: 2, text: '   ' },
+            ],
             imageStatus: { [coverKey]: coverTs },
           }),
         })
@@ -1969,16 +1977,81 @@ describe('Recipe Lambda handler', () => {
         expect(body.errors.steps).not.toEqual(expect.any(Array))
       })
 
-      it('publishes successfully when every image key has a matching imageStatus entry', async () => {
+      it('publishes successfully when every image key has a matching slug-derived imageStatus entry', async () => {
         ddbMock.on(GetCommand).resolves({
           Item: draftRecipeItem({
             authorId: 'contributor-user-id',
-            coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+            coverImage: { alt: 'A bowl of lamb ragu' },
             steps: [
-              { order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared' } },
-              { order: 2, text: 'Simmer.', image: { key: step2Key, alt: 'simmering' } },
+              { stepId: stepIdA, order: 1, text: 'Sear.', image: { alt: 'seared' } },
+              { stepId: stepIdB, order: 2, text: 'Simmer.', image: { alt: 'simmering' } },
             ],
             imageStatus: { [coverKey]: coverTs, [step1Key]: step1Ts, [step2Key]: step2Ts },
+          }),
+        })
+        ddbMock.on(UpdateCommand).resolves({
+          Attributes: publishedRecipeItem({ authorId: 'contributor-user-id' }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(200)
+      })
+
+      it('publishes successfully when steps have no images and only the cover is ready (no stepImages errors emitted)', async () => {
+        ddbMock.on(GetCommand).resolves({
+          Item: draftRecipeItem({
+            authorId: 'contributor-user-id',
+            coverImage: { alt: 'A bowl of lamb ragu' },
+            steps: [
+              { stepId: stepIdA, order: 1, text: 'Sear.' },
+              { stepId: stepIdB, order: 2, text: 'Simmer.' },
+            ],
+            imageStatus: { [coverKey]: coverTs },
+          }),
+        })
+        ddbMock.on(UpdateCommand).resolves({
+          Attributes: publishedRecipeItem({ authorId: 'contributor-user-id' }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(200)
+      })
+
+      it('emits one stepImages entry per step with image but no slug+stepId imageStatus entry', async () => {
+        ddbMock.on(GetCommand).resolves({
+          Item: draftRecipeItem({
+            authorId: 'contributor-user-id',
+            coverImage: { alt: 'A bowl of lamb ragu' },
+            steps: [
+              { stepId: stepIdA, order: 1, text: 'Sear.', image: { alt: 'seared' } },
+              { stepId: stepIdB, order: 2, text: 'Simmer.', image: { alt: 'simmering' } },
+            ],
+            imageStatus: { [coverKey]: coverTs },
+          }),
+        })
+
+        const result = await handler(publishEvent())
+
+        expect(result.statusCode).toBe(400)
+        const body = JSON.parse(result.body as string)
+        expect(body.errors).not.toHaveProperty('coverImage')
+        expect(body.errors.stepImages).toEqual([
+          { order: 1, processedAt: 'Step image still processing' },
+          { order: 2, processedAt: 'Step image still processing' },
+        ])
+      })
+
+      // Reference to publishedSlug to keep the constant tied to documented intent
+      // (the slug-derived imageStatus key for published-state assertions lives elsewhere).
+      it('uses the published recipe\'s slug-derived key for republish readiness', async () => {
+        const publishedCoverKey = `recipes/${publishedSlug}/cover`
+        ddbMock.on(GetCommand).resolves({
+          Item: publishedRecipeItem({
+            authorId: 'contributor-user-id',
+            coverImage: { alt: 'A bowl of lamb ragu' },
+            imageStatus: { [publishedCoverKey]: coverTs },
           }),
         })
         ddbMock.on(UpdateCommand).resolves({
@@ -1995,7 +2068,7 @@ describe('Recipe Lambda handler', () => {
       ddbMock.on(GetCommand).resolves({
         Item: publishedRecipeItem({
           authorId: 'contributor-user-id',
-          imageStatus: { 'recipes/images/recipe-uuid-1/cover': 1_745_000_000_000 },
+          imageStatus: { 'recipes/slow-cooked-lamb-ragu/cover': 1_745_000_000_000 },
         }),
       })
       ddbMock.on(UpdateCommand).resolves({
@@ -2497,14 +2570,12 @@ describe('Recipe Lambda handler', () => {
     // AC 6: PATCH /recipes/{id}/publish response composes processedAt.
     it('PATCH /recipes/{id}/publish response composes processedAt onto the returned recipe', async () => {
       // Draft we read for validation passes all existing checks AND has readiness on every image.
-      // Note: validatePublishInput still reads `coverImage.key` / `step.image.key` (not in scope
-      // for this issue) — keep those literal keys present in the validation fixture so it passes.
       const fullyReadyDraft = recipeWithImageStatus({
         status: 'draft',
         authorId: 'contributor-user-id',
-        coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
+        coverImage: { alt: 'A bowl of lamb ragu' },
         steps: [
-          { stepId: stepId1, order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared lamb' } },
+          { stepId: stepId1, order: 1, text: 'Sear.', image: { alt: 'seared lamb' } },
         ],
         imageStatus: { [coverKey]: coverTs, [step1Key]: step1Ts },
       })
@@ -2626,12 +2697,11 @@ describe('Recipe Lambda handler', () => {
       })
 
       it('PATCH /recipes/{id}/publish strips imageStatus', async () => {
-        // Validation still uses coverImage.key/step.image.key — keep them populated for this fixture.
         const fullyReadyDraft = recipeWithImageStatus({
           status: 'draft',
           authorId: 'contributor-user-id',
-          coverImage: { key: coverKey, alt: 'A bowl of lamb ragu' },
-          steps: [{ stepId: stepId1, order: 1, text: 'Sear.', image: { key: step1Key, alt: 'seared lamb' } }],
+          coverImage: { alt: 'A bowl of lamb ragu' },
+          steps: [{ stepId: stepId1, order: 1, text: 'Sear.', image: { alt: 'seared lamb' } }],
           imageStatus: { [coverKey]: coverTs, [step1Key]: step1Ts },
         })
         ddbMock.on(GetCommand).resolves({ Item: fullyReadyDraft })
