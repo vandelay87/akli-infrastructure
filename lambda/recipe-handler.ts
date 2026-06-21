@@ -1,15 +1,23 @@
 import { randomUUID } from 'node:crypto'
 import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb'
 import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3'
-import { QueryCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb'
 import { unmarshall } from '@aws-sdk/util-dynamodb'
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 import { VARIANT_SUFFIXES, PROCESSED_PREFIX } from './image-variants'
-import { docClient, getRecipeById, isValidStepId, queryRecipeIdsBySlug } from './recipe-store'
+import {
+  getRecipeById,
+  isValidStepId,
+  queryRecipeIdsBySlug,
+  queryRecipesByStatus,
+  queryRecipesByAuthor,
+  scanRecipes,
+  putRecipe,
+  updateRecipe,
+  deleteRecipe,
+} from './recipe-store'
 
 const s3Client = new S3Client({})
 
-const TABLE_NAME = process.env.TABLE_NAME ?? ''
 const IMAGE_BUCKET_NAME = process.env.IMAGE_BUCKET_NAME ?? ''
 const DRAFT_TTL_SECONDS = 30 * 24 * 60 * 60
 
@@ -188,18 +196,15 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 }
 
 async function handleListTags(): Promise<APIGatewayProxyStructuredResultV2> {
-  const result = await docClient.send(
-    new ScanCommand({
-      TableName: TABLE_NAME,
-      FilterExpression: '#status = :status',
-      ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: { ':status': PUBLISHED },
-      ProjectionExpression: 'tags',
-    }),
-  )
+  const items = await scanRecipes({
+    FilterExpression: '#status = :status',
+    ExpressionAttributeNames: { '#status': 'status' },
+    ExpressionAttributeValues: { ':status': PUBLISHED },
+    ProjectionExpression: 'tags',
+  })
 
   const countMap: Record<string, number> = {}
-  for (const item of result.Items ?? []) {
+  for (const item of items) {
     const tags = tagsToArray(item.tags)
     for (const tag of tags) {
       countMap[tag] = (countMap[tag] ?? 0) + 1
@@ -213,23 +218,10 @@ async function handleListTags(): Promise<APIGatewayProxyStructuredResultV2> {
   return json(200, sorted)
 }
 
-function queryRecipesByStatus(status: RecipeStatus) {
-  return docClient.send(
-    new QueryCommand({
-      TableName: TABLE_NAME,
-      IndexName: 'status-createdAt-index',
-      KeyConditionExpression: '#status = :status',
-      ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: { ':status': status },
-      ScanIndexForward: false,
-    }),
-  )
-}
-
 async function handleListPublished(): Promise<APIGatewayProxyStructuredResultV2> {
-  const result = await queryRecipesByStatus(PUBLISHED)
+  const items = await queryRecipesByStatus(PUBLISHED)
 
-  const recipes = (result.Items ?? []).map((item) => lightweightRecipe(item as Record<string, unknown>))
+  const recipes = items.map((item) => lightweightRecipe(item))
   return json(200, recipes)
 }
 
@@ -237,10 +229,10 @@ async function handleListForAdmin(event: APIGatewayProxyEventV2): Promise<APIGat
   if (!decodeJwt(event)) return json(401, { error: 'Unauthorised' })
   if (!isAdmin(event)) return json(403, { error: 'Forbidden' })
 
-  const [publishedResult, draftResult] = await Promise.all([queryRecipesByStatus(PUBLISHED), queryRecipesByStatus(DRAFT)])
+  const [published, drafts] = await Promise.all([queryRecipesByStatus(PUBLISHED), queryRecipesByStatus(DRAFT)])
 
   const nowSeconds = Math.floor(Date.now() / 1000)
-  const merged = [...(publishedResult.Items ?? []), ...(draftResult.Items ?? [])] as Record<string, unknown>[]
+  const merged = [...published, ...drafts]
   const live = merged.filter((item) => typeof item.ttl !== 'number' || item.ttl > nowSeconds)
 
   return json(200, live.map(lightweightAdminRecipe))
@@ -263,19 +255,16 @@ async function handleGetBySlug(event: APIGatewayProxyEventV2): Promise<APIGatewa
   const slug = event.pathParameters?.slug
   if (!slug) return json(400, { error: 'slug is required' })
 
-  const result = await docClient.send(
-    new ScanCommand({
-      TableName: TABLE_NAME,
-      FilterExpression: 'slug = :slug',
-      ExpressionAttributeValues: { ':slug': slug },
-    }),
-  )
+  const items = await scanRecipes({
+    FilterExpression: 'slug = :slug',
+    ExpressionAttributeValues: { ':slug': slug },
+  })
 
-  if (!result.Items || result.Items.length === 0) {
+  if (items.length === 0) {
     return json(404, { error: 'Recipe not found' })
   }
 
-  const recipe = result.Items[0] as Record<string, unknown>
+  const recipe = items[0]
   if (recipe.status !== PUBLISHED) {
     return json(404, { error: 'Recipe not found' })
   }
@@ -287,17 +276,9 @@ async function handleListUserRecipes(event: APIGatewayProxyEventV2): Promise<API
   const payload = decodeJwt(event)
   if (!payload) return json(401, { error: 'Unauthorised' })
 
-  const result = await docClient.send(
-    new QueryCommand({
-      TableName: TABLE_NAME,
-      IndexName: 'authorId-createdAt-index',
-      KeyConditionExpression: 'authorId = :authorId',
-      ExpressionAttributeValues: { ':authorId': payload.sub },
-      ScanIndexForward: false,
-    }),
-  )
+  const items = await queryRecipesByAuthor(payload.sub)
 
-  const recipes = (result.Items ?? []).map((item) => convertRecipeTags(item as Record<string, unknown>))
+  const recipes = items.map((item) => convertRecipeTags(item))
   return json(200, recipes)
 }
 
@@ -340,7 +321,7 @@ async function handleCreateDraft(event: APIGatewayProxyEventV2): Promise<APIGate
     updatedAt: now,
   }
 
-  await docClient.send(new PutCommand({ TableName: TABLE_NAME, Item: item }))
+  await putRecipe(item)
 
   return json(201, { id, slug })
 }
@@ -498,18 +479,15 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
 
   let updateResult
   try {
-    updateResult = await docClient.send(
-      new UpdateCommand({
-        TableName: TABLE_NAME,
-        Key: { id },
-        UpdateExpression: updateExpression,
-        ExpressionAttributeNames: expressionNames,
-        ExpressionAttributeValues: expressionValues,
-        ConditionExpression: conditionExpression,
-        ReturnValues: 'ALL_OLD',
-        ReturnValuesOnConditionCheckFailure: slugChanging ? 'ALL_OLD' : undefined,
-      }),
-    )
+    updateResult = await updateRecipe({
+      Key: { id },
+      UpdateExpression: updateExpression,
+      ExpressionAttributeNames: expressionNames,
+      ExpressionAttributeValues: expressionValues,
+      ConditionExpression: conditionExpression,
+      ReturnValues: 'ALL_OLD',
+      ReturnValuesOnConditionCheckFailure: slugChanging ? 'ALL_OLD' : undefined,
+    })
   } catch (err) {
     if (err instanceof ConditionalCheckFailedException || (err as { name?: string }).name === 'ConditionalCheckFailedException') {
       // The CCFE carries the atomic snapshot under err.Item, but lib-dynamodb only
@@ -643,16 +621,13 @@ async function handlePublish(event: APIGatewayProxyEventV2): Promise<APIGatewayP
   }
 
   const now = new Date().toISOString()
-  const result = await docClient.send(
-    new UpdateCommand({
-      TableName: TABLE_NAME,
-      Key: { id },
-      UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt REMOVE #ttl',
-      ExpressionAttributeNames: { '#status': 'status', '#updatedAt': 'updatedAt', '#ttl': 'ttl' },
-      ExpressionAttributeValues: { ':status': PUBLISHED, ':updatedAt': now },
-      ReturnValues: 'ALL_NEW',
-    }),
-  )
+  const result = await updateRecipe({
+    Key: { id },
+    UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt REMOVE #ttl',
+    ExpressionAttributeNames: { '#status': 'status', '#updatedAt': 'updatedAt', '#ttl': 'ttl' },
+    ExpressionAttributeValues: { ':status': PUBLISHED, ':updatedAt': now },
+    ReturnValues: 'ALL_NEW',
+  })
 
   return json(200, convertRecipeTags(result.Attributes as Record<string, unknown>))
 }
@@ -674,16 +649,13 @@ async function handleUnpublish(event: APIGatewayProxyEventV2): Promise<APIGatewa
 
   const now = new Date().toISOString()
   const ttl = Math.floor(Date.now() / 1000) + DRAFT_TTL_SECONDS
-  const result = await docClient.send(
-    new UpdateCommand({
-      TableName: TABLE_NAME,
-      Key: { id },
-      UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt, #ttl = :ttl',
-      ExpressionAttributeNames: { '#status': 'status', '#updatedAt': 'updatedAt', '#ttl': 'ttl' },
-      ExpressionAttributeValues: { ':status': DRAFT, ':updatedAt': now, ':ttl': ttl },
-      ReturnValues: 'ALL_NEW',
-    }),
-  )
+  const result = await updateRecipe({
+    Key: { id },
+    UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt, #ttl = :ttl',
+    ExpressionAttributeNames: { '#status': 'status', '#updatedAt': 'updatedAt', '#ttl': 'ttl' },
+    ExpressionAttributeValues: { ':status': DRAFT, ':updatedAt': now, ':ttl': ttl },
+    ReturnValues: 'ALL_NEW',
+  })
 
   return json(200, convertRecipeTags(result.Attributes as Record<string, unknown>))
 }
@@ -723,7 +695,7 @@ async function handleDeleteRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
     }
   }
 
-  await docClient.send(new DeleteCommand({ TableName: TABLE_NAME, Key: { id } }))
+  await deleteRecipe(id)
 
   return json(200, { message: 'Recipe deleted successfully' })
 }
