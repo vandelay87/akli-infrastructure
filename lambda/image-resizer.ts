@@ -78,39 +78,44 @@ export async function handler(event: S3Event): Promise<void> {
     const logSkip = (reason: SkipReason) =>
       console.info({ event: 'resizer.writeback.skipped', reason, key })
 
-    await s3.send(
-      new DeleteObjectCommand({ Bucket: sourceBucket, Key: key }),
-    )
-
+    // Resolve the recipe and stamp imageStatus BEFORE deleting the source. The
+    // variant PUTs above are idempotent, so if the GSI lookup or UpdateCommand
+    // hits a transient error and throws, the source survives and the Lambda retry
+    // can regenerate the variants and complete the writeback. Only deliberate,
+    // logged skips fall through to the source-delete below.
     const slug = parseRecipeSlug(key)
     if (slug === undefined) {
       logSkip('unrecognised_key_shape')
-      continue
-    }
-
-    const recipeId = await findIdBySlug(slug)
-    if (!recipeId) {
-      logSkip('recipe_not_found')
-      continue
-    }
-
-    try {
-      await docClient.send(
-        new UpdateCommand({
-          TableName: tableName,
-          Key: { id: recipeId },
-          UpdateExpression: 'SET imageStatus.#k = :ts',
-          ConditionExpression: 'attribute_exists(id)',
-          ExpressionAttributeNames: { '#k': processedKey },
-          ExpressionAttributeValues: { ':ts': Date.now() },
-        }),
-      )
-    } catch (error) {
-      if (error instanceof ConditionalCheckFailedException) {
-        logSkip('recipe_deleted')
+    } else {
+      const recipeId = await findIdBySlug(slug)
+      if (!recipeId) {
+        logSkip('recipe_not_found')
       } else {
-        throw error
+        try {
+          await docClient.send(
+            new UpdateCommand({
+              TableName: tableName,
+              Key: { id: recipeId },
+              UpdateExpression: 'SET imageStatus.#k = :ts',
+              ConditionExpression: 'attribute_exists(id)',
+              ExpressionAttributeNames: { '#k': processedKey },
+              ExpressionAttributeValues: { ':ts': Date.now() },
+            }),
+          )
+        } catch (error) {
+          if (error instanceof ConditionalCheckFailedException) {
+            logSkip('recipe_deleted')
+          } else {
+            throw error
+          }
+        }
       }
     }
+
+    // Reached only after a successful writeback or a logged skip — never after a
+    // thrown transient error, so the source survives for the retry.
+    await s3.send(
+      new DeleteObjectCommand({ Bucket: sourceBucket, Key: key }),
+    )
   }
 }
