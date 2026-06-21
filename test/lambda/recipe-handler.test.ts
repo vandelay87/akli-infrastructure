@@ -1,6 +1,7 @@
 import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb'
 import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3'
 import { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb'
+import { marshall } from '@aws-sdk/util-dynamodb'
 import type { APIGatewayProxyEventV2 } from 'aws-lambda'
 import { mockClient } from 'aws-sdk-client-mock'
 
@@ -1545,27 +1546,26 @@ describe('Recipe Lambda handler', () => {
       expect(expectedOldSlugValue).toBe('old-slug')
     })
 
-    it('maps ConditionalCheckFailedException to 409 slug_locked when re-read shows imageStatus has been populated', async () => {
+    it('maps ConditionalCheckFailedException to 409 slug_locked when the atomic snapshot shows imageStatus has been populated', async () => {
       const oldItem = publishedRecipeItem({
         id: 'recipe-uuid-1',
         slug: 'old-slug',
         authorId: 'contributor-user-id',
         imageStatus: {},
       })
-      const reReadItem = {
+      // The race-loss snapshot rides on err.Item as raw, marshalled AttributeValues —
+      // lib-dynamodb does not unmarshall a thrown exception's Item, so the handler must.
+      const atomicSnapshot = {
         ...oldItem,
         imageStatus: { 'recipes/old-slug/cover': 1_745_000_000_000 },
       }
-      // First Get is the pre-read; second Get is the re-read after the conditional failure.
-      ddbMock
-        .on(GetCommand)
-        .resolvesOnce({ Item: oldItem })
-        .resolvesOnce({ Item: reReadItem })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
       ddbMock.on(QueryCommand).resolves({ Items: [] })
       ddbMock.on(UpdateCommand).rejects(
         new ConditionalCheckFailedException({
           $metadata: {},
           message: 'The conditional request failed',
+          Item: marshall(atomicSnapshot),
         }),
       )
 
@@ -1582,24 +1582,56 @@ describe('Recipe Lambda handler', () => {
       expect(result.statusCode).toBe(409)
       const body = JSON.parse(result.body as string)
       expect(body.error).toBe('slug_locked')
+      // Race-loss path must not issue a second Get — only the pre-read.
+      expect(ddbMock.commandCalls(GetCommand)).toHaveLength(1)
     })
 
-    it('maps ConditionalCheckFailedException to 409 conflict when re-read shows the slug changed underneath', async () => {
+    it('maps ConditionalCheckFailedException to 409 conflict when the atomic snapshot shows the slug changed underneath', async () => {
       const oldItem = publishedRecipeItem({
         id: 'recipe-uuid-1',
         slug: 'old-slug',
         authorId: 'contributor-user-id',
         imageStatus: {},
       })
-      const reReadItem = {
+      const atomicSnapshot = {
         ...oldItem,
         slug: 'someone-else-changed-it',
         imageStatus: {},
       }
-      ddbMock
-        .on(GetCommand)
-        .resolvesOnce({ Item: oldItem })
-        .resolvesOnce({ Item: reReadItem })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
+      ddbMock.on(QueryCommand).resolves({ Items: [] })
+      ddbMock.on(UpdateCommand).rejects(
+        new ConditionalCheckFailedException({
+          $metadata: {},
+          message: 'The conditional request failed',
+          Item: marshall(atomicSnapshot),
+        }),
+      )
+
+      const event = makeEvent({
+        routeKey: 'PATCH /recipes/{id}',
+        rawPath: '/recipes/recipe-uuid-1',
+        pathParameters: { id: 'recipe-uuid-1' },
+        headers: { authorization: `Bearer ${contributorToken}` },
+        body: JSON.stringify({ slug: 'new-slug' }),
+      })
+
+      const result = await handler(event)
+
+      expect(result.statusCode).toBe(409)
+      const body = JSON.parse(result.body as string)
+      expect(body.error).toBe('conflict')
+      expect(ddbMock.commandCalls(GetCommand)).toHaveLength(1)
+    })
+
+    it('falls back to 409 conflict when the conditional failure carries no Item snapshot', async () => {
+      const oldItem = publishedRecipeItem({
+        id: 'recipe-uuid-1',
+        slug: 'old-slug',
+        authorId: 'contributor-user-id',
+        imageStatus: {},
+      })
+      ddbMock.on(GetCommand).resolves({ Item: oldItem })
       ddbMock.on(QueryCommand).resolves({ Items: [] })
       ddbMock.on(UpdateCommand).rejects(
         new ConditionalCheckFailedException({
@@ -1621,6 +1653,7 @@ describe('Recipe Lambda handler', () => {
       expect(result.statusCode).toBe(409)
       const body = JSON.parse(result.body as string)
       expect(body.error).toBe('conflict')
+      expect(ddbMock.commandCalls(GetCommand)).toHaveLength(1)
     })
 
     it('does NOT add a ConditionExpression when slug is omitted from the patch body', async () => {
