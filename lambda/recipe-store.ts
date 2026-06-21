@@ -1,12 +1,12 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import { DynamoDBDocumentClient, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
 
-const docClient = DynamoDBDocumentClient.from(new DynamoDBClient({}))
+export const docClient = DynamoDBDocumentClient.from(new DynamoDBClient({}))
 const TABLE_NAME = process.env.TABLE_NAME ?? ''
 
 export const SLUG_INDEX_NAME = 'slug-index'
 
-export const STEP_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const STEP_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 export function isValidStepId(stepId: string): boolean {
   return STEP_ID_REGEX.test(stepId)
@@ -20,7 +20,6 @@ export interface Recipe extends Record<string, unknown> {
   readonly id?: string
   readonly slug?: string
   readonly steps?: readonly RecipeStep[]
-  readonly imageStatus?: Record<string, number>
 }
 
 export async function getRecipeById(id: string): Promise<Recipe | undefined> {

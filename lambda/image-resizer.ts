@@ -1,13 +1,12 @@
-import { ConditionalCheckFailedException, DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb'
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
-import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb'
+import { UpdateCommand } from '@aws-sdk/lib-dynamodb'
 import type { S3Event } from 'aws-lambda'
 import sharp from 'sharp'
 import { VARIANT_SUFFIXES, toProcessedKey, UPLOAD_PREFIX, type VariantSuffix } from './image-variants'
-import { findIdBySlug } from './recipe-store'
+import { docClient, findIdBySlug } from './recipe-store'
 
 const s3 = new S3Client({})
-const docClient = DynamoDBDocumentClient.from(new DynamoDBClient({}))
 
 interface ImageVariant {
   readonly suffix: VariantSuffix

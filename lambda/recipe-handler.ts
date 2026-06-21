@@ -1,13 +1,11 @@
 import { randomUUID } from 'node:crypto'
-import { ConditionalCheckFailedException, DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb'
 import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3'
-import { DynamoDBDocumentClient, QueryCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb'
+import { QueryCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb'
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 import { VARIANT_SUFFIXES, PROCESSED_PREFIX } from './image-variants'
-import { getRecipeById, queryRecipeIdsBySlug, STEP_ID_REGEX } from './recipe-store'
+import { docClient, getRecipeById, isValidStepId, queryRecipeIdsBySlug } from './recipe-store'
 
-const ddbClient = new DynamoDBClient({})
-const docClient = DynamoDBDocumentClient.from(ddbClient)
 const s3Client = new S3Client({})
 
 const TABLE_NAME = process.env.TABLE_NAME ?? ''
@@ -424,7 +422,7 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
     const seenStepIds = new Set<string>()
     for (const step of updates.steps as Array<Record<string, unknown>>) {
       const stepId = step.stepId
-      if (typeof stepId !== 'string' || !STEP_ID_REGEX.test(stepId)) {
+      if (typeof stepId !== 'string' || !isValidStepId(stepId)) {
         return json(400, { error: 'invalid_stepId' })
       }
       if (seenStepIds.has(stepId)) {
