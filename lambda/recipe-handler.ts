@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto'
-import { ConditionalCheckFailedException, DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb'
 import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3'
-import { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb'
+import { QueryCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb'
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 import { VARIANT_SUFFIXES, PROCESSED_PREFIX } from './image-variants'
+import { docClient, getRecipeById, isValidStepId, queryRecipeIdsBySlug } from './recipe-store'
 
-const ddbClient = new DynamoDBClient({})
-const docClient = DynamoDBDocumentClient.from(ddbClient)
 const s3Client = new S3Client({})
 
 const TABLE_NAME = process.env.TABLE_NAME ?? ''
@@ -68,7 +67,6 @@ const SLUG_LOCKED_RESPONSE = {
 } as const
 
 const SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
-const STEP_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 export function isValidSlug(slug: string): boolean {
   if (slug.length < 1 || slug.length > 100) return false
@@ -78,16 +76,9 @@ export function isValidSlug(slug: string): boolean {
 }
 
 export async function slugExists(slug: string, excludeId?: string): Promise<boolean> {
-  const result = await docClient.send(
-    new QueryCommand({
-      TableName: TABLE_NAME,
-      IndexName: 'slug-index',
-      KeyConditionExpression: 'slug = :slug',
-      ExpressionAttributeValues: { ':slug': slug },
-    }),
-  )
-  if (!result.Items || result.Items.length === 0) return false
-  if (excludeId) return result.Items.some((i) => (i as { id: string }).id !== excludeId)
+  const ids = await queryRecipeIdsBySlug(slug)
+  if (ids.length === 0) return false
+  if (excludeId) return ids.some((id) => id !== excludeId)
   return true
 }
 
@@ -431,7 +422,7 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
     const seenStepIds = new Set<string>()
     for (const step of updates.steps as Array<Record<string, unknown>>) {
       const stepId = step.stepId
-      if (typeof stepId !== 'string' || !STEP_ID_REGEX.test(stepId)) {
+      if (typeof stepId !== 'string' || !isValidStepId(stepId)) {
         return json(400, { error: 'invalid_stepId' })
       }
       if (seenStepIds.has(stepId)) {
@@ -729,11 +720,6 @@ async function handleDeleteRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
   await docClient.send(new DeleteCommand({ TableName: TABLE_NAME, Key: { id } }))
 
   return json(200, { message: 'Recipe deleted successfully' })
-}
-
-async function getRecipeById(id: string): Promise<Record<string, unknown> | undefined> {
-  const result = await docClient.send(new GetCommand({ TableName: TABLE_NAME, Key: { id } }))
-  return result.Item as Record<string, unknown> | undefined
 }
 
 function isOwnerOrAdmin(authorId: string, currentUserId: string, event: APIGatewayProxyEventV2): boolean {
