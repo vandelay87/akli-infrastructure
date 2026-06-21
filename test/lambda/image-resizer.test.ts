@@ -287,6 +287,26 @@ describe('image-resizer handler', () => {
     infoSpy.mockRestore()
   })
 
+  it('logs unrecognised_key_shape and still deletes the source for a key with extra path segments', async () => {
+    const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
+
+    // Passes toProcessedKey's prefix guard but parseRecipeSlug rejects the 3-segment tail.
+    await expect(handler(makeS3Event('uploads/recipes/abc/cover/extra'))).resolves.toBeUndefined()
+
+    // No recipe resolution attempted.
+    expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0)
+    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0)
+
+    // A deliberate, logged skip still deletes the source.
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1)
+
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'resizer.writeback.skipped', reason: 'unrecognised_key_shape' }),
+    )
+
+    infoSpy.mockRestore()
+  })
+
   it('rethrows non-conditional DDB errors and leaves the source in place for retry', async () => {
     ddbMock.on(UpdateCommand).rejects(new Error('boom'))
 
