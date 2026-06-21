@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb'
 import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3'
 import { QueryCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb'
+import { unmarshall } from '@aws-sdk/util-dynamodb'
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 import { VARIANT_SUFFIXES, PROCESSED_PREFIX } from './image-variants'
 import { docClient, getRecipeById, isValidStepId, queryRecipeIdsBySlug } from './recipe-store'
@@ -506,12 +507,17 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
         ExpressionAttributeValues: expressionValues,
         ConditionExpression: conditionExpression,
         ReturnValues: 'ALL_OLD',
+        ReturnValuesOnConditionCheckFailure: slugChanging ? 'ALL_OLD' : undefined,
       }),
     )
   } catch (err) {
     if (err instanceof ConditionalCheckFailedException || (err as { name?: string }).name === 'ConditionalCheckFailedException') {
-      const reRead = await getRecipeById(id)
-      if (reRead && Object.keys(imageStatusOf(reRead)).length > 0) {
+      // The CCFE carries the atomic snapshot under err.Item, but lib-dynamodb only
+      // unmarshalls success outputs — a thrown exception's Item stays in raw
+      // AttributeValue form, so unmarshall it before reading imageStatus.
+      const marshalled = (err as ConditionalCheckFailedException).Item
+      const current: Record<string, unknown> | undefined = marshalled ? unmarshall(marshalled) : undefined
+      if (current && Object.keys(imageStatusOf(current)).length > 0) {
         return json(409, SLUG_LOCKED_RESPONSE)
       }
       return json(409, { error: 'conflict', message: 'Recipe was modified by another request. Please retry.' })
