@@ -256,7 +256,7 @@ describe('image-resizer handler', () => {
     infoSpy.mockRestore()
   })
 
-  it('swallows ConditionalCheckFailedException (recipe_deleted skip), with the source-delete already having fired before the UpdateCommand', async () => {
+  it('swallows ConditionalCheckFailedException (recipe_deleted skip) and still deletes the source after the skip', async () => {
     const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
 
     const condFailed = new ConditionalCheckFailedException({
@@ -267,7 +267,8 @@ describe('image-resizer handler', () => {
 
     await expect(handler(makeS3Event('uploads/recipes/abc/cover'))).resolves.toBeUndefined()
 
-    // Source-delete fired (earlier in the flow, before the UpdateCommand threw).
+    // recipe_deleted is a deliberate, logged skip, so the source-delete still fires
+    // (now at the end of the flow, after the swallowed UpdateCommand).
     const deleteCalls = s3Mock.commandCalls(DeleteObjectCommand)
     expect(deleteCalls).toHaveLength(1)
     expect(deleteCalls[0].args[0].input).toEqual({
@@ -286,10 +287,45 @@ describe('image-resizer handler', () => {
     infoSpy.mockRestore()
   })
 
-  it('rethrows non-conditional DDB errors', async () => {
+  it('logs unrecognised_key_shape and still deletes the source for a key with extra path segments', async () => {
+    const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
+
+    // Passes toProcessedKey's prefix guard but parseRecipeSlug rejects the 3-segment tail.
+    await expect(handler(makeS3Event('uploads/recipes/abc/cover/extra'))).resolves.toBeUndefined()
+
+    // No recipe resolution attempted.
+    expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0)
+    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0)
+
+    // A deliberate, logged skip still deletes the source.
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1)
+
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'resizer.writeback.skipped', reason: 'unrecognised_key_shape' }),
+    )
+
+    infoSpy.mockRestore()
+  })
+
+  it('rethrows non-conditional DDB errors and leaves the source in place for retry', async () => {
     ddbMock.on(UpdateCommand).rejects(new Error('boom'))
 
     await expect(handler(makeS3Event('uploads/recipes/abc/cover'))).rejects.toThrow('boom')
+
+    // Durability: a transient (non-conditional) writeback failure must NOT delete
+    // the source, so the Lambda retry can regenerate the variants and stamp
+    // imageStatus instead of hitting a 404 on the already-deleted source.
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0)
+  })
+
+  it('rethrows a transient GSI-lookup failure and leaves the source in place for retry', async () => {
+    ddbMock.on(QueryCommand).rejects(new Error('throttled'))
+
+    await expect(handler(makeS3Event('uploads/recipes/abc/cover'))).rejects.toThrow('throttled')
+
+    // The lookup failed before the writeback; the source must survive the retry.
+    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0)
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0)
   })
 
   it('throws and writes nothing for a malformed key that does not match uploads/recipes/<slug>/...', async () => {
@@ -303,10 +339,10 @@ describe('image-resizer handler', () => {
     expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0)
   })
 
-  it('invokes the source DeleteObjectCommand BEFORE the UpdateCommand (variants -> delete source -> query GSI -> update DDB)', async () => {
-    // Sequencing-probe trick (mirrors the previous "Update before Delete" assertion, inverted):
-    // if the UpdateCommand is issued AFTER the source DeleteObjectCommand, rejecting the
-    // UpdateCommand with a generic error must NOT prevent the source-delete from having fired.
+  it('does NOT delete the source when the UpdateCommand throws a transient error (writeback precedes delete)', async () => {
+    // Sequencing probe: the source-delete now fires LAST, after the writeback. So a
+    // generic (non-conditional) UpdateCommand rejection must prevent the source-delete
+    // from firing at all — the source survives for the Lambda retry.
     ddbMock.on(UpdateCommand).rejects(new Error('sequencing-probe'))
 
     await expect(handler(makeS3Event('uploads/recipes/abc/cover'))).rejects.toThrow(
@@ -314,11 +350,11 @@ describe('image-resizer handler', () => {
     )
 
     expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(1)
-    // Source-delete fired earlier in the flow, before the UpdateCommand threw.
-    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1)
+    // Source-delete did NOT fire — it sits after the writeback that threw.
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0)
   })
 
-  it('orders the resizer flow as: write variants -> delete source -> query GSI -> update DDB', async () => {
+  it('orders the resizer flow as: write variants -> query GSI -> update DDB -> delete source', async () => {
     // Track call order across both mocks via a shared sequence counter using jest.spyOn
     // on the underlying send methods. aws-sdk-client-mock exposes per-mock call lists but
     // not a cross-mock chronological one, so we tag calls as they happen.
@@ -344,10 +380,10 @@ describe('image-resizer handler', () => {
     await handler(makeS3Event('uploads/recipes/abc/cover'))
 
     // Three variant PUTs first (in any order amongst themselves — they fire concurrently),
-    // then the source delete, then the GSI query, then the update.
+    // then the GSI query, then the writeback, and the source delete fires LAST.
     expect(sequence.filter((step) => step === 's3:put')).toHaveLength(3)
     const tail = sequence.filter((step) => step !== 's3:put')
-    expect(tail).toEqual(['s3:delete', 'ddb:query', 'ddb:update'])
+    expect(tail).toEqual(['ddb:query', 'ddb:update', 's3:delete'])
 
     // And every PUT preceded the source delete.
     const lastPutIndex = sequence.lastIndexOf('s3:put')
