@@ -1,9 +1,10 @@
 import { ConditionalCheckFailedException, DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
-import { DynamoDBDocumentClient, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb'
+import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb'
 import type { S3Event } from 'aws-lambda'
 import sharp from 'sharp'
 import { VARIANT_SUFFIXES, toProcessedKey, UPLOAD_PREFIX, type VariantSuffix } from './image-variants'
+import { findIdBySlug } from './recipe-store'
 
 const s3 = new S3Client({})
 const docClient = DynamoDBDocumentClient.from(new DynamoDBClient({}))
@@ -88,16 +89,7 @@ export async function handler(event: S3Event): Promise<void> {
       continue
     }
 
-    const lookup = await docClient.send(
-      new QueryCommand({
-        TableName: tableName,
-        IndexName: 'slug-index',
-        KeyConditionExpression: 'slug = :slug',
-        ExpressionAttributeValues: { ':slug': slug },
-      }),
-    )
-    const [item] = lookup.Items ?? []
-    const recipeId = (item as { id?: string } | undefined)?.id
+    const recipeId = await findIdBySlug(slug)
     if (!recipeId) {
       logSkip('recipe_not_found')
       continue
