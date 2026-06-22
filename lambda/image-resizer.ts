@@ -1,12 +1,12 @@
-import { ConditionalCheckFailedException, DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb'
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
-import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb'
+import { UpdateCommand } from '@aws-sdk/lib-dynamodb'
 import type { S3Event } from 'aws-lambda'
 import sharp from 'sharp'
 import { VARIANT_SUFFIXES, toProcessedKey, UPLOAD_PREFIX, type VariantSuffix } from './image-variants'
+import { docClient, findIdBySlug } from './recipe-store'
 
 const s3 = new S3Client({})
-const docClient = DynamoDBDocumentClient.from(new DynamoDBClient({}))
 
 interface ImageVariant {
   readonly suffix: VariantSuffix
@@ -25,14 +25,16 @@ const VARIANTS: readonly ImageVariant[] = VARIANT_SUFFIXES.map((suffix) => ({
   ...VARIANT_SIZING[suffix],
 }))
 
-// Accepts exactly `uploads/recipes/<id>/<type>` — extra trailing segments are rejected.
-function parseRecipeId(uploadKey: string): string | undefined {
+type SkipReason = 'unrecognised_key_shape' | 'recipe_not_found' | 'recipe_deleted'
+
+// Accepts exactly `uploads/recipes/<slug>/<type>` — extra trailing segments are rejected.
+export function parseRecipeSlug(uploadKey: string): string | undefined {
   if (!uploadKey.startsWith(UPLOAD_PREFIX)) return undefined
   const segments = uploadKey.slice(UPLOAD_PREFIX.length).split('/')
   if (segments.length !== 2) return undefined
-  const id = segments[0]
-  if (!id) return undefined
-  return id
+  const slug = segments[0]
+  if (!slug) return undefined
+  return slug
 }
 
 export async function handler(event: S3Event): Promise<void> {
@@ -73,33 +75,45 @@ export async function handler(event: S3Event): Promise<void> {
       }),
     )
 
-    const logSkip = (reason: string) =>
+    const logSkip = (reason: SkipReason) =>
       console.info({ event: 'resizer.writeback.skipped', reason, key })
 
-    const recipeId = parseRecipeId(key)
-    if (recipeId === undefined) {
+    // Resolve the recipe and stamp imageStatus BEFORE deleting the source. The
+    // variant PUTs above are idempotent, so if the GSI lookup or UpdateCommand
+    // hits a transient error and throws, the source survives and the Lambda retry
+    // can regenerate the variants and complete the writeback. Only deliberate,
+    // logged skips fall through to the source-delete below.
+    const slug = parseRecipeSlug(key)
+    if (slug === undefined) {
       logSkip('unrecognised_key_shape')
     } else {
-      try {
-        await docClient.send(
-          new UpdateCommand({
-            TableName: tableName,
-            Key: { id: recipeId },
-            UpdateExpression: 'SET imageStatus.#k = :ts',
-            ConditionExpression: 'attribute_exists(id)',
-            ExpressionAttributeNames: { '#k': processedKey },
-            ExpressionAttributeValues: { ':ts': Date.now() },
-          }),
-        )
-      } catch (error) {
-        if (error instanceof ConditionalCheckFailedException) {
-          logSkip('recipe_deleted')
-        } else {
-          throw error
+      const recipeId = await findIdBySlug(slug)
+      if (!recipeId) {
+        logSkip('recipe_not_found')
+      } else {
+        try {
+          await docClient.send(
+            new UpdateCommand({
+              TableName: tableName,
+              Key: { id: recipeId },
+              UpdateExpression: 'SET imageStatus.#k = :ts',
+              ConditionExpression: 'attribute_exists(id)',
+              ExpressionAttributeNames: { '#k': processedKey },
+              ExpressionAttributeValues: { ':ts': Date.now() },
+            }),
+          )
+        } catch (error) {
+          if (error instanceof ConditionalCheckFailedException) {
+            logSkip('recipe_deleted')
+          } else {
+            throw error
+          }
         }
       }
     }
 
+    // Reached only after a successful writeback or a logged skip — never after a
+    // thrown transient error, so the source survives for the retry.
     await s3.send(
       new DeleteObjectCommand({ Bucket: sourceBucket, Key: key }),
     )

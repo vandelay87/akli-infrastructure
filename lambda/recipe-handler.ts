@@ -1,15 +1,23 @@
 import { randomUUID } from 'node:crypto'
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb'
 import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3'
-import { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb'
+import { unmarshall } from '@aws-sdk/util-dynamodb'
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 import { VARIANT_SUFFIXES, PROCESSED_PREFIX } from './image-variants'
+import {
+  getRecipeById,
+  isValidStepId,
+  queryRecipeIdsBySlug,
+  queryRecipesByStatus,
+  queryRecipesByAuthor,
+  scanRecipes,
+  putRecipe,
+  updateRecipe,
+  deleteRecipe,
+} from './recipe-store'
 
-const ddbClient = new DynamoDBClient({})
-const docClient = DynamoDBDocumentClient.from(ddbClient)
 const s3Client = new S3Client({})
 
-const TABLE_NAME = process.env.TABLE_NAME ?? ''
 const IMAGE_BUCKET_NAME = process.env.IMAGE_BUCKET_NAME ?? ''
 const DRAFT_TTL_SECONDS = 30 * 24 * 60 * 60
 
@@ -60,48 +68,57 @@ function tagsToArray(tags: unknown): string[] {
   return []
 }
 
-function generateSlug(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
+export const RESERVED_SLUGS: readonly string[] = ['new', 'admin', 'drafts', 'images']
+
+const SLUG_LOCKED_RESPONSE = {
+  error: 'slug_locked',
+  message: 'Cannot change slug after images have been uploaded. Delete uploaded images first.',
+} as const
+
+const SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
+
+export function isValidSlug(slug: string): boolean {
+  if (slug.length < 1 || slug.length > 100) return false
+  if (!SLUG_REGEX.test(slug)) return false
+  if (RESERVED_SLUGS.includes(slug)) return false
+  return true
 }
 
-async function findUniqueSlug(baseSlug: string): Promise<string> {
-  let candidate = baseSlug
-  let suffix = 2
-
-  while (true) {
-    const result = await docClient.send(
-      new ScanCommand({
-        TableName: TABLE_NAME,
-        FilterExpression: 'slug = :slug',
-        ExpressionAttributeValues: { ':slug': candidate },
-      }),
-    )
-
-    if (!result.Items || result.Items.length === 0) return candidate
-    candidate = `${baseSlug}-${suffix}`
-    suffix += 1
-  }
+export async function slugExists(slug: string, excludeId?: string): Promise<boolean> {
+  const ids = await queryRecipeIdsBySlug(slug)
+  if (ids.length === 0) return false
+  if (excludeId) return ids.some((id) => id !== excludeId)
+  return true
 }
 
 function imageStatusOf(item: Record<string, unknown>): Record<string, number> {
   return (item.imageStatus as Record<string, number> | undefined) ?? {}
 }
 
+function slugOf(item: Record<string, unknown>): string | undefined {
+  return typeof item.slug === 'string' ? item.slug : undefined
+}
+
 function composeImageProcessedAt<T extends Record<string, unknown>>(item: T): Omit<T, 'imageStatus'> {
   const imageStatus = imageStatusOf(item)
-  const coverImage = item.coverImage as { key?: string } | undefined
-  const coverProcessedAt = coverImage?.key ? imageStatus[coverImage.key] : undefined
+  const slug = slugOf(item)
+  const coverImage = item.coverImage as Record<string, unknown> | undefined
+
+  const coverDerivedKey = slug ? `${PROCESSED_PREFIX}${slug}/cover` : undefined
+  const coverProcessedAt = coverDerivedKey ? imageStatus[coverDerivedKey] : undefined
+
   const steps = Array.isArray(item.steps)
     ? item.steps.map((step) => {
-        const img = (step as { image?: { key?: string } }).image
-        if (!img?.key) return step
-        const processedAt = imageStatus[img.key]
-        return processedAt !== undefined ? { ...(step as object), image: { ...img, processedAt } } : step
+        const s = step as { stepId?: unknown; image?: Record<string, unknown> }
+        if (!slug || typeof s.stepId !== 'string' || !s.image) return step
+        const stepDerivedKey = `${PROCESSED_PREFIX}${slug}/step-${s.stepId}`
+        const processedAt = imageStatus[stepDerivedKey]
+        return processedAt !== undefined
+          ? { ...(step as object), image: { ...s.image, processedAt } }
+          : step
       })
     : item.steps
+
   const nextCover = coverImage && coverProcessedAt !== undefined
     ? { ...coverImage, processedAt: coverProcessedAt }
     : coverImage
@@ -179,18 +196,15 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 }
 
 async function handleListTags(): Promise<APIGatewayProxyStructuredResultV2> {
-  const result = await docClient.send(
-    new ScanCommand({
-      TableName: TABLE_NAME,
-      FilterExpression: '#status = :status',
-      ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: { ':status': PUBLISHED },
-      ProjectionExpression: 'tags',
-    }),
-  )
+  const items = await scanRecipes({
+    FilterExpression: '#status = :status',
+    ExpressionAttributeNames: { '#status': 'status' },
+    ExpressionAttributeValues: { ':status': PUBLISHED },
+    ProjectionExpression: 'tags',
+  })
 
   const countMap: Record<string, number> = {}
-  for (const item of result.Items ?? []) {
+  for (const item of items) {
     const tags = tagsToArray(item.tags)
     for (const tag of tags) {
       countMap[tag] = (countMap[tag] ?? 0) + 1
@@ -204,23 +218,10 @@ async function handleListTags(): Promise<APIGatewayProxyStructuredResultV2> {
   return json(200, sorted)
 }
 
-function queryRecipesByStatus(status: RecipeStatus) {
-  return docClient.send(
-    new QueryCommand({
-      TableName: TABLE_NAME,
-      IndexName: 'status-createdAt-index',
-      KeyConditionExpression: '#status = :status',
-      ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: { ':status': status },
-      ScanIndexForward: false,
-    }),
-  )
-}
-
 async function handleListPublished(): Promise<APIGatewayProxyStructuredResultV2> {
-  const result = await queryRecipesByStatus(PUBLISHED)
+  const items = await queryRecipesByStatus(PUBLISHED)
 
-  const recipes = (result.Items ?? []).map((item) => lightweightRecipe(item as Record<string, unknown>))
+  const recipes = items.map((item) => lightweightRecipe(item))
   return json(200, recipes)
 }
 
@@ -228,10 +229,10 @@ async function handleListForAdmin(event: APIGatewayProxyEventV2): Promise<APIGat
   if (!decodeJwt(event)) return json(401, { error: 'Unauthorised' })
   if (!isAdmin(event)) return json(403, { error: 'Forbidden' })
 
-  const [publishedResult, draftResult] = await Promise.all([queryRecipesByStatus(PUBLISHED), queryRecipesByStatus(DRAFT)])
+  const [published, drafts] = await Promise.all([queryRecipesByStatus(PUBLISHED), queryRecipesByStatus(DRAFT)])
 
   const nowSeconds = Math.floor(Date.now() / 1000)
-  const merged = [...(publishedResult.Items ?? []), ...(draftResult.Items ?? [])] as Record<string, unknown>[]
+  const merged = [...published, ...drafts]
   const live = merged.filter((item) => typeof item.ttl !== 'number' || item.ttl > nowSeconds)
 
   return json(200, live.map(lightweightAdminRecipe))
@@ -254,19 +255,16 @@ async function handleGetBySlug(event: APIGatewayProxyEventV2): Promise<APIGatewa
   const slug = event.pathParameters?.slug
   if (!slug) return json(400, { error: 'slug is required' })
 
-  const result = await docClient.send(
-    new ScanCommand({
-      TableName: TABLE_NAME,
-      FilterExpression: 'slug = :slug',
-      ExpressionAttributeValues: { ':slug': slug },
-    }),
-  )
+  const items = await scanRecipes({
+    FilterExpression: 'slug = :slug',
+    ExpressionAttributeValues: { ':slug': slug },
+  })
 
-  if (!result.Items || result.Items.length === 0) {
+  if (items.length === 0) {
     return json(404, { error: 'Recipe not found' })
   }
 
-  const recipe = result.Items[0] as Record<string, unknown>
+  const recipe = items[0]
   if (recipe.status !== PUBLISHED) {
     return json(404, { error: 'Recipe not found' })
   }
@@ -278,17 +276,9 @@ async function handleListUserRecipes(event: APIGatewayProxyEventV2): Promise<API
   const payload = decodeJwt(event)
   if (!payload) return json(401, { error: 'Unauthorised' })
 
-  const result = await docClient.send(
-    new QueryCommand({
-      TableName: TABLE_NAME,
-      IndexName: 'authorId-createdAt-index',
-      KeyConditionExpression: 'authorId = :authorId',
-      ExpressionAttributeValues: { ':authorId': payload.sub },
-      ScanIndexForward: false,
-    }),
-  )
+  const items = await queryRecipesByAuthor(payload.sub)
 
-  const recipes = (result.Items ?? []).map((item) => convertRecipeTags(item as Record<string, unknown>))
+  const recipes = items.map((item) => convertRecipeTags(item))
   return json(200, recipes)
 }
 
@@ -297,11 +287,21 @@ async function handleCreateDraft(event: APIGatewayProxyEventV2): Promise<APIGate
   if (!payload) return json(401, { error: 'Unauthorised' })
   if (!isAdmin(event)) return json(403, { error: 'Forbidden' })
 
-  const input = JSON.parse(event.body ?? '{}') as { title?: string }
-  const title = typeof input.title === 'string' ? input.title : ''
-
+  const input = JSON.parse(event.body ?? '{}') as { slug?: unknown }
   const id = randomUUID()
-  const slug = title.length > 0 ? await findUniqueSlug(generateSlug(title)) : `draft-${id}`
+  const requestedSlug = typeof input.slug === 'string' ? input.slug : undefined
+
+  let slug: string
+  if (requestedSlug !== undefined) {
+    if (!isValidSlug(requestedSlug)) return json(400, { error: 'invalid_slug' })
+    if (await slugExists(requestedSlug)) {
+      return json(409, { error: 'slug_taken', message: `Slug "${requestedSlug}" is already in use.` })
+    }
+    slug = requestedSlug
+  } else {
+    slug = `draft-${id.slice(0, 8)}`
+  }
+
   const ttl = Math.floor(Date.now() / 1000) + DRAFT_TTL_SECONDS
   const now = new Date().toISOString()
 
@@ -310,7 +310,7 @@ async function handleCreateDraft(event: APIGatewayProxyEventV2): Promise<APIGate
     slug,
     status: DRAFT,
     ttl,
-    title,
+    title: '',
     intro: '',
     ingredients: [],
     steps: [],
@@ -321,45 +321,39 @@ async function handleCreateDraft(event: APIGatewayProxyEventV2): Promise<APIGate
     updatedAt: now,
   }
 
-  await docClient.send(new PutCommand({ TableName: TABLE_NAME, Item: item }))
+  await putRecipe(item)
 
   return json(201, { id, slug })
-}
-
-function imageKeyOf(obj: unknown): string | undefined {
-  if (!obj || typeof obj !== 'object') return undefined
-  const key = (obj as { key?: unknown }).key
-  return typeof key === 'string' ? key : undefined
 }
 
 function variantKeysFor(key: string): readonly string[] {
   return VARIANT_SUFFIXES.map((suffix) => `${key}-${suffix}.webp`)
 }
 
-function stepImageKeySet(steps: unknown): Set<string> {
-  const keys = new Set<string>()
-  if (!Array.isArray(steps)) return keys
-  for (const step of steps) {
-    const key = imageKeyOf((step as { image?: unknown }).image)
-    if (key) keys.add(key)
-  }
-  return keys
-}
-
 function droppedImageBaseKeys(oldItem: Record<string, unknown>, updates: Record<string, unknown>): string[] {
+  const slug = slugOf(oldItem)
+  if (!slug) return []
   const droppedKeys: string[] = []
 
   if ('coverImage' in updates) {
-    const oldKey = imageKeyOf(oldItem.coverImage)
-    const newKey = imageKeyOf(updates.coverImage)
-    if (oldKey && oldKey !== newKey) droppedKeys.push(oldKey)
+    const newCover = updates.coverImage
+    const coverRemoved = newCover === null || newCover === undefined
+    if (coverRemoved) {
+      droppedKeys.push(`${PROCESSED_PREFIX}${slug}/cover`)
+    }
   }
 
-  if ('steps' in updates) {
-    const oldKeys = stepImageKeySet(oldItem.steps)
-    const newKeys = stepImageKeySet(updates.steps)
-    for (const oldKey of oldKeys) {
-      if (!newKeys.has(oldKey)) droppedKeys.push(oldKey)
+  if ('steps' in updates && Array.isArray(updates.steps)) {
+    const newStepIds = new Set(
+      (updates.steps as Array<{ stepId?: unknown }>).flatMap((s) =>
+        typeof s.stepId === 'string' ? [s.stepId] : [],
+      ),
+    )
+    const oldSteps = (Array.isArray(oldItem.steps) ? oldItem.steps : []) as Array<{ stepId?: unknown }>
+    for (const oldStep of oldSteps) {
+      const oldStepId = typeof oldStep.stepId === 'string' ? oldStep.stepId : undefined
+      if (!oldStepId || newStepIds.has(oldStepId)) continue
+      droppedKeys.push(`${PROCESSED_PREFIX}${slug}/step-${oldStepId}`)
     }
   }
 
@@ -399,13 +393,43 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
   }
 
   const updates = JSON.parse(event.body ?? '{}') as Record<string, unknown>
-  delete updates.slug
   delete updates.id
   delete updates.authorId
   delete updates.createdAt
   delete updates.status
   delete updates.ttl
   stripProcessedAtFromBody(updates)
+
+  if ('steps' in updates && Array.isArray(updates.steps)) {
+    const seenStepIds = new Set<string>()
+    for (const step of updates.steps as Array<Record<string, unknown>>) {
+      const stepId = step.stepId
+      if (typeof stepId !== 'string' || !isValidStepId(stepId)) {
+        return json(400, { error: 'invalid_stepId' })
+      }
+      if (seenStepIds.has(stepId)) {
+        return json(400, { error: 'duplicate_stepId' })
+      }
+      seenStepIds.add(stepId)
+    }
+  }
+
+  const requestedSlug = typeof updates.slug === 'string' ? updates.slug : undefined
+  const slugChanging = requestedSlug !== undefined && requestedSlug !== existing.slug
+
+  if (slugChanging) {
+    if (!isValidSlug(requestedSlug)) return json(400, { error: 'invalid_slug' })
+
+    if (Object.keys(imageStatusOf(existing)).length > 0) {
+      return json(409, SLUG_LOCKED_RESPONSE)
+    }
+
+    if (await slugExists(requestedSlug, id)) {
+      return json(409, { error: 'slug_taken', message: `Slug "${requestedSlug}" is already in use.` })
+    }
+  } else {
+    delete updates.slug
+  }
 
   const now = new Date().toISOString()
   const setParts: string[] = []
@@ -444,16 +468,40 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
     ? `SET ${setParts.join(', ')} REMOVE ${removeParts.join(', ')}`
     : `SET ${setParts.join(', ')}`
 
-  const updateResult = await docClient.send(
-    new UpdateCommand({
-      TableName: TABLE_NAME,
+  const conditionExpression = slugChanging
+    ? 'attribute_exists(id) AND (attribute_not_exists(imageStatus) OR size(imageStatus) = :zero) AND slug = :expectedOldSlug'
+    : undefined
+
+  if (slugChanging) {
+    expressionValues[':zero'] = 0
+    expressionValues[':expectedOldSlug'] = existing.slug
+  }
+
+  let updateResult
+  try {
+    updateResult = await updateRecipe({
       Key: { id },
       UpdateExpression: updateExpression,
       ExpressionAttributeNames: expressionNames,
       ExpressionAttributeValues: expressionValues,
+      ConditionExpression: conditionExpression,
       ReturnValues: 'ALL_OLD',
-    }),
-  )
+      ReturnValuesOnConditionCheckFailure: slugChanging ? 'ALL_OLD' : undefined,
+    })
+  } catch (err) {
+    if (err instanceof ConditionalCheckFailedException || (err as { name?: string }).name === 'ConditionalCheckFailedException') {
+      // The CCFE carries the atomic snapshot under err.Item, but lib-dynamodb only
+      // unmarshalls success outputs — a thrown exception's Item stays in raw
+      // AttributeValue form, so unmarshall it before reading imageStatus.
+      const marshalled = (err as ConditionalCheckFailedException).Item
+      const current: Record<string, unknown> | undefined = marshalled ? unmarshall(marshalled) : undefined
+      if (current && Object.keys(imageStatusOf(current)).length > 0) {
+        return json(409, SLUG_LOCKED_RESPONSE)
+      }
+      return json(409, { error: 'conflict', message: 'Recipe was modified by another request. Please retry.' })
+    }
+    throw err
+  }
 
   const atomicOld = updateResult.Attributes as Record<string, unknown>
 
@@ -483,7 +531,7 @@ async function handleUpdateRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
 interface PublishErrors {
   title?: string
   intro?: string
-  coverImage?: { key?: string; alt?: string; processedAt?: string }
+  coverImage?: { alt?: string; processedAt?: string }
   ingredients?: string
   steps?: string
   stepImages?: Array<{ order: number; processedAt: string }>
@@ -502,24 +550,19 @@ function validatePublishInput(item: Record<string, unknown>): PublishErrors {
     errors.intro = 'intro is required'
   }
 
-  const coverImage = item.coverImage as { key?: unknown; alt?: unknown } | undefined
-  const coverErrors: { key?: string; alt?: string; processedAt?: string } = {}
-  const coverKey = coverImage?.key
-  if (typeof coverKey !== 'string' || coverKey.trim().length === 0) {
-    coverErrors.key = 'coverImage.key is required'
-  }
+  const slug = slugOf(item)
+  const imageStatus = imageStatusOf(item)
+  const coverImage = item.coverImage as { alt?: unknown } | undefined
+  const coverErrors: { alt?: string; processedAt?: string } = {}
+
   const coverAlt = coverImage?.alt
   if (typeof coverAlt !== 'string' || coverAlt.trim().length === 0) {
     coverErrors.alt = 'coverImage.alt is required'
-  }
-
-  const imageStatus = imageStatusOf(item)
-
-  if (!coverErrors.key && imageStatus[coverKey as string] === undefined) {
+  } else if (slug && imageStatus[`${PROCESSED_PREFIX}${slug}/cover`] === undefined) {
     coverErrors.processedAt = 'Cover image still processing'
   }
 
-  if (coverErrors.key || coverErrors.alt || coverErrors.processedAt) {
+  if (coverErrors.alt || coverErrors.processedAt) {
     errors.coverImage = coverErrors
   }
 
@@ -541,13 +584,15 @@ function validatePublishInput(item: Record<string, unknown>): PublishErrors {
     }
 
     const stepImageErrors: Array<{ order: number; processedAt: string }> = []
-    for (const step of steps) {
-      const typedStep = step as { order?: unknown; image?: { key?: unknown } }
-      const imageKey = typedStep.image?.key
-      if (typeof imageKey !== 'string' || imageKey.trim().length === 0) continue
-      if (imageStatus[imageKey] !== undefined) continue
-      const order = typeof typedStep.order === 'number' ? typedStep.order : 0
-      stepImageErrors.push({ order, processedAt: 'Step image still processing' })
+    if (slug) {
+      for (const step of steps) {
+        const typedStep = step as { order?: unknown; stepId?: unknown; image?: unknown }
+        if (!typedStep.image || typeof typedStep.stepId !== 'string') continue
+        const stepKey = `${PROCESSED_PREFIX}${slug}/step-${typedStep.stepId}`
+        if (imageStatus[stepKey] !== undefined) continue
+        const order = typeof typedStep.order === 'number' ? typedStep.order : 0
+        stepImageErrors.push({ order, processedAt: 'Step image still processing' })
+      }
     }
     if (stepImageErrors.length > 0) {
       errors.stepImages = stepImageErrors
@@ -576,16 +621,13 @@ async function handlePublish(event: APIGatewayProxyEventV2): Promise<APIGatewayP
   }
 
   const now = new Date().toISOString()
-  const result = await docClient.send(
-    new UpdateCommand({
-      TableName: TABLE_NAME,
-      Key: { id },
-      UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt REMOVE #ttl',
-      ExpressionAttributeNames: { '#status': 'status', '#updatedAt': 'updatedAt', '#ttl': 'ttl' },
-      ExpressionAttributeValues: { ':status': PUBLISHED, ':updatedAt': now },
-      ReturnValues: 'ALL_NEW',
-    }),
-  )
+  const result = await updateRecipe({
+    Key: { id },
+    UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt REMOVE #ttl',
+    ExpressionAttributeNames: { '#status': 'status', '#updatedAt': 'updatedAt', '#ttl': 'ttl' },
+    ExpressionAttributeValues: { ':status': PUBLISHED, ':updatedAt': now },
+    ReturnValues: 'ALL_NEW',
+  })
 
   return json(200, convertRecipeTags(result.Attributes as Record<string, unknown>))
 }
@@ -607,16 +649,13 @@ async function handleUnpublish(event: APIGatewayProxyEventV2): Promise<APIGatewa
 
   const now = new Date().toISOString()
   const ttl = Math.floor(Date.now() / 1000) + DRAFT_TTL_SECONDS
-  const result = await docClient.send(
-    new UpdateCommand({
-      TableName: TABLE_NAME,
-      Key: { id },
-      UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt, #ttl = :ttl',
-      ExpressionAttributeNames: { '#status': 'status', '#updatedAt': 'updatedAt', '#ttl': 'ttl' },
-      ExpressionAttributeValues: { ':status': DRAFT, ':updatedAt': now, ':ttl': ttl },
-      ReturnValues: 'ALL_NEW',
-    }),
-  )
+  const result = await updateRecipe({
+    Key: { id },
+    UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt, #ttl = :ttl',
+    ExpressionAttributeNames: { '#status': 'status', '#updatedAt': 'updatedAt', '#ttl': 'ttl' },
+    ExpressionAttributeValues: { ':status': DRAFT, ':updatedAt': now, ':ttl': ttl },
+    ReturnValues: 'ALL_NEW',
+  })
 
   return json(200, convertRecipeTags(result.Attributes as Record<string, unknown>))
 }
@@ -635,32 +674,30 @@ async function handleDeleteRecipe(event: APIGatewayProxyEventV2): Promise<APIGat
     return json(403, { error: 'Forbidden' })
   }
 
-  const listResult = await s3Client.send(
-    new ListObjectsV2Command({
-      Bucket: IMAGE_BUCKET_NAME,
-      Prefix: `${PROCESSED_PREFIX}${id}/`,
-    }),
-  )
-
-  if (listResult.Contents && listResult.Contents.length > 0) {
-    await s3Client.send(
-      new DeleteObjectsCommand({
+  const slug = slugOf(existing)
+  if (slug) {
+    const listResult = await s3Client.send(
+      new ListObjectsV2Command({
         Bucket: IMAGE_BUCKET_NAME,
-        Delete: {
-          Objects: listResult.Contents.map((obj) => ({ Key: obj.Key })),
-        },
+        Prefix: `${PROCESSED_PREFIX}${slug}/`,
       }),
     )
+
+    if (listResult.Contents && listResult.Contents.length > 0) {
+      await s3Client.send(
+        new DeleteObjectsCommand({
+          Bucket: IMAGE_BUCKET_NAME,
+          Delete: {
+            Objects: listResult.Contents.map((obj) => ({ Key: obj.Key })),
+          },
+        }),
+      )
+    }
   }
 
-  await docClient.send(new DeleteCommand({ TableName: TABLE_NAME, Key: { id } }))
+  await deleteRecipe(id)
 
   return json(200, { message: 'Recipe deleted successfully' })
-}
-
-async function getRecipeById(id: string): Promise<Record<string, unknown> | undefined> {
-  const result = await docClient.send(new GetCommand({ TableName: TABLE_NAME, Key: { id } }))
-  return result.Item as Record<string, unknown> | undefined
 }
 
 function isOwnerOrAdmin(authorId: string, currentUserId: string, event: APIGatewayProxyEventV2): boolean {

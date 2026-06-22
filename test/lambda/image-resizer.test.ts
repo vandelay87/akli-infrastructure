@@ -1,6 +1,6 @@
 import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb'
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
-import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb'
+import { DynamoDBDocumentClient, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb'
 import type { S3Event } from 'aws-lambda'
 import { mockClient } from 'aws-sdk-client-mock'
 
@@ -17,7 +17,11 @@ jest.mock('sharp', () => jest.fn(() => mockSharp))
 process.env.IMAGE_BUCKET_NAME = 'test-image-bucket'
 process.env.TABLE_NAME = 'test-recipes-table'
 
-import { handler } from '../../lambda/image-resizer'
+import * as imageResizer from '../../lambda/image-resizer'
+
+const { handler } = imageResizer
+
+const RESOLVED_ID = 'recipe-id-resolved-by-gsi'
 
 function makeS3Event(key: string, bucket = 'test-image-bucket'): S3Event {
   return {
@@ -54,6 +58,37 @@ function makeS3Event(key: string, bucket = 'test-image-bucket'): S3Event {
   }
 }
 
+describe('parseRecipeSlug', () => {
+  type ParseRecipeSlug = (key: string) => string | undefined
+
+  function getParseRecipeSlug(): ParseRecipeSlug {
+    const exported = (imageResizer as unknown as Record<string, unknown>).parseRecipeSlug
+    if (typeof exported !== 'function') {
+      throw new Error('parseRecipeSlug is not exported from image-resizer.ts')
+    }
+    return exported as ParseRecipeSlug
+  }
+
+  it('returns the slug segment for a well-formed cover upload key', () => {
+    const parseRecipeSlug = getParseRecipeSlug()
+    expect(parseRecipeSlug('uploads/recipes/beans-on-toast/cover')).toBe('beans-on-toast')
+  })
+
+  it('returns undefined for a key that does not start with the upload prefix', () => {
+    const parseRecipeSlug = getParseRecipeSlug()
+    expect(parseRecipeSlug('uploads/something-else/beans-on-toast/cover')).toBeUndefined()
+  })
+
+  it('is the only key-parser exported from image-resizer.ts (no parseRecipeId)', () => {
+    expect(
+      (imageResizer as unknown as Record<string, unknown>).parseRecipeId,
+    ).toBeUndefined()
+    expect(
+      typeof (imageResizer as unknown as Record<string, unknown>).parseRecipeSlug,
+    ).toBe('function')
+  })
+})
+
 describe('image-resizer handler', () => {
   beforeEach(() => {
     s3Mock.reset()
@@ -67,6 +102,7 @@ describe('image-resizer handler', () => {
     })
     s3Mock.on(PutObjectCommand).resolves({})
     s3Mock.on(DeleteObjectCommand).resolves({})
+    ddbMock.on(QueryCommand).resolves({ Items: [{ id: RESOLVED_ID }] })
     ddbMock.on(UpdateCommand).resolves({})
   })
 
@@ -139,7 +175,20 @@ describe('image-resizer handler', () => {
     }
   })
 
-  it('writes back imageStatus to DynamoDB after variant PUTs for a cover image', async () => {
+  it('queries the slug-index GSI to resolve the parsed slug to a recipe id', async () => {
+    await handler(makeS3Event('uploads/recipes/beans-on-toast/cover'))
+
+    const queryCalls = ddbMock.commandCalls(QueryCommand)
+    expect(queryCalls).toHaveLength(1)
+
+    const input = queryCalls[0].args[0].input
+    expect(input.TableName).toBe('test-recipes-table')
+    expect(input.IndexName).toBe('slug-index')
+    expect(input.KeyConditionExpression).toBe('slug = :slug')
+    expect(input.ExpressionAttributeValues).toEqual({ ':slug': 'beans-on-toast' })
+  })
+
+  it('writes back imageStatus to DynamoDB after variant PUTs for a cover image, keyed by the GSI-resolved id', async () => {
     const before = Date.now()
     await handler(makeS3Event('uploads/recipes/abc/cover'))
     const after = Date.now()
@@ -149,7 +198,8 @@ describe('image-resizer handler', () => {
 
     const input = updateCalls[0].args[0].input
     expect(input.TableName).toBe('test-recipes-table')
-    expect(input.Key).toEqual({ id: 'abc' })
+    // The path segment 'abc' is the slug; the id used in the Key comes from the GSI lookup.
+    expect(input.Key).toEqual({ id: RESOLVED_ID })
     expect(input.UpdateExpression).toBe('SET imageStatus.#k = :ts')
     expect(input.ConditionExpression).toBe('attribute_exists(id)')
     expect(input.ExpressionAttributeNames).toEqual({ '#k': 'recipes/abc/cover' })
@@ -161,18 +211,52 @@ describe('image-resizer handler', () => {
     expect(ts).toBeLessThanOrEqual(after)
   })
 
-  it('writes back imageStatus to DynamoDB for a step image key', async () => {
-    await handler(makeS3Event('uploads/recipes/abc/step-2'))
+  it('writes back imageStatus to DynamoDB for a step image key, keyed by the GSI-resolved id', async () => {
+    await handler(makeS3Event('uploads/recipes/abc/step-9d904a59-e83f-43b8-9f40-fbdb3008974c'))
 
     const updateCalls = ddbMock.commandCalls(UpdateCommand)
     expect(updateCalls).toHaveLength(1)
 
     const input = updateCalls[0].args[0].input
-    expect(input.Key).toEqual({ id: 'abc' })
-    expect(input.ExpressionAttributeNames).toEqual({ '#k': 'recipes/abc/step-2' })
+    expect(input.Key).toEqual({ id: RESOLVED_ID })
+    expect(input.ExpressionAttributeNames).toEqual({
+      '#k': 'recipes/abc/step-9d904a59-e83f-43b8-9f40-fbdb3008974c',
+    })
   })
 
-  it('swallows ConditionalCheckFailedException, still deletes source, and logs skip event', async () => {
+  it('logs recipe_not_found and skips the DDB write when the GSI returns no items; variant PUTs and source delete still ran', async () => {
+    const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
+    ddbMock.on(QueryCommand).resolves({ Items: [] })
+
+    await expect(handler(makeS3Event('uploads/recipes/missing-slug/cover'))).resolves.toBeUndefined()
+
+    // Variant PUTs still ran.
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(3)
+
+    // Source delete still ran.
+    const deleteCalls = s3Mock.commandCalls(DeleteObjectCommand)
+    expect(deleteCalls).toHaveLength(1)
+    expect(deleteCalls[0].args[0].input).toEqual({
+      Bucket: 'test-image-bucket',
+      Key: 'uploads/recipes/missing-slug/cover',
+    })
+
+    // No UpdateCommand was issued.
+    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0)
+
+    // Structured info log emitted with the expected reason and key.
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'resizer.writeback.skipped',
+        reason: 'recipe_not_found',
+        key: 'uploads/recipes/missing-slug/cover',
+      }),
+    )
+
+    infoSpy.mockRestore()
+  })
+
+  it('swallows ConditionalCheckFailedException (recipe_deleted skip) and still deletes the source after the skip', async () => {
     const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
 
     const condFailed = new ConditionalCheckFailedException({
@@ -183,7 +267,8 @@ describe('image-resizer handler', () => {
 
     await expect(handler(makeS3Event('uploads/recipes/abc/cover'))).resolves.toBeUndefined()
 
-    // Source-delete still runs.
+    // recipe_deleted is a deliberate, logged skip, so the source-delete still fires
+    // (now at the end of the flow, after the swallowed UpdateCommand).
     const deleteCalls = s3Mock.commandCalls(DeleteObjectCommand)
     expect(deleteCalls).toHaveLength(1)
     expect(deleteCalls[0].args[0].input).toEqual({
@@ -202,27 +287,62 @@ describe('image-resizer handler', () => {
     infoSpy.mockRestore()
   })
 
-  it('rethrows non-conditional DDB errors', async () => {
+  it('logs unrecognised_key_shape and still deletes the source for a key with extra path segments', async () => {
+    const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
+
+    // Passes toProcessedKey's prefix guard but parseRecipeSlug rejects the 3-segment tail.
+    await expect(handler(makeS3Event('uploads/recipes/abc/cover/extra'))).resolves.toBeUndefined()
+
+    // No recipe resolution attempted.
+    expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0)
+    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0)
+
+    // A deliberate, logged skip still deletes the source.
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1)
+
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'resizer.writeback.skipped', reason: 'unrecognised_key_shape' }),
+    )
+
+    infoSpy.mockRestore()
+  })
+
+  it('rethrows non-conditional DDB errors and leaves the source in place for retry', async () => {
     ddbMock.on(UpdateCommand).rejects(new Error('boom'))
 
     await expect(handler(makeS3Event('uploads/recipes/abc/cover'))).rejects.toThrow('boom')
+
+    // Durability: a transient (non-conditional) writeback failure must NOT delete
+    // the source, so the Lambda retry can regenerate the variants and stamp
+    // imageStatus instead of hitting a 404 on the already-deleted source.
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0)
   })
 
-  it('throws and writes nothing for a malformed key that does not match uploads/recipes/<id>/...', async () => {
+  it('rethrows a transient GSI-lookup failure and leaves the source in place for retry', async () => {
+    ddbMock.on(QueryCommand).rejects(new Error('throttled'))
+
+    await expect(handler(makeS3Event('uploads/recipes/abc/cover'))).rejects.toThrow('throttled')
+
+    // The lookup failed before the writeback; the source must survive the retry.
+    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0)
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0)
+  })
+
+  it('throws and writes nothing for a malformed key that does not match uploads/recipes/<slug>/...', async () => {
     // With UPLOAD_PREFIX = 'uploads/recipes/', this key fails the prefix guard
     // inside toProcessedKey and the handler now refuses to process it.
     await expect(handler(makeS3Event('uploads/not-recipes/x'))).rejects.toThrow(/uploads\/recipes\//)
 
+    expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0)
     expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0)
     expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0)
     expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0)
   })
 
-  it('invokes DDB UpdateCommand before the source DeleteObjectCommand', async () => {
-    // Sequencing is enforced via the handler's error-propagation contract: if the
-    // UpdateCommand is issued BEFORE the source DeleteObjectCommand, rejecting the
-    // UpdateCommand with a generic error must prevent the source-delete from firing.
-    // If the delete were issued first, it would run regardless of the DDB outcome.
+  it('does NOT delete the source when the UpdateCommand throws a transient error (writeback precedes delete)', async () => {
+    // Sequencing probe: the source-delete now fires LAST, after the writeback. So a
+    // generic (non-conditional) UpdateCommand rejection must prevent the source-delete
+    // from firing at all — the source survives for the Lambda retry.
     ddbMock.on(UpdateCommand).rejects(new Error('sequencing-probe'))
 
     await expect(handler(makeS3Event('uploads/recipes/abc/cover'))).rejects.toThrow(
@@ -230,7 +350,44 @@ describe('image-resizer handler', () => {
     )
 
     expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(1)
-    // Source-delete never fires because the update threw first.
+    // Source-delete did NOT fire — it sits after the writeback that threw.
     expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0)
+  })
+
+  it('orders the resizer flow as: write variants -> query GSI -> update DDB -> delete source', async () => {
+    // Track call order across both mocks via a shared sequence counter using jest.spyOn
+    // on the underlying send methods. aws-sdk-client-mock exposes per-mock call lists but
+    // not a cross-mock chronological one, so we tag calls as they happen.
+    const sequence: string[] = []
+
+    s3Mock.on(PutObjectCommand).callsFake(async () => {
+      sequence.push('s3:put')
+      return {}
+    })
+    s3Mock.on(DeleteObjectCommand).callsFake(async () => {
+      sequence.push('s3:delete')
+      return {}
+    })
+    ddbMock.on(QueryCommand).callsFake(async () => {
+      sequence.push('ddb:query')
+      return { Items: [{ id: RESOLVED_ID }] }
+    })
+    ddbMock.on(UpdateCommand).callsFake(async () => {
+      sequence.push('ddb:update')
+      return {}
+    })
+
+    await handler(makeS3Event('uploads/recipes/abc/cover'))
+
+    // Three variant PUTs first (in any order amongst themselves — they fire concurrently),
+    // then the GSI query, then the writeback, and the source delete fires LAST.
+    expect(sequence.filter((step) => step === 's3:put')).toHaveLength(3)
+    const tail = sequence.filter((step) => step !== 's3:put')
+    expect(tail).toEqual(['ddb:query', 'ddb:update', 's3:delete'])
+
+    // And every PUT preceded the source delete.
+    const lastPutIndex = sequence.lastIndexOf('s3:put')
+    const deleteIndex = sequence.indexOf('s3:delete')
+    expect(lastPutIndex).toBeLessThan(deleteIndex)
   })
 })

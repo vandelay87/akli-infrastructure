@@ -266,6 +266,8 @@ await docClient.send(new UpdateCommand({
 
 `ConditionalCheckFailedException` handling stays — covers the "recipe deleted while image was processing" race.
 
+**Source-delete ordering (durability).** The source object is deleted **last** — only after a successful `imageStatus` writeback or a deliberate, logged skip (`unrecognised_key_shape`, `recipe_not_found`, `recipe_deleted`). It is **not** deleted when the GSI lookup or `UpdateCommand` throws a transient error (throttling, network, IAM): the error propagates, the Lambda retries the S3 event, and because the variant PUTs are idempotent the retry regenerates them and completes the writeback. Deleting the source before the writeback (as an earlier draft did) meant a transient failure left the variants written but `imageStatus` never stamped, with the retry hitting a 404 on the already-deleted source — a permanent, silent "perpetually unprocessed" state. (Issue #161.)
+
 ### Recipe-image-handler changes
 
 ```ts
@@ -403,7 +405,7 @@ ACs are split into automated (Jest + `aws-cdk-lib/assertions` + Lambda unit test
 
 - [ ] `parseRecipeSlug('uploads/recipes/beans-on-toast/cover')` returns `'beans-on-toast'`.
 - [ ] `parseRecipeSlug('uploads/something-else/...')` returns `undefined`.
-- [ ] Resizer **flow order** (asserted via mock-call ordering): write variants → delete source → query GSI → update DDB. The variant PUTs and source delete fire regardless of whether the GSI lookup succeeds.
+- [ ] Resizer **flow order** (asserted via mock-call ordering): write variants → query GSI → update DDB → delete source. The source-delete fires last — after a successful writeback or a deliberate logged skip — but is skipped when the GSI lookup or `UpdateCommand` throws a transient error, leaving the source in place for the Lambda retry (durability, issue #161).
 - [ ] Resizer queries `slug-index` GSI to resolve slug → id; the resulting `id` is used in the `UpdateCommand.Key`.
 - [ ] If no recipe has the slug, the resizer logs `recipe_not_found` and skips the DDB write — variant PUTs and source delete still fire.
 - [ ] Documented edge case (no test required): if a slug is changed between upload-URL request and resizer execution, variants land under the old slug and stay orphaned. Frontend mitigates via pessimistic upload lock (sibling PRD).
