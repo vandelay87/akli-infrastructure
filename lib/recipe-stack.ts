@@ -148,18 +148,26 @@ export class RecipeStack extends Stack {
       // on Node 22, so install a current pnpm to a writable prefix; (2) pnpm 10
       // blocks install scripts by default — allowlist sharp so its postinstall
       // can fetch the linux-x64 binary.
-      bundling: {
-        nodeModules: ['sharp'],
-        forceDockerBundling: true,
-        commandHooks: {
-          beforeBundling: () => [],
-          afterBundling: () => [],
-          beforeInstall: (_inputDir, outputDir) => [
-            'export HOME=/tmp && mkdir -p /tmp/pnpm-bin && npm install --prefix /tmp/pnpm-bin pnpm@10.33.2 && export PATH=/tmp/pnpm-bin/node_modules/.bin:$PATH',
-            `echo 'only-built-dependencies[]=sharp' > ${outputDir}/.npmrc`,
-          ],
-        },
-      },
+      //
+      // Under Jest the binary is irrelevant — Template.fromStack only asserts
+      // CloudFormation properties — so skip Docker and bundle with local esbuild,
+      // leaving sharp and the AWS SDK external so esbuild walks neither graph.
+      // Keeps the test suite fast and Docker-free; real deploys take the Docker
+      // path above.
+      bundling: process.env.JEST_WORKER_ID
+        ? { externalModules: ['sharp', '@aws-sdk/*'] }
+        : {
+            nodeModules: ['sharp'],
+            forceDockerBundling: true,
+            commandHooks: {
+              beforeBundling: () => [],
+              afterBundling: () => [],
+              beforeInstall: (_inputDir, outputDir) => [
+                'export HOME=/tmp && mkdir -p /tmp/pnpm-bin && npm install --prefix /tmp/pnpm-bin pnpm@10.33.2 && export PATH=/tmp/pnpm-bin/node_modules/.bin:$PATH',
+                `echo 'only-built-dependencies[]=sharp' > ${outputDir}/.npmrc`,
+              ],
+            },
+          },
     })
 
     imageBucket.grantReadWrite(imageResizer)
