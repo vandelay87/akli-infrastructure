@@ -2,6 +2,10 @@
   "name": "akli-infrastructure",
   "description": "Infrastructure as Code for akli.dev",
   "version": "1.9.0",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=24"
+  },
   "bin": {
     "akli-cdk": "bin/akli-cdk.js"
   },
