@@ -30,7 +30,18 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
+
+      # The steps below need AWS credentials, which GitHub does not expose to
+      # Dependabot-triggered runs (they only see the separate "Dependabot
+      # secrets" scope). Skip them for Dependabot so its PRs are still verified
+      # by Build + Test above instead of failing at credential loading.
       - name: Configure AWS credentials
+        if: github.actor != 'dependabot[bot]'
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ secrets.CDK_AWS_ACCESS_KEY_ID }}
@@ -38,6 +49,7 @@ jobs:
           aws-region: eu-west-2
 
       - name: CDK Diff
+        if: github.actor != 'dependabot[bot]'
         run: pnpm cdk diff --all
 
   # 2. Deploy Job: Runs on Push to main to apply changes and clear cache
