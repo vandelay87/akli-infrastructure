@@ -36,7 +36,7 @@
     "eslint-plugin-jest": "^29.15.4",
     "globals": "^17.7.0",
     "jest": "^30.4.2",
-    "sharp": "^0.35.3",
+    "sharp": "^0.34.5",
     "ts-jest": "^29.4.11",
     "ts-node": "^10.9.2",
     "typescript": "~5.6.3",
