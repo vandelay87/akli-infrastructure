@@ -65,14 +65,6 @@ function allResources(template: Template): Record<string, CfnResource> {
   return template.toJSON().Resources as Record<string, CfnResource>
 }
 
-/** Finds the single resource of `type` in the template. Throws if none or more than one exists. */
-function findSingleResource(template: Template, type: string): [string, CfnResource] {
-  const entries = Object.entries(allResources(template)).filter(([, r]) => r.Type === type)
-  if (entries.length === 0) throw new Error(`No resource of type "${type}" found in template`)
-  if (entries.length > 1) throw new Error(`Expected exactly one "${type}" resource, found ${entries.length}: ${entries.map(([id]) => id).join(', ')}`)
-  return entries[0]
-}
-
 /** Trust policy statements (AssumeRolePolicyDocument) for an AWS::IAM::Role resource. */
 function trustPolicyStatements(role: CfnResource): Record<string, unknown>[] {
   const doc = role.Properties.AssumeRolePolicyDocument as { Statement: Record<string, unknown>[] } | undefined
@@ -112,6 +104,13 @@ function policyStatementsForRole(template: Template, roleLogicalId: string): Rec
 /** True if `logicalId` appears anywhere inside the (Ref / Fn::GetAtt / Fn::Join / Fn::Sub) structure of `value`. */
 function referencesLogicalId(value: unknown, logicalId: string): boolean {
   return JSON.stringify(value).includes(logicalId)
+}
+
+function findLambdaStatement(statements: Record<string, unknown>[]): Record<string, unknown> | undefined {
+  return statements.find((s) => {
+    const actions = Array.isArray(s.Action) ? s.Action : [s.Action]
+    return actions.includes('lambda:UpdateFunctionCode')
+  })
 }
 
 function createTestStack(): Template {
@@ -478,15 +477,18 @@ describe('AkliInfrastructureStack', () => {
       })
     })
 
-    it('configures at least one 40-character hex thumbprint', () => {
-      const [, provider] = findSingleResource(template, 'AWS::IAM::OIDCProvider')
+    it('configures both required GitHub intermediate CA thumbprints', () => {
+      // GitHub's OIDC token endpoint can present either of two intermediate CA certs (per
+      // GitHub's 2023-06-27 OIDC changelog post), so both must be trusted — asserting the
+      // exact set (not just "at least one 40-char hex value") catches a future edit that
+      // accidentally drops one.
+      const [, provider] = findResourceEntryByLogicalIdPrefix(template, 'AWS::IAM::OIDCProvider', '')
       const thumbprints = provider.Properties.ThumbprintList as string[]
 
-      expect(Array.isArray(thumbprints)).toBe(true)
-      expect(thumbprints.length).toBeGreaterThan(0)
-      for (const thumbprint of thumbprints) {
-        expect(thumbprint).toMatch(/^[0-9a-fA-F]{40}$/)
-      }
+      expect(thumbprints).toEqual([
+        '6938fd4d98bab03faadb97b34396831e3780aea1',
+        '1c58a3a8518e8759bf075b76b750d4f2df264fcd',
+      ])
     })
 
     it('does not register the legacy Lambda-backed OpenIdConnectProvider custom resource', () => {
@@ -500,7 +502,7 @@ describe('AkliInfrastructureStack', () => {
     it('registers exactly one OIDC provider in the stack', () => {
       // Throws if there is more than one AWS::IAM::OIDCProvider resource — CloudFormation
       // hard-fails on duplicate provider URLs, so the stack must only ever declare one.
-      expect(() => findSingleResource(template, 'AWS::IAM::OIDCProvider')).not.toThrow()
+      expect(() => findResourceEntryByLogicalIdPrefix(template, 'AWS::IAM::OIDCProvider', '')).not.toThrow()
     })
   })
 
@@ -569,12 +571,7 @@ describe('AkliInfrastructureStack', () => {
       if (hasLambdaAccess) {
         it('grants lambda:UpdateFunctionCode/GetFunction scoped to the SSR function', () => {
           const [roleLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::IAM::Role', roleLogicalIdPrefix)
-          const statements = policyStatementsForRole(template, roleLogicalId)
-
-          const lambdaStatement = statements.find((s) => {
-            const actions = Array.isArray(s.Action) ? s.Action : [s.Action]
-            return actions.includes('lambda:UpdateFunctionCode')
-          })
+          const lambdaStatement = findLambdaStatement(policyStatementsForRole(template, roleLogicalId))
 
           expect(lambdaStatement).toBeDefined()
           expect(lambdaStatement?.Effect).toBe('Allow')
@@ -585,12 +582,7 @@ describe('AkliInfrastructureStack', () => {
       } else {
         it('does not grant lambda:UpdateFunctionCode/GetFunction access', () => {
           const [roleLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::IAM::Role', roleLogicalIdPrefix)
-          const statements = policyStatementsForRole(template, roleLogicalId)
-
-          const lambdaStatement = statements.find((s) => {
-            const actions = Array.isArray(s.Action) ? s.Action : [s.Action]
-            return actions.includes('lambda:UpdateFunctionCode')
-          })
+          const lambdaStatement = findLambdaStatement(policyStatementsForRole(template, roleLogicalId))
 
           expect(lambdaStatement).toBeUndefined()
         })
@@ -598,7 +590,7 @@ describe('AkliInfrastructureStack', () => {
 
       it('grants cloudfront:CreateInvalidation scoped to the one shared distribution', () => {
         const [roleLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::IAM::Role', roleLogicalIdPrefix)
-        const [distributionLogicalId] = findSingleResource(template, 'AWS::CloudFront::Distribution')
+        const [distributionLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::CloudFront::Distribution', '')
         const statements = policyStatementsForRole(template, roleLogicalId)
 
         const invalidationStatement = statements.find((s) => {
