@@ -51,6 +51,22 @@ export class AkliInfrastructureStack extends Stack {
       description: `OAC for ${DOMAIN_NAME}`,
     })
 
+    const pokedexBucket = new s3.Bucket(this, 'PokedexBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy: RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+    })
+
+    const sandboxBucket = new s3.Bucket(this, 'SandboxBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy: RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+    })
+
     const securityHeadersPolicy = createSecurityHeadersPolicy(this)
 
     const imageCachePolicy = createImageCachePolicy(this)
@@ -203,6 +219,40 @@ export class AkliInfrastructureStack extends Stack {
       resources: [
         siteBucket.bucketArn,
         `${siteBucket.bucketArn}/*`,
+      ],
+      conditions: {
+        StringEquals: {
+          'AWS:SourceArn': `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`,
+        },
+      },
+    }))
+
+    // Grant CloudFront access to Pokedex S3 bucket
+    pokedexBucket.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AllowCloudFrontServicePrincipal',
+      effect: iam.Effect.ALLOW,
+      principals: [new iam.ServicePrincipal('cloudfront.amazonaws.com')],
+      actions: ['s3:GetObject', 's3:ListBucket'],
+      resources: [
+        pokedexBucket.bucketArn,
+        `${pokedexBucket.bucketArn}/*`,
+      ],
+      conditions: {
+        StringEquals: {
+          'AWS:SourceArn': `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`,
+        },
+      },
+    }))
+
+    // Grant CloudFront access to Sandbox S3 bucket
+    sandboxBucket.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AllowCloudFrontServicePrincipal',
+      effect: iam.Effect.ALLOW,
+      principals: [new iam.ServicePrincipal('cloudfront.amazonaws.com')],
+      actions: ['s3:GetObject', 's3:ListBucket'],
+      resources: [
+        sandboxBucket.bucketArn,
+        `${sandboxBucket.bucketArn}/*`,
       ],
       conditions: {
         StringEquals: {

@@ -4,15 +4,44 @@ import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import { AkliInfrastructureStack } from '../lib/akli-infrastructure-stack'
 
-type CfnResource = { Type: string; Properties: Record<string, unknown> }
+type CfnResource = { Type: string; Properties: Record<string, unknown>; DeletionPolicy?: string; UpdateReplacePolicy?: string }
 type CfnOrigin = { Id: string; S3OriginConfig?: unknown; OriginAccessControlId?: unknown; DomainName?: Record<string, unknown>; CustomOriginConfig?: unknown }
 type CfnCacheBehavior = { PathPattern: string; TargetOriginId: string }
+type CfnPolicyStatement = { Sid?: string; Effect: string; Principal?: unknown; Action?: unknown; Resource?: unknown; Condition?: unknown }
 
 function cfnDistribution(template: Template): CfnResource {
   const resources = template.toJSON().Resources as Record<string, CfnResource>
   const dist = Object.values(resources).find((r) => r.Type === 'AWS::CloudFront::Distribution')
   if (!dist) throw new Error('CloudFront::Distribution not found in template')
   return dist
+}
+
+// Finds the [logicalId, resource] entry for the given CFN type whose logical ID starts
+// with idPrefix. CDK appends an 8-character hash to the construct ID to form the logical
+// ID (e.g. construct ID 'PokedexBucket' -> logical ID 'PokedexBucketAB12CD34'), so an
+// exact-match lookup would never succeed. Pass '' as idPrefix to match on type alone.
+function findResourceEntryByLogicalIdPrefix(template: Template, type: string, idPrefix: string): [string, CfnResource] {
+  const resources = template.toJSON().Resources as Record<string, CfnResource>
+  const entry = Object.entries(resources).find(
+    ([logicalId, r]) => r.Type === type && logicalId.startsWith(idPrefix),
+  )
+  if (!entry) throw new Error(`${type} with logical ID prefix "${idPrefix}" not found in template`)
+  return entry
+}
+
+function findResourceByLogicalIdPrefix(template: Template, type: string, idPrefix: string): CfnResource {
+  return findResourceEntryByLogicalIdPrefix(template, type, idPrefix)[1]
+}
+
+function distributionLogicalId(template: Template): string {
+  return findResourceEntryByLogicalIdPrefix(template, 'AWS::CloudFront::Distribution', '')[0]
+}
+
+// True when a Condition value's AWS:SourceArn (or similar) references the given
+// distribution's logical ID via an Fn::Join/Ref, regardless of exact Fn::Join shape.
+function sourceArnReferencesDistribution(condition: unknown, distLogicalId: string): boolean {
+  const json = JSON.stringify(condition)
+  return json.includes(`"Ref":"${distLogicalId}"`) && json.includes(':distribution/')
 }
 
 function distributionConfig(dist: CfnResource): Record<string, unknown> {
@@ -88,6 +117,91 @@ describe('AkliInfrastructureStack', () => {
           RestrictPublicBuckets: true,
         },
       })
+    })
+  })
+
+  describe('Per-app dedicated S3 buckets (Pokedex, Sandbox)', () => {
+    const dedicatedBuckets = [
+      { app: 'Pokedex', idPrefix: 'PokedexBucket' },
+      { app: 'Sandbox', idPrefix: 'SandboxBucket' },
+    ]
+
+    it('creates exactly three S3 buckets in total (Site, Pokedex, Sandbox)', () => {
+      template.resourceCountIs('AWS::S3::Bucket', 3)
+    })
+
+    describe.each(dedicatedBuckets)('$app bucket', ({ idPrefix }) => {
+      it('is hardened the same way as SiteBucket: BLOCK_ALL, SSE-S3, DESTROY + autoDeleteObjects', () => {
+        const bucket = findResourceByLogicalIdPrefix(template, 'AWS::S3::Bucket', idPrefix)
+
+        expect(bucket.Properties.PublicAccessBlockConfiguration).toEqual({
+          BlockPublicAcls: true,
+          BlockPublicPolicy: true,
+          IgnorePublicAcls: true,
+          RestrictPublicBuckets: true,
+        })
+
+        expect(bucket.Properties.BucketEncryption).toEqual({
+          ServerSideEncryptionConfiguration: [
+            { ServerSideEncryptionByDefault: { SSEAlgorithm: 'AES256' } },
+          ],
+        })
+
+        // RemovalPolicy.DESTROY
+        expect(bucket.DeletionPolicy).toBe('Delete')
+        expect(bucket.UpdateReplacePolicy).toBe('Delete')
+
+        // autoDeleteObjects: true is implemented via this marker tag plus a
+        // Custom::S3AutoDeleteObjects resource wired up by the CDK framework.
+        expect(bucket.Properties.Tags).toEqual(
+          expect.arrayContaining([{ Key: 'aws-cdk:auto-delete-objects', Value: 'true' }]),
+        )
+      })
+
+      it('enforces SSL by denying non-HTTPS requests in its bucket policy', () => {
+        const policy = findResourceByLogicalIdPrefix(template, 'AWS::S3::BucketPolicy', `${idPrefix}Policy`)
+        const statements = (policy.Properties.PolicyDocument as { Statement: CfnPolicyStatement[] }).Statement
+
+        expect(statements).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              Effect: 'Deny',
+              Principal: { AWS: '*' },
+              Action: 's3:*',
+              Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+            }),
+          ]),
+        )
+      })
+
+      it('grants the shared OAC distribution s3:GetObject/s3:ListBucket, scoped via AWS:SourceArn', () => {
+        const policy = findResourceByLogicalIdPrefix(template, 'AWS::S3::BucketPolicy', `${idPrefix}Policy`)
+        const statements = (policy.Properties.PolicyDocument as { Statement: CfnPolicyStatement[] }).Statement
+        const bucketLogicalId = (policy.Properties.Bucket as { Ref: string }).Ref
+
+        const grant = statements.find((s) => s.Sid === 'AllowCloudFrontServicePrincipal')
+        expect(grant).toBeDefined()
+
+        expect(grant?.Effect).toBe('Allow')
+        expect(grant?.Principal).toEqual({ Service: 'cloudfront.amazonaws.com' })
+        expect(grant?.Action).toEqual(['s3:GetObject', 's3:ListBucket'])
+
+        // Resource must cover both the bucket ARN and the bucket ARN wildcard (objects),
+        // referencing this specific bucket (not some other bucket's policy).
+        const resourceJson = JSON.stringify(grant?.Resource)
+        expect(resourceJson).toContain(bucketLogicalId)
+        expect(resourceJson).toContain('/*')
+
+        // Scoped, via AWS:SourceArn, to the single shared CloudFront distribution.
+        const distId = distributionLogicalId(template)
+        expect(sourceArnReferencesDistribution(grant?.Condition, distId)).toBe(true)
+      })
+    })
+
+    it('gives Pokedex and Sandbox distinct buckets (not the same bucket twice)', () => {
+      const pokedexBucket = findResourceByLogicalIdPrefix(template, 'AWS::S3::Bucket', 'PokedexBucket')
+      const sandboxBucket = findResourceByLogicalIdPrefix(template, 'AWS::S3::Bucket', 'SandboxBucket')
+      expect(pokedexBucket).not.toBe(sandboxBucket)
     })
   })
 
