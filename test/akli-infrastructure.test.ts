@@ -16,24 +16,25 @@ function cfnDistribution(template: Template): CfnResource {
   return dist
 }
 
-function distributionLogicalId(template: Template): string {
-  const resources = template.toJSON().Resources as Record<string, CfnResource>
-  const entry = Object.entries(resources).find(([, r]) => r.Type === 'AWS::CloudFront::Distribution')
-  if (!entry) throw new Error('CloudFront::Distribution not found in template')
-  return entry[0]
-}
-
-// Finds a resource of the given CFN type whose logical ID starts with idPrefix.
-// CDK appends an 8-character hash to the construct ID to form the logical ID
-// (e.g. construct ID 'PokedexBucket' -> logical ID 'PokedexBucketAB12CD34'), so an
-// exact-match lookup would never succeed.
-function findResourceByLogicalIdPrefix(template: Template, type: string, idPrefix: string): CfnResource {
+// Finds the [logicalId, resource] entry for the given CFN type whose logical ID starts
+// with idPrefix. CDK appends an 8-character hash to the construct ID to form the logical
+// ID (e.g. construct ID 'PokedexBucket' -> logical ID 'PokedexBucketAB12CD34'), so an
+// exact-match lookup would never succeed. Pass '' as idPrefix to match on type alone.
+function findResourceEntryByLogicalIdPrefix(template: Template, type: string, idPrefix: string): [string, CfnResource] {
   const resources = template.toJSON().Resources as Record<string, CfnResource>
   const entry = Object.entries(resources).find(
     ([logicalId, r]) => r.Type === type && logicalId.startsWith(idPrefix),
   )
   if (!entry) throw new Error(`${type} with logical ID prefix "${idPrefix}" not found in template`)
-  return entry[1]
+  return entry
+}
+
+function findResourceByLogicalIdPrefix(template: Template, type: string, idPrefix: string): CfnResource {
+  return findResourceEntryByLogicalIdPrefix(template, type, idPrefix)[1]
+}
+
+function distributionLogicalId(template: Template): string {
+  return findResourceEntryByLogicalIdPrefix(template, 'AWS::CloudFront::Distribution', '')[0]
 }
 
 // True when a Condition value's AWS:SourceArn (or similar) references the given
