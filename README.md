@@ -9,7 +9,7 @@ Seven CDK stacks deployed across regions:
 | Stack | Region | Resources |
 |-------|--------|-----------|
 | CertificateStack | us-east-1 | Route 53 hosted zone, ACM certificates (required by CloudFront) |
-| AkliInfrastructureStack | eu-west-2 | S3 bucket, CloudFront distribution, Route 53 records, IAM users |
+| AkliInfrastructureStack | eu-west-2 | S3 buckets (site, Pokedex, Sandbox), CloudFront distribution, Route 53 records, IAM users, GitHub OIDC provider, per-app deploy roles |
 | PokedexStack | eu-west-2 | DynamoDB table, HTTP API Gateway, Lambda handlers |
 | AuthStack | eu-west-2 | Cognito user pool, HTTP API Gateway, Lambda handlers, JWT authoriser, CloudWatch alarms |
 | RecipeStack | eu-west-2 | DynamoDB table, S3 image bucket, HTTP API Gateway, Lambda handlers (CRUD, image upload, image resizer), JWT authoriser |
@@ -75,9 +75,14 @@ GitHub Actions workflow on `.github/workflows/deploy.yml`:
 - **PRs to main:** runs `cdk diff` to preview changes
 - **Push to main:** bootstraps, deploys all stacks, then invalidates the CloudFront cache
 
-Two IAM users with credentials stored in Secrets Manager:
+Two IAM users with credentials stored in Secrets Manager (legacy, being phased out per-app in favour of OIDC — see below):
 - `github-actions-deploy` — S3 sync and CloudFront invalidation
 - `cdk-github-actions` — CDK bootstrap and deploy
+
+A GitHub OIDC provider (`token.actions.githubusercontent.com`) and per-app IAM roles let `personal-website`, `pokedex`, and `sand-box` deploy without long-lived static credentials — each role trusts only its own repo on `main` and can only touch its own S3 bucket:
+- `personal-website-deploy`, `pokedex-deploy`, `sandbox-deploy`
+
+CloudFront still routes `apps/pokedex*`/`apps/sand-box*` to the shared site bucket until each app's own deploy migrates to OIDC and its dedicated bucket (in progress).
 
 ## Tags
 
