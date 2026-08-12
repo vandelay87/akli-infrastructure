@@ -274,6 +274,78 @@ export class AkliInfrastructureStack extends Stack {
       target: route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)),
     })
 
+    // GitHub OIDC provider — one per account, reused by every per-app deploy Role below.
+    // Uses the native AWS::IAM::OIDCProvider resource (iam.OidcProviderNative) rather than the
+    // legacy iam.OpenIdConnectProvider, which CDK's own docs mark backward-compatibility-only and
+    // which is backed by a Lambda custom resource holding a broad Resource: "*" IAM grant.
+    //
+    // Two intermediate CA thumbprints, both required — GitHub's OIDC token endpoint can present
+    // either one depending on which issued the current leaf cert, and AWS validates against
+    // whichever is configured. Confirmed current per GitHub's own OIDC changelog post:
+    // https://github.blog/changelog/2023-06-27-github-actions-update-on-oidc-integration-with-aws/
+    // ("either can be returned by our servers, requiring customers to trust both").
+    const githubOidcProvider = new iam.OidcProviderNative(this, 'GitHubOidcProvider', {
+      url: 'https://token.actions.githubusercontent.com',
+      clientIds: ['sts.amazonaws.com'],
+      thumbprints: [
+        '6938fd4d98bab03faadb97b34396831e3780aea1',
+        '1c58a3a8518e8759bf075b76b750d4f2df264fcd',
+      ],
+    })
+
+    const githubDeployPrincipal = (repo: string): iam.OpenIdConnectPrincipal =>
+      new iam.OpenIdConnectPrincipal(githubOidcProvider, {
+        StringEquals: {
+          'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
+          'token.actions.githubusercontent.com:sub': `repo:vandelay87/${repo}:ref:refs/heads/main`,
+        },
+      })
+
+    const s3AppAccessStatement = (bucket: s3.IBucket): iam.PolicyStatement =>
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject', 's3:ListBucket'],
+        resources: [bucket.bucketArn, `${bucket.bucketArn}/*`],
+      })
+
+    const cloudfrontInvalidationStatement = (): iam.PolicyStatement =>
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['cloudfront:CreateInvalidation'],
+        resources: [`arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`],
+      })
+
+    // Per-app GitHub Actions deploy Roles — OIDC-federated, replacing the legacy shared
+    // github-actions-deploy IAM User below (removed once all apps have migrated, see #194).
+    const personalWebsiteDeployRole = new iam.Role(this, 'PersonalWebsiteDeployRole', {
+      roleName: 'personal-website-deploy',
+      assumedBy: githubDeployPrincipal('personal-website'),
+      description: 'GitHub Actions OIDC deploy role for personal-website',
+    })
+    personalWebsiteDeployRole.addToPolicy(s3AppAccessStatement(siteBucket))
+    personalWebsiteDeployRole.addToPolicy(cloudfrontInvalidationStatement())
+    personalWebsiteDeployRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['lambda:UpdateFunctionCode', 'lambda:GetFunction'],
+      resources: [ssrFunction.functionArn],
+    }))
+
+    const pokedexDeployRole = new iam.Role(this, 'PokedexDeployRole', {
+      roleName: 'pokedex-deploy',
+      assumedBy: githubDeployPrincipal('pokedex'),
+      description: 'GitHub Actions OIDC deploy role for pokedex',
+    })
+    pokedexDeployRole.addToPolicy(s3AppAccessStatement(pokedexBucket))
+    pokedexDeployRole.addToPolicy(cloudfrontInvalidationStatement())
+
+    const sandboxDeployRole = new iam.Role(this, 'SandboxDeployRole', {
+      roleName: 'sandbox-deploy',
+      assumedBy: githubDeployPrincipal('sand-box'),
+      description: 'GitHub Actions OIDC deploy role for sand-box',
+    })
+    sandboxDeployRole.addToPolicy(s3AppAccessStatement(sandboxBucket))
+    sandboxDeployRole.addToPolicy(cloudfrontInvalidationStatement())
+
     // IAM user for GitHub Actions deployment
     const deployUser = new iam.User(this, 'GitHubActionsUser', {
       userName: 'github-actions-deploy',
@@ -392,6 +464,21 @@ export class AkliInfrastructureStack extends Stack {
     new CfnOutput(this, 'CDKGitHubActionsSecretsManagerName', {
       value: 'cdk-github-actions-credentials',
       description: 'Secrets Manager secret name for CDK GitHub Actions credentials',
+    })
+
+    new CfnOutput(this, 'PersonalWebsiteDeployRoleArn', {
+      value: personalWebsiteDeployRole.roleArn,
+      description: 'IAM Role ARN for personal-website GitHub Actions OIDC deploys',
+    })
+
+    new CfnOutput(this, 'PokedexDeployRoleArn', {
+      value: pokedexDeployRole.roleArn,
+      description: 'IAM Role ARN for pokedex GitHub Actions OIDC deploys',
+    })
+
+    new CfnOutput(this, 'SandboxDeployRoleArn', {
+      value: sandboxDeployRole.roleArn,
+      description: 'IAM Role ARN for sand-box GitHub Actions OIDC deploys',
     })
   }
 }
