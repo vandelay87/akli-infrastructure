@@ -75,14 +75,13 @@ GitHub Actions workflow on `.github/workflows/deploy.yml`:
 - **PRs to main:** runs `cdk diff` to preview changes
 - **Push to main:** bootstraps, deploys all stacks, then invalidates the CloudFront cache
 
-Two IAM users with credentials stored in Secrets Manager (legacy, being phased out per-app in favour of OIDC — see below):
-- `github-actions-deploy` — S3 sync and CloudFront invalidation
+One IAM user with credentials stored in Secrets Manager, for this repo's own CDK bootstrap/deploy:
 - `cdk-github-actions` — CDK bootstrap and deploy
 
 A GitHub OIDC provider (`token.actions.githubusercontent.com`) and per-app IAM roles let `personal-website`, `pokedex`, and `sand-box` deploy without long-lived static credentials — each role trusts only its own repo on `main` and can only touch its own S3 bucket:
 - `personal-website-deploy`, `pokedex-deploy`, `sandbox-deploy`
 
-CloudFront still routes `apps/pokedex*`/`apps/sand-box*` to the shared site bucket until each app's own deploy migrates to OIDC and its dedicated bucket (in progress).
+CloudFront routes `apps/pokedex*`/`apps/sand-box*` to their own dedicated buckets (`PokedexBucket`/`SandboxBucket`). The legacy shared `github-actions-deploy` IAM user and its static-key credential, used before this OIDC migration, have been removed.
 
 ## Tags
 
