@@ -330,8 +330,7 @@ export class AkliInfrastructureStack extends Stack {
         resources: [`arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`],
       })
 
-    // Per-app GitHub Actions deploy Roles — OIDC-federated, replacing the legacy shared
-    // github-actions-deploy IAM User below (removed once all apps have migrated, see #194).
+    // Per-app GitHub Actions deploy Roles — OIDC-federated
     const personalWebsiteDeployRole = new iam.Role(this, 'PersonalWebsiteDeployRole', {
       roleName: 'personal-website-deploy',
       assumedBy: githubDeployPrincipal('personal-website'),
@@ -360,58 +359,6 @@ export class AkliInfrastructureStack extends Stack {
     })
     sandboxDeployRole.addToPolicy(s3AppAccessStatement(sandboxBucket))
     sandboxDeployRole.addToPolicy(cloudfrontInvalidationStatement())
-
-    // IAM user for GitHub Actions deployment
-    const deployUser = new iam.User(this, 'GitHubActionsUser', {
-      userName: 'github-actions-deploy',
-    })
-
-    // Access key for GitHub Actions - stored in Secrets Manager
-    const accessKey = new iam.AccessKey(this, 'GitHubActionsAccessKey', {
-      user: deployUser,
-    })
-
-    // Store GitHub Actions credentials in Secrets Manager
-    new secretsmanager.Secret(this, 'GitHubActionsCredentials', {
-      secretName: 'github-actions-credentials',
-      secretObjectValue: {
-        accessKeyId: SecretValue.unsafePlainText(accessKey.accessKeyId),
-        secretAccessKey: accessKey.secretAccessKey,
-      },
-      description: 'GitHub Actions deployment credentials',
-    })
-
-    // Policy for S3 and CloudFront access
-    const deployPolicy = new iam.Policy(this, 'GitHubActionsDeployPolicy', {
-      statements: [
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            's3:GetObject',
-            's3:PutObject',
-            's3:DeleteObject',
-            's3:ListBucket',
-          ],
-          resources: [
-            siteBucket.bucketArn,
-            `${siteBucket.bucketArn}/*`,
-          ],
-        }),
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: ['cloudfront:CreateInvalidation'],
-          resources: [`arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`],
-        }),
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: ['lambda:UpdateFunctionCode', 'lambda:GetFunction'],
-          resources: [ssrFunction.functionArn],
-        }),
-      ],
-    })
-
-    // Attach policy to user
-    deployUser.attachInlinePolicy(deployPolicy)
 
     // IAM user for CDK GitHub Actions (separate user for infrastructure)
     const cdkUser = new iam.User(this, 'CDKGitHubActionsUser', {
@@ -469,11 +416,6 @@ export class AkliInfrastructureStack extends Stack {
     new CfnOutput(this, 'WWWWebsiteUrl', {
       value: `https://${WWW_DOMAIN_NAME}`,
       description: 'WWW Website URL',
-    })
-
-    new CfnOutput(this, 'GitHubActionsSecretsManagerName', {
-      value: 'github-actions-credentials',
-      description: 'Secrets Manager secret name for GitHub Actions credentials',
     })
 
     new CfnOutput(this, 'CDKGitHubActionsSecretsManagerName', {
