@@ -28,7 +28,7 @@ Route 53 (akli.dev, www.akli.dev)
 - **Default (SSR):** Lambda Function URL origin with S3 failover (OriginGroup, 5xx), 60s TTL, query string forwarding
 - **Static assets (*.js, *.css, etc.):** S3 origin, optimised caching
 - **images/*:** S3 origin, 30-day default TTL, 365-day max, query string caching
-- **apps/sand-box*, apps/pokedex*:** S3 origin, CloudFront Function for subdirectory index rewriting
+- **apps/sand-box*, apps/pokedex*:** dedicated per-app S3 origins (`SandboxBucket`, `PokedexBucket`), CloudFront Function for subdirectory index rewriting
 
 ### Security
 
