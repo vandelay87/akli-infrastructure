@@ -341,6 +341,40 @@ describe('AkliInfrastructureStack', () => {
 
       expect(s3OriginIds).toContain(jsAssetBehavior?.TargetOriginId)
     })
+
+    describe('apps/pokedex* and apps/sand-box* behaviours route to their own dedicated bucket origins', () => {
+      // Resolves a CacheBehaviors entry's TargetOriginId to the Origins[] entry it
+      // points at, then checks whether that origin's DomainName (an Fn::GetAtt on the
+      // bucket's RegionalDomainName) references the given bucket's logical ID. This is
+      // the exact bug class from #205: CloudFront behavior precedence meant apps/pokedex*
+      // and apps/sand-box* could silently resolve to the wrong bucket (or each other's).
+      function originLogicalBucketMatches(pathPattern: string, bucketLogicalIdPrefix: string): boolean {
+        const config = distributionConfig(cfnDistribution(template))
+        const cacheBehaviors = config.CacheBehaviors as CfnCacheBehavior[]
+        const origins = config.Origins as CfnOrigin[]
+
+        const behavior = cacheBehaviors.find((b) => b.PathPattern === pathPattern)
+        if (!behavior) throw new Error(`No CacheBehaviors entry found for PathPattern "${pathPattern}"`)
+
+        const origin = origins.find((o) => o.Id === behavior.TargetOriginId)
+        if (!origin) throw new Error(`No Origins entry found for TargetOriginId "${behavior.TargetOriginId}"`)
+
+        const [bucketLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::S3::Bucket', bucketLogicalIdPrefix)
+        return referencesLogicalId(origin.DomainName, bucketLogicalId)
+      }
+
+      it("routes apps/pokedex* to an origin backed by PokedexBucket, and not SiteBucket or SandboxBucket", () => {
+        expect(originLogicalBucketMatches('apps/pokedex*', 'PokedexBucket')).toBe(true)
+        expect(originLogicalBucketMatches('apps/pokedex*', 'SiteBucket')).toBe(false)
+        expect(originLogicalBucketMatches('apps/pokedex*', 'SandboxBucket')).toBe(false)
+      })
+
+      it("routes apps/sand-box* to an origin backed by SandboxBucket, and not SiteBucket or PokedexBucket", () => {
+        expect(originLogicalBucketMatches('apps/sand-box*', 'SandboxBucket')).toBe(true)
+        expect(originLogicalBucketMatches('apps/sand-box*', 'SiteBucket')).toBe(false)
+        expect(originLogicalBucketMatches('apps/sand-box*', 'PokedexBucket')).toBe(false)
+      })
+    })
   })
 
   describe('Lambda Function URL', () => {
