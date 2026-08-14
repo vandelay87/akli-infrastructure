@@ -178,13 +178,6 @@ export class AkliInfrastructureStack extends Stack {
         compress: true,
       },
       additionalBehaviors: {
-        ...staticAssetBehaviors,
-        'images/*': {
-          origin: s3Origin,
-          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-          cachePolicy: imageCachePolicy,
-          responseHeadersPolicy: securityHeadersPolicy,
-        },
         'apps/sand-box*': {
           ...staticAssetBehavior,
           origin: sandboxOrigin,
@@ -200,6 +193,13 @@ export class AkliInfrastructureStack extends Stack {
             function: subdirectoryIndexHandler,
             eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
           }],
+        },
+        ...staticAssetBehaviors,
+        'images/*': {
+          origin: s3Origin,
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          cachePolicy: imageCachePolicy,
+          responseHeadersPolicy: securityHeadersPolicy,
         },
       },
     })
