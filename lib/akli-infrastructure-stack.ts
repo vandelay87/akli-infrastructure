@@ -117,6 +117,14 @@ export class AkliInfrastructureStack extends Stack {
       originAccessControl: originAccessControl,
     })
 
+    const pokedexOrigin = origins.S3BucketOrigin.withOriginAccessControl(pokedexBucket, {
+      originAccessControl: originAccessControl,
+    })
+
+    const sandboxOrigin = origins.S3BucketOrigin.withOriginAccessControl(sandboxBucket, {
+      originAccessControl: originAccessControl,
+    })
+
     // OAC for Lambda — CloudFront signs requests so AWS_IAM auth passes
     const lambdaOac = new cloudfront.CfnOriginAccessControl(this, 'LambdaOAC', {
       originAccessControlConfig: {
@@ -178,8 +186,12 @@ export class AkliInfrastructureStack extends Stack {
           responseHeadersPolicy: securityHeadersPolicy,
         },
         ...Object.fromEntries(
-          ['apps/sand-box*', 'apps/pokedex*'].map((pattern) => [pattern, {
+          ([
+            ['apps/sand-box*', sandboxOrigin],
+            ['apps/pokedex*', pokedexOrigin],
+          ] as const).map(([pattern, origin]) => [pattern, {
             ...staticAssetBehavior,
+            origin,
             functionAssociations: [{
               function: subdirectoryIndexHandler,
               eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
