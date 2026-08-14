@@ -1,7 +1,7 @@
 {
   "name": "akli-infrastructure",
   "description": "Infrastructure as Code for akli.dev",
-  "version": "1.10.1",
+  "version": "1.10.2",
   "packageManager": "pnpm@11.9.0",
   "engines": {
     "node": ">=24"
