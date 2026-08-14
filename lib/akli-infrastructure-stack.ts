@@ -185,19 +185,22 @@ export class AkliInfrastructureStack extends Stack {
           cachePolicy: imageCachePolicy,
           responseHeadersPolicy: securityHeadersPolicy,
         },
-        ...Object.fromEntries(
-          ([
-            ['apps/sand-box*', sandboxOrigin],
-            ['apps/pokedex*', pokedexOrigin],
-          ] as const).map(([pattern, origin]) => [pattern, {
-            ...staticAssetBehavior,
-            origin,
-            functionAssociations: [{
-              function: subdirectoryIndexHandler,
-              eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
-            }],
-          }]),
-        ),
+        'apps/sand-box*': {
+          ...staticAssetBehavior,
+          origin: sandboxOrigin,
+          functionAssociations: [{
+            function: subdirectoryIndexHandler,
+            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+          }],
+        },
+        'apps/pokedex*': {
+          ...staticAssetBehavior,
+          origin: pokedexOrigin,
+          functionAssociations: [{
+            function: subdirectoryIndexHandler,
+            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+          }],
+        },
       },
     })
 
