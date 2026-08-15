@@ -4,7 +4,7 @@ AWS CDK infrastructure for [akli.dev](https://akli.dev). Manages static site hos
 
 ## Architecture
 
-Seven CDK stacks deployed across regions:
+Nine CDK stacks deployed across regions:
 
 | Stack | Region | Resources |
 |-------|--------|-----------|
@@ -15,6 +15,12 @@ Seven CDK stacks deployed across regions:
 | RecipeStack | eu-west-2 | DynamoDB table, S3 image bucket, HTTP API Gateway, Lambda handlers (CRUD, image upload, image resizer), JWT authoriser |
 | ImagesStack | eu-west-2 | CloudFront distribution for images.akli.dev, OAC, Route 53 records — serves recipe images from the recipe-images bucket under `recipes/*` |
 | ApiStack | eu-west-2 | CloudFront distribution for api.akli.dev, routes to Pokedex, Auth, and Recipe APIs |
+| PokedexSiteStack | eu-west-2 | CloudFront distribution for pokedex.akli.dev, OAC, Route 53 records — serves the Pokedex app from its own bucket root (`AppSiteStack`) |
+| SandboxSiteStack | eu-west-2 | CloudFront distribution for sandbox.akli.dev, OAC, Route 53 records — serves the Sand-box app from its own bucket root (`AppSiteStack`) |
+
+`PokedexSiteStack`/`SandboxSiteStack` are both instances of the same reusable `AppSiteStack` class (`lib/app-site-stack.ts`), parameterised per app — the intended pattern for any future per-app subdomain.
+
+**Migration in progress:** Pokedex and Sand-box are mid-migration from path-based routing (`akli.dev/apps/pokedex`, `akli.dev/apps/sand-box`, still live below) to the dedicated subdomains above. Once both apps have cut over and been verified, the old `apps/pokedex*`/`apps/sand-box*` behaviours and their `subdirectoryIndexHandler` CloudFront Function will be removed from `AkliInfrastructureStack` (see `docs/prds/subdomain-per-app-migration.md`).
 
 ```
 Route 53 (akli.dev, www.akli.dev)
@@ -28,7 +34,8 @@ Route 53 (akli.dev, www.akli.dev)
 - **Default (SSR):** Lambda Function URL origin with S3 failover (OriginGroup, 5xx), 60s TTL, query string forwarding
 - **Static assets (*.js, *.css, etc.):** S3 origin, optimised caching
 - **images/*:** S3 origin, 30-day default TTL, 365-day max, query string caching
-- **apps/sand-box*, apps/pokedex*:** dedicated per-app S3 origins (`SandboxBucket`, `PokedexBucket`), CloudFront Function for subdirectory index rewriting
+- **apps/sand-box*, apps/pokedex*:** dedicated per-app S3 origins (`SandboxBucket`, `PokedexBucket`), CloudFront Function for subdirectory index rewriting (legacy path-based routing — being phased out, see Migration note above)
+- **pokedex.akli.dev, sandbox.akli.dev (own distributions):** each app's bucket root as origin, `errorResponses` (403/404 → `/index.html`, 200) for proper SPA fallback instead of a CloudFront Function
 
 ### Security
 
