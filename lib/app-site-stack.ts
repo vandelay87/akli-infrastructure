@@ -61,6 +61,7 @@ export class AppSiteStack extends Stack {
       defaultBehavior: {
         origin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
         responseHeadersPolicy: securityHeadersPolicy,
       },
       // SPA fallback via errorResponses (not a CloudFront Function) — this
