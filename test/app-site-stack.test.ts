@@ -60,7 +60,6 @@ function createHarness(testCase: AppCase): Harness {
     env: { account: '123456789012', region: 'eu-west-2' },
     crossRegionReferences: true,
     appName: testCase.appName,
-    domainName: testCase.domainName,
     recordName: testCase.recordName,
     hostedZone,
     certificate,

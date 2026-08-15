@@ -14,8 +14,6 @@ import { applyStackTags } from './utils'
 export interface AppSiteStackProps extends StackProps {
   /** e.g. 'Pokedex' | 'Sandbox' — used to build descriptive construct IDs */
   appName: string
-  /** e.g. 'pokedex.akli.dev' | 'sandbox.akli.dev' */
-  domainName: string
   /** Route53 recordName (subdomain label), e.g. 'pokedex' | 'sandbox' */
   recordName: string
   hostedZone: route53.IHostedZone
@@ -33,7 +31,8 @@ export class AppSiteStack extends Stack {
   constructor(scope: Construct, id: string, props: AppSiteStackProps) {
     super(scope, id, props)
 
-    const { appName, domainName, recordName, hostedZone, certificate, bucket } = props
+    const { appName, recordName, hostedZone, certificate, bucket } = props
+    const domainName = `${recordName}.${hostedZone.zoneName}`
 
     const originAccessControl = new cloudfront.S3OriginAccessControl(this, `${appName}OAC`)
 
