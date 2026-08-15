@@ -2,6 +2,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { AkliInfrastructureStack } from '../lib/akli-infrastructure-stack';
 import { ApiStack } from '../lib/api-stack';
+import { AppSiteStack } from '../lib/app-site-stack';
 import { AuthStack } from '../lib/auth-stack';
 import { CertificateStack } from '../lib/certificate-stack';
 import { ImagesStack } from '../lib/images-stack';
@@ -23,7 +24,7 @@ const certStack = new CertificateStack(app, 'AkliCertificateStack', {
   description: 'ACM certificate and Route 53 hosted zone for akli.dev (must be us-east-1)',
 })
 
-new AkliInfrastructureStack(app, 'AkliInfrastructureStack', {
+const akliInfrastructureStack = new AkliInfrastructureStack(app, 'AkliInfrastructureStack', {
   env: { account, region },
   crossRegionReferences: true,
   certificate: certStack.certificate,
@@ -84,6 +85,40 @@ new ImagesStack(app, 'ImagesStack', {
   description: 'CloudFront distribution for images.akli.dev (recipe images origin)',
   tags: {
     Project: 'akli-images',
+    Environment: 'production',
+    ManagedBy: 'cdk',
+  },
+})
+
+new AppSiteStack(app, 'PokedexSiteStack', {
+  env: { account, region: 'eu-west-2' },
+  crossRegionReferences: true,
+  appName: 'Pokedex',
+  domainName: 'pokedex.akli.dev',
+  recordName: 'pokedex',
+  hostedZone: certStack.hostedZone,
+  certificate: certStack.pokedexCertificate,
+  bucket: akliInfrastructureStack.pokedexBucket,
+  description: 'CloudFront distribution for pokedex.akli.dev',
+  tags: {
+    Project: 'akli-pokedex',
+    Environment: 'production',
+    ManagedBy: 'cdk',
+  },
+})
+
+new AppSiteStack(app, 'SandboxSiteStack', {
+  env: { account, region: 'eu-west-2' },
+  crossRegionReferences: true,
+  appName: 'Sandbox',
+  domainName: 'sandbox.akli.dev',
+  recordName: 'sandbox',
+  hostedZone: certStack.hostedZone,
+  certificate: certStack.sandboxCertificate,
+  bucket: akliInfrastructureStack.sandboxBucket,
+  description: 'CloudFront distribution for sandbox.akli.dev',
+  tags: {
+    Project: 'akli-sandbox',
     Environment: 'production',
     ManagedBy: 'cdk',
   },
