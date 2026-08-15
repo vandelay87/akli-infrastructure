@@ -49,9 +49,33 @@ describe('CertificateStack', () => {
     })
   })
 
+  describe('Pokedex certificate', () => {
+    it('creates a dedicated certificate for pokedex.akli.dev with DNS validation', () => {
+      template.hasResourceProperties(
+        'AWS::CertificateManager::Certificate',
+        Match.objectLike({
+          DomainName: 'pokedex.akli.dev',
+          ValidationMethod: 'DNS',
+        }),
+      )
+    })
+  })
+
+  describe('Sandbox certificate', () => {
+    it('creates a dedicated certificate for sandbox.akli.dev with DNS validation', () => {
+      template.hasResourceProperties(
+        'AWS::CertificateManager::Certificate',
+        Match.objectLike({
+          DomainName: 'sandbox.akli.dev',
+          ValidationMethod: 'DNS',
+        }),
+      )
+    })
+  })
+
   describe('Certificate count', () => {
-    it('synthesises exactly three ACM certificates (Site, Api, Images)', () => {
-      template.resourceCountIs('AWS::CertificateManager::Certificate', 3)
+    it('synthesises exactly five ACM certificates (Site, Api, Images, Pokedex, Sandbox)', () => {
+      template.resourceCountIs('AWS::CertificateManager::Certificate', 5)
     })
   })
 

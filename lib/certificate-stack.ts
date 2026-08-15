@@ -8,6 +8,8 @@ const DOMAIN_NAME = 'akli.dev'
 const WWW_DOMAIN_NAME = `www.${DOMAIN_NAME}`
 const API_DOMAIN_NAME = `api.${DOMAIN_NAME}`
 const IMAGES_DOMAIN_NAME = `images.${DOMAIN_NAME}`
+const POKEDEX_DOMAIN_NAME = `pokedex.${DOMAIN_NAME}`
+const SANDBOX_DOMAIN_NAME = `sandbox.${DOMAIN_NAME}`
 
 /**
  * Separate stack for ACM certificates and Route 53 hosted zone.
@@ -19,6 +21,8 @@ export class CertificateStack extends Stack {
   public readonly certificate: certificatemanager.Certificate
   public readonly apiCertificate: certificatemanager.Certificate
   public readonly imagesCertificate: certificatemanager.Certificate
+  public readonly pokedexCertificate: certificatemanager.Certificate
+  public readonly sandboxCertificate: certificatemanager.Certificate
 
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props)
@@ -43,6 +47,18 @@ export class CertificateStack extends Stack {
     // Separate certificate for images.akli.dev — avoids replacing the site cert which would break cross-stack exports
     this.imagesCertificate = new certificatemanager.Certificate(this, 'ImagesCert', {
       domainName: IMAGES_DOMAIN_NAME,
+      validation: certificatemanager.CertificateValidation.fromDns(this.hostedZone),
+    })
+
+    // Separate certificate for pokedex.akli.dev — keeps the one-cert-per-subdomain convention rather than a SAN/wildcard
+    this.pokedexCertificate = new certificatemanager.Certificate(this, 'PokedexCert', {
+      domainName: POKEDEX_DOMAIN_NAME,
+      validation: certificatemanager.CertificateValidation.fromDns(this.hostedZone),
+    })
+
+    // Separate certificate for sandbox.akli.dev — keeps the one-cert-per-subdomain convention rather than a SAN/wildcard
+    this.sandboxCertificate = new certificatemanager.Certificate(this, 'SandboxCert', {
+      domainName: SANDBOX_DOMAIN_NAME,
       validation: certificatemanager.CertificateValidation.fromDns(this.hostedZone),
     })
   }
