@@ -1,6 +1,6 @@
 import * as path from 'path'
 import type { StackProps} from 'aws-cdk-lib';
-import { Stack, RemovalPolicy, CfnOutput, Duration, SecretValue, Fn } from 'aws-cdk-lib'
+import { Stack, CfnOutput, Duration, SecretValue, Fn } from 'aws-cdk-lib'
 import type * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
@@ -9,10 +9,11 @@ import * as lambda from 'aws-cdk-lib/aws-lambda'
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as targets from 'aws-cdk-lib/aws-route53-targets'
-import * as s3 from 'aws-cdk-lib/aws-s3'
+import type * as s3 from 'aws-cdk-lib/aws-s3'
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager'
 import type { Construct } from 'constructs'
 import { createCachePolicy, createImageCachePolicy, createSecurityHeadersPolicy } from './cdn-policies'
+import { createHardenedAppBucket, grantCloudFrontRead } from './s3-policies'
 
 interface AkliInfrastructureStackProps extends StackProps {
   hostedZone: route53.IHostedZone
@@ -39,33 +40,15 @@ export class AkliInfrastructureStack extends Stack {
       secretStringValue: SecretValue.unsafePlainText(process.env.CDK_DEFAULT_REGION || ''),
     });
 
-    const siteBucket = new s3.Bucket(this, 'SiteBucket', {
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      removalPolicy: RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      enforceSSL: true,
-    })
+    const siteBucket = createHardenedAppBucket(this, 'SiteBucket')
 
     const originAccessControl = new cloudfront.S3OriginAccessControl(this, 'SiteOAC', {
       description: `OAC for ${DOMAIN_NAME}`,
     })
 
-    const pokedexBucket = new s3.Bucket(this, 'PokedexBucket', {
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      removalPolicy: RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      enforceSSL: true,
-    })
+    const pokedexBucket = createHardenedAppBucket(this, 'PokedexBucket')
 
-    const sandboxBucket = new s3.Bucket(this, 'SandboxBucket', {
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      removalPolicy: RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      enforceSSL: true,
-    })
+    const sandboxBucket = createHardenedAppBucket(this, 'SandboxBucket')
 
     const securityHeadersPolicy = createSecurityHeadersPolicy(this)
 
@@ -226,55 +209,13 @@ export class AkliInfrastructureStack extends Stack {
     })
 
     // Grant CloudFront access to S3 bucket
-    siteBucket.addToResourcePolicy(new iam.PolicyStatement({
-      sid: 'AllowCloudFrontServicePrincipal',
-      effect: iam.Effect.ALLOW,
-      principals: [new iam.ServicePrincipal('cloudfront.amazonaws.com')],
-      actions: ['s3:GetObject', 's3:ListBucket'],
-      resources: [
-        siteBucket.bucketArn,
-        `${siteBucket.bucketArn}/*`,
-      ],
-      conditions: {
-        StringEquals: {
-          'AWS:SourceArn': `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`,
-        },
-      },
-    }))
+    grantCloudFrontRead(siteBucket, distribution, this.account)
 
     // Grant CloudFront access to Pokedex S3 bucket
-    pokedexBucket.addToResourcePolicy(new iam.PolicyStatement({
-      sid: 'AllowCloudFrontServicePrincipal',
-      effect: iam.Effect.ALLOW,
-      principals: [new iam.ServicePrincipal('cloudfront.amazonaws.com')],
-      actions: ['s3:GetObject', 's3:ListBucket'],
-      resources: [
-        pokedexBucket.bucketArn,
-        `${pokedexBucket.bucketArn}/*`,
-      ],
-      conditions: {
-        StringEquals: {
-          'AWS:SourceArn': `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`,
-        },
-      },
-    }))
+    grantCloudFrontRead(pokedexBucket, distribution, this.account)
 
     // Grant CloudFront access to Sandbox S3 bucket
-    sandboxBucket.addToResourcePolicy(new iam.PolicyStatement({
-      sid: 'AllowCloudFrontServicePrincipal',
-      effect: iam.Effect.ALLOW,
-      principals: [new iam.ServicePrincipal('cloudfront.amazonaws.com')],
-      actions: ['s3:GetObject', 's3:ListBucket'],
-      resources: [
-        sandboxBucket.bucketArn,
-        `${sandboxBucket.bucketArn}/*`,
-      ],
-      conditions: {
-        StringEquals: {
-          'AWS:SourceArn': `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`,
-        },
-      },
-    }))
+    grantCloudFrontRead(sandboxBucket, distribution, this.account)
 
     // DNS A record for apex domain
     new route53.ARecord(this, 'SiteAliasRecord', {
