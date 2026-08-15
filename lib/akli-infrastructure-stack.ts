@@ -21,6 +21,9 @@ interface AkliInfrastructureStackProps extends StackProps {
 }
 
 export class AkliInfrastructureStack extends Stack {
+  public readonly pokedexBucket: s3.IBucket
+  public readonly sandboxBucket: s3.IBucket
+
   constructor(scope: Construct, id: string, props: AkliInfrastructureStackProps) {
     super(scope, id, props)
 
@@ -47,8 +50,10 @@ export class AkliInfrastructureStack extends Stack {
     })
 
     const pokedexBucket = createHardenedAppBucket(this, 'PokedexBucket')
+    this.pokedexBucket = pokedexBucket
 
     const sandboxBucket = createHardenedAppBucket(this, 'SandboxBucket')
+    this.sandboxBucket = sandboxBucket
 
     const securityHeadersPolicy = createSecurityHeadersPolicy(this)
 
