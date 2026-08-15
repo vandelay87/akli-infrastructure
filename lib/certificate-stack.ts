@@ -50,13 +50,12 @@ export class CertificateStack extends Stack {
       validation: certificatemanager.CertificateValidation.fromDns(this.hostedZone),
     })
 
-    // Separate certificate for pokedex.akli.dev — keeps the one-cert-per-subdomain convention rather than a SAN/wildcard
+    // Per-app subdomain certificates — keep the one-cert-per-subdomain convention rather than a SAN/wildcard
     this.pokedexCertificate = new certificatemanager.Certificate(this, 'PokedexCert', {
       domainName: POKEDEX_DOMAIN_NAME,
       validation: certificatemanager.CertificateValidation.fromDns(this.hostedZone),
     })
 
-    // Separate certificate for sandbox.akli.dev — keeps the one-cert-per-subdomain convention rather than a SAN/wildcard
     this.sandboxCertificate = new certificatemanager.Certificate(this, 'SandboxCert', {
       domainName: SANDBOX_DOMAIN_NAME,
       validation: certificatemanager.CertificateValidation.fromDns(this.hostedZone),
