@@ -5,6 +5,8 @@ import * as iam from 'aws-cdk-lib/aws-iam'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import { AppSiteStack } from '../lib/app-site-stack'
+import { findResourceEntryByLogicalIdPrefix, findStatementByAction, referencesLogicalId } from './cdk-test-helpers'
+import type { CfnResource } from './cdk-test-helpers'
 
 interface AppCase {
   appName: string
@@ -86,7 +88,6 @@ function createHarness(testCase: AppCase): Harness {
   }
 }
 
-type CfnResource = { Type: string; Properties: Record<string, unknown> }
 type CfnDistributionResource = CfnResource & {
   Properties: {
     DistributionConfig: {
@@ -104,28 +105,6 @@ type CfnPolicyResource = CfnResource & {
     PolicyDocument: { Statement: Record<string, unknown>[] }
     Roles?: unknown[]
   }
-}
-
-// Mirrors akli-infrastructure.test.ts's helper of the same name — CDK appends
-// an 8-character hash to the construct ID to form the logical ID, so an
-// exact-match lookup would never succeed.
-function findResourceEntryByLogicalIdPrefix(template: Template, type: string, idPrefix: string): [string, CfnResource] {
-  const resources = template.toJSON().Resources as Record<string, CfnResource>
-  const entries = Object.entries(resources).filter(
-    ([logicalId, r]) => r.Type === type && logicalId.startsWith(idPrefix),
-  )
-  if (entries.length === 0) throw new Error(`${type} with logical ID prefix "${idPrefix}" not found in template`)
-  if (entries.length > 1) {
-    throw new Error(
-      `Multiple ${type} resources match logical ID prefix "${idPrefix}": ${entries.map(([id]) => id).join(', ')}`,
-    )
-  }
-  return entries[0]
-}
-
-/** True if `logicalId` appears anywhere inside the (Ref / Fn::GetAtt / Fn::Join / Fn::Sub) structure of `value`. */
-function referencesLogicalId(value: unknown, logicalId: string): boolean {
-  return JSON.stringify(value).includes(logicalId)
 }
 
 // Per the PRD's "Note on testing precision": AppSiteStack instances are
@@ -385,39 +364,30 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
     // cloudfront:CreateInvalidation on the old shared distribution. Instead,
     // AppSiteStack grants it here, scoped to this stack's own distribution's
     // exact ARN (not a wildcard).
-    it(`creates an AWS::IAM::Policy (${testCase.appName}DistributionInvalidationPolicy) granting cloudfront:CreateInvalidation`, () => {
-      const [, policy] = findResourceEntryByLogicalIdPrefix(
+    let policy: CfnPolicyResource
+    let invalidationStatement: Record<string, unknown> | undefined
+
+    beforeEach(() => {
+      const [, resource] = findResourceEntryByLogicalIdPrefix(
         harness.siteTemplate,
         'AWS::IAM::Policy',
         `${testCase.appName}DistributionInvalidationPolicy`,
       ) as [string, CfnPolicyResource]
+      policy = resource
+      invalidationStatement = findStatementByAction(policy.Properties.PolicyDocument.Statement, 'cloudfront:CreateInvalidation')
+    })
 
-      const statements = policy.Properties.PolicyDocument.Statement
-      const invalidationStatement = statements.find((s) => {
-        const actions = Array.isArray(s.Action) ? s.Action : [s.Action]
-        return actions.includes('cloudfront:CreateInvalidation')
-      })
-
+    it(`creates an AWS::IAM::Policy (${testCase.appName}DistributionInvalidationPolicy) granting cloudfront:CreateInvalidation`, () => {
       expect(invalidationStatement).toBeDefined()
       expect(invalidationStatement?.Effect).toBe('Allow')
     })
 
     it("scopes the invalidation grant to this stack's own distribution ARN (not a wildcard)", () => {
-      const [, policy] = findResourceEntryByLogicalIdPrefix(
-        harness.siteTemplate,
-        'AWS::IAM::Policy',
-        `${testCase.appName}DistributionInvalidationPolicy`,
-      ) as [string, CfnPolicyResource]
       const [distributionLogicalId] = findResourceEntryByLogicalIdPrefix(
         harness.siteTemplate,
         'AWS::CloudFront::Distribution',
         '',
       )
-
-      const invalidationStatement = policy.Properties.PolicyDocument.Statement.find((s) => {
-        const actions = Array.isArray(s.Action) ? s.Action : [s.Action]
-        return actions.includes('cloudfront:CreateInvalidation')
-      })
 
       // Must be an exact ARN reference (Fn::Join/Ref to this stack's own
       // distribution), never a literal wildcard.
@@ -426,12 +396,6 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
     })
 
     it(`the policy's Roles references this app's deploy role (Test${testCase.appName}DeployRole), cross-stack via Fn::ImportValue`, () => {
-      const [, policy] = findResourceEntryByLogicalIdPrefix(
-        harness.siteTemplate,
-        'AWS::IAM::Policy',
-        `${testCase.appName}DistributionInvalidationPolicy`,
-      ) as [string, CfnPolicyResource]
-
       // The deploy role lives on the owning stack (bucketOwnerStack, mirroring
       // AkliInfrastructureStack), so within the site stack's own template this
       // can never be a same-stack {Ref: roleLogicalId} — it comes through as a

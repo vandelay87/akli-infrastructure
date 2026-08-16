@@ -3,8 +3,9 @@ import { Match, Template } from 'aws-cdk-lib/assertions'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import { AkliInfrastructureStack } from '../lib/akli-infrastructure-stack'
+import { findResourceEntryByLogicalIdPrefix, findStatementByAction, referencesLogicalId } from './cdk-test-helpers'
+import type { CfnResource } from './cdk-test-helpers'
 
-type CfnResource = { Type: string; Properties: Record<string, unknown>; DeletionPolicy?: string; UpdateReplacePolicy?: string }
 type CfnOrigin = { Id: string; S3OriginConfig?: unknown; OriginAccessControlId?: unknown; DomainName?: Record<string, unknown>; CustomOriginConfig?: unknown }
 type CfnCacheBehavior = { PathPattern: string; TargetOriginId: string }
 type CfnPolicyStatement = { Sid?: string; Effect: string; Principal?: unknown; Action?: unknown; Resource?: unknown; Condition?: unknown }
@@ -14,24 +15,6 @@ function cfnDistribution(template: Template): CfnResource {
   const dist = Object.values(resources).find((r) => r.Type === 'AWS::CloudFront::Distribution')
   if (!dist) throw new Error('CloudFront::Distribution not found in template')
   return dist
-}
-
-// Finds the [logicalId, resource] entry for the given CFN type whose logical ID starts
-// with idPrefix. CDK appends an 8-character hash to the construct ID to form the logical
-// ID (e.g. construct ID 'PokedexBucket' -> logical ID 'PokedexBucketAB12CD34'), so an
-// exact-match lookup would never succeed. Pass '' as idPrefix to match on type alone.
-function findResourceEntryByLogicalIdPrefix(template: Template, type: string, idPrefix: string): [string, CfnResource] {
-  const resources = template.toJSON().Resources as Record<string, CfnResource>
-  const entries = Object.entries(resources).filter(
-    ([logicalId, r]) => r.Type === type && logicalId.startsWith(idPrefix),
-  )
-  if (entries.length === 0) throw new Error(`${type} with logical ID prefix "${idPrefix}" not found in template`)
-  if (entries.length > 1) {
-    throw new Error(
-      `Multiple ${type} resources match logical ID prefix "${idPrefix}": ${entries.map(([id]) => id).join(', ')}`,
-    )
-  }
-  return entries[0]
 }
 
 function findResourceByLogicalIdPrefix(template: Template, type: string, idPrefix: string): CfnResource {
@@ -101,16 +84,8 @@ function policyStatementsForRole(template: Template, roleLogicalId: string): Rec
   return statements
 }
 
-/** True if `logicalId` appears anywhere inside the (Ref / Fn::GetAtt / Fn::Join / Fn::Sub) structure of `value`. */
-function referencesLogicalId(value: unknown, logicalId: string): boolean {
-  return JSON.stringify(value).includes(logicalId)
-}
-
 function findLambdaStatement(statements: Record<string, unknown>[]): Record<string, unknown> | undefined {
-  return statements.find((s) => {
-    const actions = Array.isArray(s.Action) ? s.Action : [s.Action]
-    return actions.includes('lambda:UpdateFunctionCode')
-  })
+  return findStatementByAction(statements, 'lambda:UpdateFunctionCode')
 }
 
 function createTestStack(): Template {
@@ -634,11 +609,7 @@ describe('AkliInfrastructureStack', () => {
           const [roleLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::IAM::Role', roleLogicalIdPrefix)
           const [distributionLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::CloudFront::Distribution', '')
           const statements = policyStatementsForRole(template, roleLogicalId)
-
-          const invalidationStatement = statements.find((s) => {
-            const actions = Array.isArray(s.Action) ? s.Action : [s.Action]
-            return actions.includes('cloudfront:CreateInvalidation')
-          })
+          const invalidationStatement = findStatementByAction(statements, 'cloudfront:CreateInvalidation')
 
           expect(invalidationStatement).toBeDefined()
           expect(invalidationStatement?.Effect).toBe('Allow')
@@ -648,11 +619,7 @@ describe('AkliInfrastructureStack', () => {
         it('does not grant cloudfront:CreateInvalidation on the shared distribution (granted instead on its own AppSiteStack distribution — see app-site-stack.test.ts)', () => {
           const [roleLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::IAM::Role', roleLogicalIdPrefix)
           const statements = policyStatementsForRole(template, roleLogicalId)
-
-          const invalidationStatement = statements.find((s) => {
-            const actions = Array.isArray(s.Action) ? s.Action : [s.Action]
-            return actions.includes('cloudfront:CreateInvalidation')
-          })
+          const invalidationStatement = findStatementByAction(statements, 'cloudfront:CreateInvalidation')
 
           expect(invalidationStatement).toBeUndefined()
         })
