@@ -547,22 +547,29 @@ describe('AkliInfrastructureStack', () => {
         repo: 'personal-website',
         bucketLogicalIdPrefix: 'SiteBucket',
         hasLambdaAccess: true,
+        // PersonalWebsiteDeployRole still invalidates the one shared distribution
+        // in this (main) stack. Pokedex/Sandbox deploy roles get their invalidation
+        // grant from their own AppSiteStack instead — see #227 and
+        // test/app-site-stack.test.ts.
+        sharedDistributionInvalidation: true,
       },
       {
         roleLogicalIdPrefix: 'PokedexDeployRole',
         repo: 'pokedex',
         bucketLogicalIdPrefix: 'PokedexBucket',
         hasLambdaAccess: false,
+        sharedDistributionInvalidation: false,
       },
       {
         roleLogicalIdPrefix: 'SandboxDeployRole',
         repo: 'sand-box',
         bucketLogicalIdPrefix: 'SandboxBucket',
         hasLambdaAccess: false,
+        sharedDistributionInvalidation: false,
       },
     ] as const
 
-    describe.each(DEPLOY_APPS)('$roleLogicalIdPrefix', ({ roleLogicalIdPrefix, repo, bucketLogicalIdPrefix, hasLambdaAccess }) => {
+    describe.each(DEPLOY_APPS)('$roleLogicalIdPrefix', ({ roleLogicalIdPrefix, repo, bucketLogicalIdPrefix, hasLambdaAccess, sharedDistributionInvalidation }) => {
       it(`trusts only repo:vandelay87/${repo}:ref:refs/heads/main via the GitHub OIDC provider`, () => {
         const [, role] = findResourceEntryByLogicalIdPrefix(template, 'AWS::IAM::Role', roleLogicalIdPrefix)
         const statements = trustPolicyStatements(role)
@@ -622,20 +629,34 @@ describe('AkliInfrastructureStack', () => {
         })
       }
 
-      it('grants cloudfront:CreateInvalidation scoped to the one shared distribution', () => {
-        const [roleLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::IAM::Role', roleLogicalIdPrefix)
-        const [distributionLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::CloudFront::Distribution', '')
-        const statements = policyStatementsForRole(template, roleLogicalId)
+      if (sharedDistributionInvalidation) {
+        it('grants cloudfront:CreateInvalidation scoped to the one shared distribution', () => {
+          const [roleLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::IAM::Role', roleLogicalIdPrefix)
+          const [distributionLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::CloudFront::Distribution', '')
+          const statements = policyStatementsForRole(template, roleLogicalId)
 
-        const invalidationStatement = statements.find((s) => {
-          const actions = Array.isArray(s.Action) ? s.Action : [s.Action]
-          return actions.includes('cloudfront:CreateInvalidation')
+          const invalidationStatement = statements.find((s) => {
+            const actions = Array.isArray(s.Action) ? s.Action : [s.Action]
+            return actions.includes('cloudfront:CreateInvalidation')
+          })
+
+          expect(invalidationStatement).toBeDefined()
+          expect(invalidationStatement?.Effect).toBe('Allow')
+          expect(referencesLogicalId(invalidationStatement?.Resource, distributionLogicalId)).toBe(true)
         })
+      } else {
+        it('does not grant cloudfront:CreateInvalidation on the shared distribution (granted instead on its own AppSiteStack distribution — see app-site-stack.test.ts)', () => {
+          const [roleLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::IAM::Role', roleLogicalIdPrefix)
+          const statements = policyStatementsForRole(template, roleLogicalId)
 
-        expect(invalidationStatement).toBeDefined()
-        expect(invalidationStatement?.Effect).toBe('Allow')
-        expect(referencesLogicalId(invalidationStatement?.Resource, distributionLogicalId)).toBe(true)
-      })
+          const invalidationStatement = statements.find((s) => {
+            const actions = Array.isArray(s.Action) ? s.Action : [s.Action]
+            return actions.includes('cloudfront:CreateInvalidation')
+          })
+
+          expect(invalidationStatement).toBeUndefined()
+        })
+      }
     })
 
     it("no Role's policy references another app's bucket ARN (cross-app S3 isolation)", () => {
