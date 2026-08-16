@@ -23,6 +23,8 @@ interface AkliInfrastructureStackProps extends StackProps {
 export class AkliInfrastructureStack extends Stack {
   public readonly pokedexBucket: s3.IBucket
   public readonly sandboxBucket: s3.IBucket
+  public readonly pokedexDeployRole: iam.IRole
+  public readonly sandboxDeployRole: iam.IRole
 
   constructor(scope: Construct, id: string, props: AkliInfrastructureStackProps) {
     super(scope, id, props)
@@ -296,7 +298,7 @@ export class AkliInfrastructureStack extends Stack {
       description: 'GitHub Actions OIDC deploy role for pokedex',
     })
     pokedexDeployRole.addToPolicy(s3AppAccessStatement(pokedexBucket))
-    pokedexDeployRole.addToPolicy(cloudfrontInvalidationStatement())
+    this.pokedexDeployRole = pokedexDeployRole
 
     const sandboxDeployRole = new iam.Role(this, 'SandboxDeployRole', {
       roleName: 'sandbox-deploy',
@@ -304,7 +306,7 @@ export class AkliInfrastructureStack extends Stack {
       description: 'GitHub Actions OIDC deploy role for sand-box',
     })
     sandboxDeployRole.addToPolicy(s3AppAccessStatement(sandboxBucket))
-    sandboxDeployRole.addToPolicy(cloudfrontInvalidationStatement())
+    this.sandboxDeployRole = sandboxDeployRole
 
     // IAM user for CDK GitHub Actions (separate user for infrastructure)
     const cdkUser = new iam.User(this, 'CDKGitHubActionsUser', {

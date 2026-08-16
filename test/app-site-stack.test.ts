@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib'
 import { Match, Template } from 'aws-cdk-lib/assertions'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
+import * as iam from 'aws-cdk-lib/aws-iam'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import { AppSiteStack } from '../lib/app-site-stack'
@@ -56,6 +57,12 @@ function createHarness(testCase: AppCase): Harness {
     bucketName: `test-${testCase.recordName}-bucket-123456789012`,
   })
 
+  // Deploy role lives on the owner stack, mirroring #227's
+  // AkliInfrastructureStack.pokedexDeployRole/sandboxDeployRole.
+  const deployRole = new iam.Role(bucketOwnerStack, `Test${testCase.appName}DeployRole`, {
+    assumedBy: new iam.ServicePrincipal('example.amazonaws.com'),
+  })
+
   const siteStack = new AppSiteStack(app, `${testCase.appName}SiteStack`, {
     env: { account: '123456789012', region: 'eu-west-2' },
     crossRegionReferences: true,
@@ -64,6 +71,7 @@ function createHarness(testCase: AppCase): Harness {
     hostedZone,
     certificate,
     bucket,
+    deployRole,
     tags: {
       Project: `akli-${testCase.recordName}`,
       Environment: 'production',
