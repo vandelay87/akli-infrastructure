@@ -1,9 +1,12 @@
 import * as cdk from 'aws-cdk-lib'
 import { Match, Template } from 'aws-cdk-lib/assertions'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
+import * as iam from 'aws-cdk-lib/aws-iam'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import { AppSiteStack } from '../lib/app-site-stack'
+import { findResourceEntryByLogicalIdPrefix, findStatementByAction, referencesLogicalId } from './cdk-test-helpers'
+import type { CfnResource } from './cdk-test-helpers'
 
 interface AppCase {
   appName: string
@@ -56,6 +59,12 @@ function createHarness(testCase: AppCase): Harness {
     bucketName: `test-${testCase.recordName}-bucket-123456789012`,
   })
 
+  // Deploy role lives on the owner stack, mirroring #227's
+  // AkliInfrastructureStack.pokedexDeployRole/sandboxDeployRole.
+  const deployRole = new iam.Role(bucketOwnerStack, `Test${testCase.appName}DeployRole`, {
+    assumedBy: new iam.ServicePrincipal('example.amazonaws.com'),
+  })
+
   const siteStack = new AppSiteStack(app, `${testCase.appName}SiteStack`, {
     env: { account: '123456789012', region: 'eu-west-2' },
     crossRegionReferences: true,
@@ -64,6 +73,7 @@ function createHarness(testCase: AppCase): Harness {
     hostedZone,
     certificate,
     bucket,
+    deployRole,
     tags: {
       Project: `akli-${testCase.recordName}`,
       Environment: 'production',
@@ -78,7 +88,6 @@ function createHarness(testCase: AppCase): Harness {
   }
 }
 
-type CfnResource = { Type: string; Properties: Record<string, unknown> }
 type CfnDistributionResource = CfnResource & {
   Properties: {
     DistributionConfig: {
@@ -89,6 +98,12 @@ type CfnDistributionResource = CfnResource & {
       ViewerCertificate?: Record<string, unknown>
       CustomErrorResponses?: Array<Record<string, unknown>>
     }
+  }
+}
+type CfnPolicyResource = CfnResource & {
+  Properties: {
+    PolicyDocument: { Statement: Record<string, unknown>[] }
+    Roles?: unknown[]
   }
 }
 
@@ -341,6 +356,54 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
       }
 
       expect(flagSet || isCrossRegionToken).toBe(true)
+    })
+  })
+
+  describe('Deploy role CloudFront invalidation policy (#227)', () => {
+    // Issue #227: PokedexDeployRole/SandboxDeployRole no longer get
+    // cloudfront:CreateInvalidation on the old shared distribution. Instead,
+    // AppSiteStack grants it here, scoped to this stack's own distribution's
+    // exact ARN (not a wildcard).
+    let policy: CfnPolicyResource
+    let invalidationStatement: Record<string, unknown> | undefined
+
+    beforeEach(() => {
+      const [, resource] = findResourceEntryByLogicalIdPrefix(
+        harness.siteTemplate,
+        'AWS::IAM::Policy',
+        `${testCase.appName}DistributionInvalidationPolicy`,
+      ) as [string, CfnPolicyResource]
+      policy = resource
+      invalidationStatement = findStatementByAction(policy.Properties.PolicyDocument.Statement, 'cloudfront:CreateInvalidation')
+    })
+
+    it(`creates an AWS::IAM::Policy (${testCase.appName}DistributionInvalidationPolicy) granting cloudfront:CreateInvalidation`, () => {
+      expect(invalidationStatement).toBeDefined()
+      expect(invalidationStatement?.Effect).toBe('Allow')
+    })
+
+    it("scopes the invalidation grant to this stack's own distribution ARN (not a wildcard)", () => {
+      const [distributionLogicalId] = findResourceEntryByLogicalIdPrefix(
+        harness.siteTemplate,
+        'AWS::CloudFront::Distribution',
+        '',
+      )
+
+      // Must be an exact ARN reference (Fn::Join/Ref to this stack's own
+      // distribution), never a literal wildcard.
+      expect(invalidationStatement?.Resource).not.toBe('*')
+      expect(referencesLogicalId(invalidationStatement?.Resource, distributionLogicalId)).toBe(true)
+    })
+
+    it(`the policy's Roles references this app's deploy role (Test${testCase.appName}DeployRole), cross-stack via Fn::ImportValue`, () => {
+      // The deploy role lives on the owning stack (bucketOwnerStack, mirroring
+      // AkliInfrastructureStack), so within the site stack's own template this
+      // can never be a same-stack {Ref: roleLogicalId} — it comes through as a
+      // cross-stack Fn::ImportValue export string instead. Assert loosely (a
+      // substring check on the role's construct id), matching the
+      // JSON.stringify(...).includes(...) style `referencesLogicalId` already
+      // uses elsewhere, since the exact export name is hash-suffixed.
+      expect(referencesLogicalId(policy.Properties.Roles, `Test${testCase.appName}DeployRole`)).toBe(true)
     })
   })
 

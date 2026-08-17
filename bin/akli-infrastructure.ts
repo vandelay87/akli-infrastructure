@@ -98,6 +98,7 @@ new AppSiteStack(app, 'PokedexSiteStack', {
   hostedZone: certStack.hostedZone,
   certificate: certStack.pokedexCertificate,
   bucket: akliInfrastructureStack.pokedexBucket,
+  deployRole: akliInfrastructureStack.pokedexDeployRole,
   description: 'CloudFront distribution for pokedex.akli.dev',
   tags: {
     Project: 'akli-pokedex',
@@ -114,6 +115,7 @@ new AppSiteStack(app, 'SandboxSiteStack', {
   hostedZone: certStack.hostedZone,
   certificate: certStack.sandboxCertificate,
   bucket: akliInfrastructureStack.sandboxBucket,
+  deployRole: akliInfrastructureStack.sandboxDeployRole,
   description: 'CloudFront distribution for sandbox.akli.dev',
   tags: {
     Project: 'akli-sandbox',

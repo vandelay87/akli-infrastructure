@@ -20,6 +20,8 @@ export interface AppSiteStackProps extends StackProps {
   certificate: certificatemanager.ICertificate
   /** Cross-stack bucket reference (PokedexBucket/SandboxBucket) */
   bucket: s3.IBucket
+  /** Cross-stack deploy role reference (PokedexDeployRole/SandboxDeployRole) — granted invalidation rights on this stack's own distribution below */
+  deployRole: iam.IRole
 }
 
 /**
@@ -31,7 +33,7 @@ export class AppSiteStack extends Stack {
   constructor(scope: Construct, id: string, props: AppSiteStackProps) {
     super(scope, id, props)
 
-    const { appName, recordName, hostedZone, certificate, bucket } = props
+    const { appName, recordName, hostedZone, certificate, bucket, deployRole } = props
     const domainName = `${recordName}.${hostedZone.zoneName}`
 
     const originAccessControl = new cloudfront.S3OriginAccessControl(this, `${appName}OAC`)
@@ -78,6 +80,23 @@ export class AppSiteStack extends Stack {
           responseHttpStatus: 200,
           responsePagePath: '/index.html',
         },
+      ],
+    })
+
+    // Standalone Policy construct (not deployRole.addToPolicy / grantCreateInvalidation)
+    // so the resulting AWS::IAM::Policy is parented under this stack, not the role's
+    // home stack. addToPolicy always attaches the Policy resource to the scope the Role
+    // was originally `new`'d in — using it here would create a reference from the main
+    // stack back to this distribution's ARN, forming a cycle with the existing
+    // main-stack -> site-stack bucket dependency.
+    new iam.Policy(this, `${appName}DistributionInvalidationPolicy`, {
+      roles: [deployRole],
+      statements: [
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['cloudfront:CreateInvalidation'],
+          resources: [distribution.distributionArn],
+        }),
       ],
     })
 
