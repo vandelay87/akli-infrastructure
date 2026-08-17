@@ -128,10 +128,10 @@ describe('PokedexStack', () => {
       })
     })
 
-    it('configures CORS to allow https://akli.dev', () => {
+    it('configures CORS to allow https://akli.dev and https://pokedex.akli.dev', () => {
       template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
         CorsConfiguration: Match.objectLike({
-          AllowOrigins: Match.arrayWith(['https://akli.dev']),
+          AllowOrigins: Match.arrayWith(['https://akli.dev', 'https://pokedex.akli.dev']),
         }),
       })
     })
