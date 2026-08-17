@@ -84,7 +84,7 @@ export class PokedexStack extends Stack {
       apiName: 'pokedex-api',
       description: 'HTTP API Gateway for the Pokedex API',
       corsPreflight: {
-        allowOrigins: ['https://akli.dev'],
+        allowOrigins: ['https://akli.dev', 'https://pokedex.akli.dev'],
         allowMethods: [CorsHttpMethod.GET],
         allowHeaders: ['Content-Type'],
       },
