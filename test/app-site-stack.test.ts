@@ -209,10 +209,11 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
     })
 
     it('does not use a CloudFront::Function for SPA fallback (replaced by errorResponses)', () => {
-      // The old subdirectoryIndexHandler approach (still used by the shared
-      // AkliInfrastructureStack distribution, untouched by this issue) used a
-      // viewer-request CloudFront::Function. AppSiteStack must not reintroduce
-      // that pattern — SPA fallback here is via errorResponses only.
+      // The old subdirectoryIndexHandler approach used a viewer-request
+      // CloudFront::Function; it's been removed from the shared
+      // AkliInfrastructureStack distribution too (#216). AppSiteStack must
+      // not reintroduce that pattern — SPA fallback here is via
+      // errorResponses only.
       const functions = harness.siteTemplate.findResources('AWS::CloudFront::Function')
       expect(Object.keys(functions)).toHaveLength(0)
     })
