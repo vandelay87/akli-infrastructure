@@ -2,13 +2,13 @@ import type { StackProps } from 'aws-cdk-lib'
 import { Stack } from 'aws-cdk-lib'
 import type * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
-import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
 import * as iam from 'aws-cdk-lib/aws-iam'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as targets from 'aws-cdk-lib/aws-route53-targets'
-import * as s3 from 'aws-cdk-lib/aws-s3'
+import type * as s3 from 'aws-cdk-lib/aws-s3'
 import type { Construct } from 'constructs'
 import { createSecurityHeadersPolicy } from './cdn-policies'
+import { createCrossStackOacOrigin, grantCloudFrontReadCrossStack } from './s3-policies'
 import { applyStackTags } from './utils'
 
 export interface AppSiteStackProps extends StackProps {
@@ -36,22 +36,14 @@ export class AppSiteStack extends Stack {
     const { appName, recordName, hostedZone, certificate, bucket, deployRole } = props
     const domainName = `${recordName}.${hostedZone.zoneName}`
 
-    const originAccessControl = new cloudfront.S3OriginAccessControl(this, `${appName}OAC`)
-
-    // Re-import the cross-stack bucket so `S3BucketOrigin.withOriginAccessControl`
-    // treats it as imported and skips its auto-attached bucket policy. Auto-attach
-    // would scope `aws:SourceArn` to `distribution.distributionId` and create a
-    // cycle between the owning stack's policy and this distribution. Policy is
-    // re-attached below (on the original `bucket` prop) with a wildcard
-    // SourceArn to break the cycle — same pattern as ImagesStack.
-    const importedBucket = s3.Bucket.fromBucketAttributes(this, `Imported${appName}Bucket`, {
-      bucketArn: bucket.bucketArn,
-      region: bucket.env.region,
-    })
-
-    const origin = origins.S3BucketOrigin.withOriginAccessControl(importedBucket, {
-      originAccessControl,
-    })
+    // See `createCrossStackOacOrigin` in s3-policies.ts for the
+    // cross-stack-reimport / cyclic-dependency rationale.
+    const origin = createCrossStackOacOrigin(
+      this,
+      `${appName}OAC`,
+      `Imported${appName}Bucket`,
+      bucket,
+    )
 
     const securityHeadersPolicy = createSecurityHeadersPolicy(this)
 
@@ -100,28 +92,9 @@ export class AppSiteStack extends Stack {
       ],
     })
 
-    // Wildcard SourceArn (account-scoped) avoids a cyclic dependency between
-    // the owning stack (policy) and this stack (distribution). The OAC
-    // association on the distribution side still gates which CloudFront
-    // principals reach the bucket; the wildcard limits the grant to this
-    // account's CloudFront distributions. Must be applied to the original
-    // `bucket` prop — `importedBucket` (fromBucketAttributes) silently no-ops
-    // on addToResourcePolicy.
-    bucket.addToResourcePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      principals: [new iam.ServicePrincipal('cloudfront.amazonaws.com')],
-      actions: ['s3:GetObject'],
-      resources: [`${bucket.bucketArn}/*`],
-      conditions: {
-        // StringLike (not StringEquals) is required for the trailing `*` to be
-        // treated as a wildcard. CloudFront sends the specific distribution
-        // ARN as aws:SourceArn; StringEquals would require exact match against
-        // the literal `…/distribution/*` string and the Allow would never fire.
-        StringLike: {
-          'aws:SourceArn': `arn:aws:cloudfront::${this.account}:distribution/*`,
-        },
-      },
-    }))
+    // See `grantCloudFrontReadCrossStack` in s3-policies.ts for the
+    // wildcard-SourceArn / cyclic-dependency rationale.
+    grantCloudFrontReadCrossStack(bucket, this.account)
 
     const aliasTarget = route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution))
 

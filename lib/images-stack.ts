@@ -2,13 +2,12 @@ import type { StackProps } from 'aws-cdk-lib'
 import { Stack } from 'aws-cdk-lib'
 import type * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
-import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
-import * as iam from 'aws-cdk-lib/aws-iam'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as targets from 'aws-cdk-lib/aws-route53-targets'
-import * as s3 from 'aws-cdk-lib/aws-s3'
+import type * as s3 from 'aws-cdk-lib/aws-s3'
 import type { Construct } from 'constructs'
 import { createImageCachePolicy, createSecurityHeadersPolicy } from './cdn-policies'
+import { createCrossStackOacOrigin, grantCloudFrontReadCrossStack } from './s3-policies'
 import { applyStackTags } from './utils'
 
 const IMAGES_DOMAIN_NAME = 'images.akli.dev'
@@ -25,22 +24,13 @@ export class ImagesStack extends Stack {
 
     const { hostedZone, imagesCertificate, recipeImageBucket } = props
 
-    const originAccessControl = new cloudfront.S3OriginAccessControl(this, 'ImagesOAC')
-
-    // Re-import the cross-stack bucket so `S3BucketOrigin.withOriginAccessControl`
-    // treats it as imported and skips its auto-attached bucket policy. Auto-attach
-    // would scope `aws:SourceArn` to `distribution.distributionId` and create a
-    // cycle: RecipeStack policy → ImagesStack distribution while ImagesStack
-    // origin already → RecipeStack bucket. Policy is re-attached below with a
-    // wildcard SourceArn to keep the cycle broken.
-    const importedBucket = s3.Bucket.fromBucketAttributes(this, 'ImportedRecipeImageBucket', {
-      bucketArn: recipeImageBucket.bucketArn,
-      region: recipeImageBucket.env.region,
-    })
-
-    const recipeImageOrigin = origins.S3BucketOrigin.withOriginAccessControl(
-      importedBucket,
-      { originAccessControl },
+    // See `createCrossStackOacOrigin` in s3-policies.ts for the
+    // cross-stack-reimport / cyclic-dependency rationale.
+    const recipeImageOrigin = createCrossStackOacOrigin(
+      this,
+      'ImagesOAC',
+      'ImportedRecipeImageBucket',
+      recipeImageBucket,
     )
 
     const defaultDeny404 = new cloudfront.Function(this, 'DefaultDeny404Function', {
@@ -82,25 +72,9 @@ export class ImagesStack extends Stack {
       },
     })
 
-    // Wildcard SourceArn (account-scoped) avoids a cyclic dependency between
-    // RecipeStack (policy) and ImagesStack (distribution). The OAC association
-    // on the distribution side still gates which CloudFront principals reach
-    // the bucket; the wildcard limits the grant to this account's CloudFront.
-    recipeImageBucket.addToResourcePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      principals: [new iam.ServicePrincipal('cloudfront.amazonaws.com')],
-      actions: ['s3:GetObject'],
-      resources: [`${recipeImageBucket.bucketArn}/*`],
-      conditions: {
-        // StringLike (not StringEquals) is required for the trailing `*` to be
-        // treated as a wildcard. CloudFront sends the specific distribution
-        // ARN as aws:SourceArn; StringEquals would require exact match against
-        // the literal `…/distribution/*` string and the Allow would never fire.
-        StringLike: {
-          'aws:SourceArn': `arn:aws:cloudfront::${this.account}:distribution/*`,
-        },
-      },
-    }))
+    // See `grantCloudFrontReadCrossStack` in s3-policies.ts for the
+    // wildcard-SourceArn / cyclic-dependency rationale.
+    grantCloudFrontReadCrossStack(recipeImageBucket, this.account)
 
     const aliasTarget = route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution))
 
