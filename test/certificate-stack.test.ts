@@ -29,44 +29,17 @@ describe('CertificateStack', () => {
     })
   })
 
-  describe('API certificate', () => {
-    it('creates a separate certificate for api.akli.dev', () => {
-      template.hasResourceProperties('AWS::CertificateManager::Certificate', {
-        DomainName: 'api.akli.dev',
-      })
-    })
-  })
-
-  describe('Images certificate', () => {
-    it('creates a dedicated certificate for images.akli.dev with DNS validation', () => {
+  describe('Subdomain certificates', () => {
+    it.each([
+      ['api.akli.dev'],
+      ['images.akli.dev'],
+      ['pokedex.akli.dev'],
+      ['sandbox.akli.dev'],
+    ])('creates a dedicated certificate for %s with DNS validation', (domainName) => {
       template.hasResourceProperties(
         'AWS::CertificateManager::Certificate',
         Match.objectLike({
-          DomainName: 'images.akli.dev',
-          ValidationMethod: 'DNS',
-        }),
-      )
-    })
-  })
-
-  describe('Pokedex certificate', () => {
-    it('creates a dedicated certificate for pokedex.akli.dev with DNS validation', () => {
-      template.hasResourceProperties(
-        'AWS::CertificateManager::Certificate',
-        Match.objectLike({
-          DomainName: 'pokedex.akli.dev',
-          ValidationMethod: 'DNS',
-        }),
-      )
-    })
-  })
-
-  describe('Sandbox certificate', () => {
-    it('creates a dedicated certificate for sandbox.akli.dev with DNS validation', () => {
-      template.hasResourceProperties(
-        'AWS::CertificateManager::Certificate',
-        Match.objectLike({
-          DomainName: 'sandbox.akli.dev',
+          DomainName: domainName,
           ValidationMethod: 'DNS',
         }),
       )

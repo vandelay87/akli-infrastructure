@@ -39,25 +39,20 @@ export class CertificateStack extends Stack {
     })
 
     // Separate certificate for api.akli.dev — avoids replacing the site cert which would break cross-stack exports
-    this.apiCertificate = new certificatemanager.Certificate(this, 'ApiCert', {
-      domainName: API_DOMAIN_NAME,
-      validation: certificatemanager.CertificateValidation.fromDns(this.hostedZone),
-    })
+    this.apiCertificate = this.dnsValidatedCertificate('ApiCert', API_DOMAIN_NAME)
 
     // Separate certificate for images.akli.dev — avoids replacing the site cert which would break cross-stack exports
-    this.imagesCertificate = new certificatemanager.Certificate(this, 'ImagesCert', {
-      domainName: IMAGES_DOMAIN_NAME,
-      validation: certificatemanager.CertificateValidation.fromDns(this.hostedZone),
-    })
+    this.imagesCertificate = this.dnsValidatedCertificate('ImagesCert', IMAGES_DOMAIN_NAME)
 
     // Per-app subdomain certificates — keep the one-cert-per-subdomain convention rather than a SAN/wildcard
-    this.pokedexCertificate = new certificatemanager.Certificate(this, 'PokedexCert', {
-      domainName: POKEDEX_DOMAIN_NAME,
-      validation: certificatemanager.CertificateValidation.fromDns(this.hostedZone),
-    })
+    this.pokedexCertificate = this.dnsValidatedCertificate('PokedexCert', POKEDEX_DOMAIN_NAME)
 
-    this.sandboxCertificate = new certificatemanager.Certificate(this, 'SandboxCert', {
-      domainName: SANDBOX_DOMAIN_NAME,
+    this.sandboxCertificate = this.dnsValidatedCertificate('SandboxCert', SANDBOX_DOMAIN_NAME)
+  }
+
+  private dnsValidatedCertificate(id: string, domainName: string) {
+    return new certificatemanager.Certificate(this, id, {
+      domainName,
       validation: certificatemanager.CertificateValidation.fromDns(this.hostedZone),
     })
   }
