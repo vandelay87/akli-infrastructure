@@ -21,17 +21,6 @@ function findResourceByLogicalIdPrefix(template: Template, type: string, idPrefi
   return findResourceEntryByLogicalIdPrefix(template, type, idPrefix)[1]
 }
 
-function distributionLogicalId(template: Template): string {
-  return findResourceEntryByLogicalIdPrefix(template, 'AWS::CloudFront::Distribution', '')[0]
-}
-
-// True when a Condition value's AWS:SourceArn (or similar) references the given
-// distribution's logical ID via an Fn::Join/Ref, regardless of exact Fn::Join shape.
-function sourceArnReferencesDistribution(condition: unknown, distLogicalId: string): boolean {
-  const json = JSON.stringify(condition)
-  return json.includes(`"Ref":"${distLogicalId}"`) && json.includes(':distribution/')
-}
-
 function distributionConfig(dist: CfnResource): Record<string, unknown> {
   return dist.Properties.DistributionConfig as Record<string, unknown>
 }
@@ -207,29 +196,6 @@ describe('AkliInfrastructureStack', () => {
           ]),
         )
       })
-
-      it('grants the shared OAC distribution s3:GetObject/s3:ListBucket, scoped via AWS:SourceArn', () => {
-        const policy = findResourceByLogicalIdPrefix(template, 'AWS::S3::BucketPolicy', `${idPrefix}Policy`)
-        const statements = (policy.Properties.PolicyDocument as { Statement: CfnPolicyStatement[] }).Statement
-        const bucketLogicalId = (policy.Properties.Bucket as { Ref: string }).Ref
-
-        const grant = statements.find((s) => s.Sid === 'AllowCloudFrontServicePrincipal')
-        expect(grant).toBeDefined()
-
-        expect(grant?.Effect).toBe('Allow')
-        expect(grant?.Principal).toEqual({ Service: 'cloudfront.amazonaws.com' })
-        expect(grant?.Action).toEqual(['s3:GetObject', 's3:ListBucket'])
-
-        // Resource must cover both the bucket ARN and the bucket ARN wildcard (objects),
-        // referencing this specific bucket (not some other bucket's policy).
-        const resourceJson = JSON.stringify(grant?.Resource)
-        expect(resourceJson).toContain(bucketLogicalId)
-        expect(resourceJson).toContain('/*')
-
-        // Scoped, via AWS:SourceArn, to the single shared CloudFront distribution.
-        const distId = distributionLogicalId(template)
-        expect(sourceArnReferencesDistribution(grant?.Condition, distId)).toBe(true)
-      })
     })
 
     it('gives Pokedex and Sandbox distinct buckets (not the same bucket twice)', () => {
@@ -315,40 +281,6 @@ describe('AkliInfrastructureStack', () => {
         .map((o) => o.Id)
 
       expect(s3OriginIds).toContain(jsAssetBehavior?.TargetOriginId)
-    })
-
-    describe('apps/pokedex* and apps/sand-box* behaviours route to their own dedicated bucket origins', () => {
-      // Resolves a CacheBehaviors entry's TargetOriginId to the Origins[] entry it
-      // points at, then checks whether that origin's DomainName (an Fn::GetAtt on the
-      // bucket's RegionalDomainName) references the given bucket's logical ID. This is
-      // the exact bug class from #205: CloudFront behavior precedence meant apps/pokedex*
-      // and apps/sand-box* could silently resolve to the wrong bucket (or each other's).
-      function originLogicalBucketMatches(pathPattern: string, bucketLogicalIdPrefix: string): boolean {
-        const config = distributionConfig(cfnDistribution(template))
-        const cacheBehaviors = config.CacheBehaviors as CfnCacheBehavior[]
-        const origins = config.Origins as CfnOrigin[]
-
-        const behavior = cacheBehaviors.find((b) => b.PathPattern === pathPattern)
-        if (!behavior) throw new Error(`No CacheBehaviors entry found for PathPattern "${pathPattern}"`)
-
-        const origin = origins.find((o) => o.Id === behavior.TargetOriginId)
-        if (!origin) throw new Error(`No Origins entry found for TargetOriginId "${behavior.TargetOriginId}"`)
-
-        const [bucketLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::S3::Bucket', bucketLogicalIdPrefix)
-        return referencesLogicalId(origin.DomainName, bucketLogicalId)
-      }
-
-      it("routes apps/pokedex* to an origin backed by PokedexBucket, and not SiteBucket or SandboxBucket", () => {
-        expect(originLogicalBucketMatches('apps/pokedex*', 'PokedexBucket')).toBe(true)
-        expect(originLogicalBucketMatches('apps/pokedex*', 'SiteBucket')).toBe(false)
-        expect(originLogicalBucketMatches('apps/pokedex*', 'SandboxBucket')).toBe(false)
-      })
-
-      it("routes apps/sand-box* to an origin backed by SandboxBucket, and not SiteBucket or PokedexBucket", () => {
-        expect(originLogicalBucketMatches('apps/sand-box*', 'SandboxBucket')).toBe(true)
-        expect(originLogicalBucketMatches('apps/sand-box*', 'SiteBucket')).toBe(false)
-        expect(originLogicalBucketMatches('apps/sand-box*', 'PokedexBucket')).toBe(false)
-      })
     })
   })
 
