@@ -20,7 +20,7 @@ Nine CDK stacks deployed across regions:
 
 `PokedexSiteStack`/`SandboxSiteStack` are both instances of the same reusable `AppSiteStack` class (`lib/app-site-stack.ts`), parameterised per app — the intended pattern for any future per-app subdomain.
 
-**Migration in progress:** Pokedex and Sand-box are mid-migration from path-based routing (`akli.dev/apps/pokedex`, `akli.dev/apps/sand-box`, still live below) to the dedicated subdomains above. Once both apps have cut over and been verified, the old `apps/pokedex*`/`apps/sand-box*` behaviours and their `subdirectoryIndexHandler` CloudFront Function will be removed from `AkliInfrastructureStack` (see `docs/prds/subdomain-per-app-migration.md`).
+**Migration complete:** Pokedex and Sand-box have fully cut over from path-based routing (`akli.dev/apps/pokedex`, `akli.dev/apps/sand-box`) to the dedicated subdomains above. The old `apps/pokedex*`/`apps/sand-box*` behaviours and the `subdirectoryIndexHandler` CloudFront Function have been removed from `AkliInfrastructureStack` (see `docs/prds/subdomain-per-app-migration.md`). Stale `apps/pokedex/`/`apps/sand-box/`-prefixed content still needs deleting from `PokedexBucket`/`SandboxBucket` (tracked separately).
 
 ```
 Route 53 (akli.dev, www.akli.dev)
@@ -34,7 +34,6 @@ Route 53 (akli.dev, www.akli.dev)
 - **Default (SSR):** Lambda Function URL origin with S3 failover (OriginGroup, 5xx), 60s TTL, query string forwarding
 - **Static assets (*.js, *.css, etc.):** S3 origin, optimised caching
 - **images/*:** S3 origin, 30-day default TTL, 365-day max, query string caching
-- **apps/sand-box*, apps/pokedex*:** dedicated per-app S3 origins (`SandboxBucket`, `PokedexBucket`), CloudFront Function for subdirectory index rewriting (legacy path-based routing — being phased out, see Migration note above)
 - **pokedex.akli.dev, sandbox.akli.dev (own distributions):** each app's bucket root as origin, `errorResponses` (403/404 → `/index.html`, 200) for proper SPA fallback instead of a CloudFront Function
 
 ### Security
@@ -88,7 +87,7 @@ One IAM user with credentials stored in Secrets Manager, for this repo's own CDK
 A GitHub OIDC provider (`token.actions.githubusercontent.com`) and per-app IAM roles let `personal-website`, `pokedex`, and `sand-box` deploy without long-lived static credentials — each role trusts only its own repo on `main` and can only touch its own S3 bucket:
 - `personal-website-deploy`, `pokedex-deploy`, `sandbox-deploy`
 
-CloudFront routes `apps/pokedex*`/`apps/sand-box*` to their own dedicated buckets (`PokedexBucket`/`SandboxBucket`). The legacy shared `github-actions-deploy` IAM user and its static-key credential, used before this OIDC migration, have been removed.
+Each app's dedicated distribution (`PokedexSiteStack`/`SandboxSiteStack`) serves its own dedicated bucket (`PokedexBucket`/`SandboxBucket`) root, so each OIDC deploy role only ever needs access to its own bucket. The legacy shared `github-actions-deploy` IAM user and its static-key credential, used before this OIDC migration, have been removed.
 
 ## Tags
 
