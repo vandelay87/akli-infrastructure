@@ -61,27 +61,6 @@ export class AkliInfrastructureStack extends Stack {
 
     const imageCachePolicy = createImageCachePolicy(this)
 
-    const subdirectoryIndexHandler = new cloudfront.Function(this, 'SubfolderIndexRewrite', {
-      code: cloudfront.FunctionCode.fromInline(`
-        function handler(event) {
-          var request = event.request;
-          var uri = request.uri;
-
-          // If it ends in a slash, it's a directory; fetch index.html
-          if (uri.endsWith('/')) {
-            request.uri += 'index.html';
-          }
-          // If it DOES NOT have a '.' (e.g., .js, .css, .png)
-          // AND does not end in a slash, it's a "naked" path (e.g., /sand-box)
-          else if (!uri.includes('.')) {
-            request.uri += '/index.html';
-          }
-
-          return request;
-        }
-      `),
-    });
-
     // ~$0.06/100K requests at 256 MB
     const ssrFunction = new NodejsFunction(this, 'SsrFunction', {
       runtime: lambda.Runtime.NODEJS_20_X,
@@ -104,14 +83,6 @@ export class AkliInfrastructureStack extends Stack {
     })
 
     const s3Origin = origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
-      originAccessControl: originAccessControl,
-    })
-
-    const pokedexOrigin = origins.S3BucketOrigin.withOriginAccessControl(pokedexBucket, {
-      originAccessControl: originAccessControl,
-    })
-
-    const sandboxOrigin = origins.S3BucketOrigin.withOriginAccessControl(sandboxBucket, {
       originAccessControl: originAccessControl,
     })
 
@@ -168,22 +139,6 @@ export class AkliInfrastructureStack extends Stack {
         compress: true,
       },
       additionalBehaviors: {
-        'apps/sand-box*': {
-          ...staticAssetBehavior,
-          origin: sandboxOrigin,
-          functionAssociations: [{
-            function: subdirectoryIndexHandler,
-            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
-          }],
-        },
-        'apps/pokedex*': {
-          ...staticAssetBehavior,
-          origin: pokedexOrigin,
-          functionAssociations: [{
-            function: subdirectoryIndexHandler,
-            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
-          }],
-        },
         ...staticAssetBehaviors,
         'images/*': {
           origin: s3Origin,
@@ -217,12 +172,6 @@ export class AkliInfrastructureStack extends Stack {
 
     // Grant CloudFront access to S3 bucket
     grantCloudFrontRead(siteBucket, distribution, this.account)
-
-    // Grant CloudFront access to Pokedex S3 bucket
-    grantCloudFrontRead(pokedexBucket, distribution, this.account)
-
-    // Grant CloudFront access to Sandbox S3 bucket
-    grantCloudFrontRead(sandboxBucket, distribution, this.account)
 
     // DNS A record for apex domain
     new route53.ARecord(this, 'SiteAliasRecord', {
