@@ -53,6 +53,32 @@ describe('CertificateStack', () => {
     })
   })
 
+  describe('Certificate distinctness', () => {
+    it('every certificate (including StorybookCert) has a distinct domain name — no cert is accidentally reused across subdomains', () => {
+      // Catches a copy-paste bug where a new subdomain cert (e.g. StorybookCert)
+      // is created but its DomainName is accidentally left pointing at another
+      // app's domain — resourceCountIs alone wouldn't catch that, since the
+      // count would still be correct.
+      const certs = template.findResources('AWS::CertificateManager::Certificate')
+      const domainNames = Object.values(certs).map(
+        (c) => (c as { Properties: { DomainName: string } }).Properties.DomainName,
+      )
+
+      expect(domainNames).toHaveLength(6)
+      expect(new Set(domainNames).size).toBe(6)
+      expect(domainNames).toEqual(
+        expect.arrayContaining([
+          'akli.dev',
+          'api.akli.dev',
+          'images.akli.dev',
+          'pokedex.akli.dev',
+          'sandbox.akli.dev',
+          'storybook.akli.dev',
+        ]),
+      )
+    })
+  })
+
   describe('Cross-region references', () => {
     it('enables crossRegionReferences on the stack instance', () => {
       // CDK exposes the resolved value as `_crossRegionReferences` on the Stack instance
