@@ -282,6 +282,20 @@ describe('AkliInfrastructureStack', () => {
 
       expect(s3OriginIds).toContain(jsAssetBehavior?.TargetOriginId)
     })
+
+    it('no longer has the old per-app path-routing behaviours removed in #216 (apps/pokedex*, apps/sand-box*)', () => {
+      const config = distributionConfig(cfnDistribution(template))
+      const cacheBehaviors = (config.CacheBehaviors ?? []) as CfnCacheBehavior[]
+      const pathPatterns = cacheBehaviors.map((b) => b.PathPattern)
+
+      expect(pathPatterns).not.toContain('apps/pokedex*')
+      expect(pathPatterns).not.toContain('apps/sand-box*')
+    })
+
+    it('does not use a CloudFront::Function (old subdirectoryIndexHandler removed in #216)', () => {
+      const functions = template.findResources('AWS::CloudFront::Function')
+      expect(Object.keys(functions)).toHaveLength(0)
+    })
   })
 
   describe('Lambda Function URL', () => {
