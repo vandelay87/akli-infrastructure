@@ -23,6 +23,7 @@ interface AkliInfrastructureStackProps extends StackProps {
 export class AkliInfrastructureStack extends Stack {
   public readonly pokedexBucket: s3.IBucket
   public readonly sandboxBucket: s3.IBucket
+  public readonly storybookBucket: s3.IBucket
   public readonly pokedexDeployRole: iam.IRole
   public readonly sandboxDeployRole: iam.IRole
 
@@ -56,6 +57,9 @@ export class AkliInfrastructureStack extends Stack {
 
     const sandboxBucket = createHardenedAppBucket(this, 'SandboxBucket')
     this.sandboxBucket = sandboxBucket
+
+    const storybookBucket = createHardenedAppBucket(this, 'StorybookBucket')
+    this.storybookBucket = storybookBucket
 
     const securityHeadersPolicy = createSecurityHeadersPolicy(this)
 

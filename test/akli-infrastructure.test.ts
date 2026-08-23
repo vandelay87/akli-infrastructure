@@ -143,14 +143,15 @@ describe('AkliInfrastructureStack', () => {
     })
   })
 
-  describe('Per-app dedicated S3 buckets (Pokedex, Sandbox)', () => {
+  describe('Per-app dedicated S3 buckets (Pokedex, Sandbox, Storybook)', () => {
     const dedicatedBuckets = [
       { app: 'Pokedex', idPrefix: 'PokedexBucket' },
       { app: 'Sandbox', idPrefix: 'SandboxBucket' },
+      { app: 'Storybook', idPrefix: 'StorybookBucket' },
     ]
 
-    it('creates exactly three S3 buckets in total (Site, Pokedex, Sandbox)', () => {
-      template.resourceCountIs('AWS::S3::Bucket', 3)
+    it('creates exactly four S3 buckets in total (Site, Pokedex, Sandbox, Storybook)', () => {
+      template.resourceCountIs('AWS::S3::Bucket', 4)
     })
 
     describe.each(dedicatedBuckets)('$app bucket', ({ idPrefix }) => {
