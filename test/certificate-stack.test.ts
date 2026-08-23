@@ -2,6 +2,16 @@ import * as cdk from 'aws-cdk-lib'
 import { Match, Template } from 'aws-cdk-lib/assertions'
 import { CertificateStack } from '../lib/certificate-stack'
 
+const SITE_DOMAIN = 'akli.dev'
+const SUBDOMAIN_CERT_DOMAINS = [
+  'api.akli.dev',
+  'images.akli.dev',
+  'pokedex.akli.dev',
+  'sandbox.akli.dev',
+  'storybook.akli.dev',
+]
+const ALL_CERT_DOMAINS = [SITE_DOMAIN, ...SUBDOMAIN_CERT_DOMAINS]
+
 function createStack(): CertificateStack {
   const app = new cdk.App()
 
@@ -30,13 +40,7 @@ describe('CertificateStack', () => {
   })
 
   describe('Subdomain certificates', () => {
-    it.each([
-      ['api.akli.dev'],
-      ['images.akli.dev'],
-      ['pokedex.akli.dev'],
-      ['sandbox.akli.dev'],
-      ['storybook.akli.dev'],
-    ])('creates a dedicated certificate for %s with DNS validation', (domainName) => {
+    it.each(SUBDOMAIN_CERT_DOMAINS.map((domain) => [domain]))('creates a dedicated certificate for %s with DNS validation', (domainName) => {
       template.hasResourceProperties(
         'AWS::CertificateManager::Certificate',
         Match.objectLike({
@@ -48,8 +52,8 @@ describe('CertificateStack', () => {
   })
 
   describe('Certificate count', () => {
-    it('synthesises exactly six ACM certificates (Site, Api, Images, Pokedex, Sandbox, Storybook)', () => {
-      template.resourceCountIs('AWS::CertificateManager::Certificate', 6)
+    it(`synthesises exactly ${ALL_CERT_DOMAINS.length} ACM certificates (Site, Api, Images, Pokedex, Sandbox, Storybook)`, () => {
+      template.resourceCountIs('AWS::CertificateManager::Certificate', ALL_CERT_DOMAINS.length)
     })
   })
 
@@ -58,24 +62,15 @@ describe('CertificateStack', () => {
       // Catches a copy-paste bug where a new subdomain cert (e.g. StorybookCert)
       // is created but its DomainName is accidentally left pointing at another
       // app's domain — resourceCountIs alone wouldn't catch that, since the
-      // count would still be correct.
+      // count would still be correct. Derived from ALL_CERT_DOMAINS so a future
+      // subdomain needs no edit here.
       const certs = template.findResources('AWS::CertificateManager::Certificate')
       const domainNames = Object.values(certs).map(
         (c) => (c as { Properties: { DomainName: string } }).Properties.DomainName,
       )
 
-      expect(domainNames).toHaveLength(6)
-      expect(new Set(domainNames).size).toBe(6)
-      expect(domainNames).toEqual(
-        expect.arrayContaining([
-          'akli.dev',
-          'api.akli.dev',
-          'images.akli.dev',
-          'pokedex.akli.dev',
-          'sandbox.akli.dev',
-          'storybook.akli.dev',
-        ]),
-      )
+      expect(new Set(domainNames).size).toBe(domainNames.length)
+      expect(domainNames).toEqual(expect.arrayContaining(ALL_CERT_DOMAINS))
     })
   })
 
