@@ -35,6 +35,7 @@ describe('CertificateStack', () => {
       ['images.akli.dev'],
       ['pokedex.akli.dev'],
       ['sandbox.akli.dev'],
+      ['storybook.akli.dev'],
     ])('creates a dedicated certificate for %s with DNS validation', (domainName) => {
       template.hasResourceProperties(
         'AWS::CertificateManager::Certificate',
