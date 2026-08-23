@@ -105,4 +105,4 @@ No phased migration is needed: unlike Pokedex/Sand-box (which had to stay live o
 
 ## Open Questions
 
-- Does Storybook's static build need explicit base-path configuration (e.g. a Vite `base: '/'`)? With a dedicated subdomain serving from bucket root, this should just be Storybook's default base path — simpler than the original path-prefixed design would have required. To confirm in the `akli-ui` repo's Storybook build config.
+- ~~Does Storybook's static build need explicit base-path configuration?~~ — resolved: no. `@storybook/react-vite` defaults to `base: '/'` unless overridden via `viteFinal`, which is exactly correct for a dedicated subdomain served from bucket root. An explicit override (`base: '/apps/storybook/'`) would only have been needed under the old path-prefixed design — retired, see Problem Statement. No action needed in the `akli-ui` repo's Storybook config.
