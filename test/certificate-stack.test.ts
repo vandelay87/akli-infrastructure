@@ -47,8 +47,8 @@ describe('CertificateStack', () => {
   })
 
   describe('Certificate count', () => {
-    it('synthesises exactly five ACM certificates (Site, Api, Images, Pokedex, Sandbox)', () => {
-      template.resourceCountIs('AWS::CertificateManager::Certificate', 5)
+    it('synthesises exactly six ACM certificates (Site, Api, Images, Pokedex, Sandbox, Storybook)', () => {
+      template.resourceCountIs('AWS::CertificateManager::Certificate', 6)
     })
   })
 
