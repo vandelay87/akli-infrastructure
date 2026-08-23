@@ -26,6 +26,7 @@ export class AkliInfrastructureStack extends Stack {
   public readonly storybookBucket: s3.IBucket
   public readonly pokedexDeployRole: iam.IRole
   public readonly sandboxDeployRole: iam.IRole
+  public readonly storybookDeployRole: iam.IRole
 
   constructor(scope: Construct, id: string, props: AkliInfrastructureStackProps) {
     super(scope, id, props)
@@ -261,6 +262,14 @@ export class AkliInfrastructureStack extends Stack {
     sandboxDeployRole.addToPolicy(s3AppAccessStatement(sandboxBucket))
     this.sandboxDeployRole = sandboxDeployRole
 
+    const storybookDeployRole = new iam.Role(this, 'StorybookDeployRole', {
+      roleName: 'storybook-deploy',
+      assumedBy: githubDeployPrincipal('akli-ui'),
+      description: 'GitHub Actions OIDC deploy role for storybook',
+    })
+    storybookDeployRole.addToPolicy(s3AppAccessStatement(storybookBucket))
+    this.storybookDeployRole = storybookDeployRole
+
     // IAM user for CDK GitHub Actions (separate user for infrastructure)
     const cdkUser = new iam.User(this, 'CDKGitHubActionsUser', {
       userName: 'cdk-github-actions',
@@ -337,6 +346,11 @@ export class AkliInfrastructureStack extends Stack {
     new CfnOutput(this, 'SandboxDeployRoleArn', {
       value: sandboxDeployRole.roleArn,
       description: 'IAM Role ARN for sand-box GitHub Actions OIDC deploys',
+    })
+
+    new CfnOutput(this, 'StorybookDeployRoleArn', {
+      value: storybookDeployRole.roleArn,
+      description: 'IAM Role ARN for storybook GitHub Actions OIDC deploys',
     })
   }
 }

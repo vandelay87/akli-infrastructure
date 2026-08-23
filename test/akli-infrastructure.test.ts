@@ -489,6 +489,15 @@ describe('AkliInfrastructureStack', () => {
         hasLambdaAccess: false,
         sharedDistributionInvalidation: false,
       },
+      {
+        roleLogicalIdPrefix: 'StorybookDeployRole',
+        repo: 'akli-ui',
+        bucketLogicalIdPrefix: 'StorybookBucket',
+        hasLambdaAccess: false,
+        // Same as Pokedex/Sandbox — StorybookDeployRole gets its invalidation grant
+        // from StorybookSiteStack once that stack exists (#239), not here.
+        sharedDistributionInvalidation: false,
+      },
     ] as const
 
     describe.each(DEPLOY_APPS)('$roleLogicalIdPrefix', ({ roleLogicalIdPrefix, repo, bucketLogicalIdPrefix, hasLambdaAccess, sharedDistributionInvalidation }) => {
