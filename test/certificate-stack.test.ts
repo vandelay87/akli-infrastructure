@@ -35,6 +35,7 @@ describe('CertificateStack', () => {
       ['images.akli.dev'],
       ['pokedex.akli.dev'],
       ['sandbox.akli.dev'],
+      ['storybook.akli.dev'],
     ])('creates a dedicated certificate for %s with DNS validation', (domainName) => {
       template.hasResourceProperties(
         'AWS::CertificateManager::Certificate',
@@ -47,8 +48,8 @@ describe('CertificateStack', () => {
   })
 
   describe('Certificate count', () => {
-    it('synthesises exactly five ACM certificates (Site, Api, Images, Pokedex, Sandbox)', () => {
-      template.resourceCountIs('AWS::CertificateManager::Certificate', 5)
+    it('synthesises exactly six ACM certificates (Site, Api, Images, Pokedex, Sandbox, Storybook)', () => {
+      template.resourceCountIs('AWS::CertificateManager::Certificate', 6)
     })
   })
 
