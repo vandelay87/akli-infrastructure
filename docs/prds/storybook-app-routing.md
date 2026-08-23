@@ -102,7 +102,3 @@ No phased migration is needed: unlike Pokedex/Sand-box (which had to stay live o
 - [ ] `cdk diff` shows only resource creation — no changes to any existing bucket, Role, certificate, or distribution
 - [ ] All CDK assertion tests described above pass (`pnpm test`)
 - [ ] `https://storybook.akli.dev` serves the deployed Storybook build correctly, including a deep-linked story URL, once `akli-ui`'s first real deploy runs (tracked as a follow-up verification, not blocking this PRD's own AWS resources — the Storybook build doesn't exist yet at the point this infra ships)
-
-## Open Questions
-
-- ~~Does Storybook's static build need explicit base-path configuration?~~ — resolved: no. `@storybook/react-vite` defaults to `base: '/'` unless overridden via `viteFinal`, which is exactly correct for a dedicated subdomain served from bucket root. An explicit override (`base: '/apps/storybook/'`) would only have been needed under the old path-prefixed design — retired, see Problem Statement. No action needed in the `akli-ui` repo's Storybook config.
