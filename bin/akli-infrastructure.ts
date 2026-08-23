@@ -124,6 +124,23 @@ new AppSiteStack(app, 'SandboxSiteStack', {
   },
 })
 
+new AppSiteStack(app, 'StorybookSiteStack', {
+  env: { account, region: 'eu-west-2' },
+  crossRegionReferences: true,
+  appName: 'Storybook',
+  recordName: 'storybook',
+  hostedZone: certStack.hostedZone,
+  certificate: certStack.storybookCertificate,
+  bucket: akliInfrastructureStack.storybookBucket,
+  deployRole: akliInfrastructureStack.storybookDeployRole,
+  description: 'CloudFront distribution for storybook.akli.dev',
+  tags: {
+    Project: 'akli-storybook',
+    Environment: 'production',
+    ManagedBy: 'cdk',
+  },
+})
+
 new ApiStack(app, 'ApiStack', {
   env: { account, region: 'eu-west-2' },
   crossRegionReferences: true,

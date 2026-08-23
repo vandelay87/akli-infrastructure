@@ -10,6 +10,7 @@ const API_DOMAIN_NAME = `api.${DOMAIN_NAME}`
 const IMAGES_DOMAIN_NAME = `images.${DOMAIN_NAME}`
 const POKEDEX_DOMAIN_NAME = `pokedex.${DOMAIN_NAME}`
 const SANDBOX_DOMAIN_NAME = `sandbox.${DOMAIN_NAME}`
+const STORYBOOK_DOMAIN_NAME = `storybook.${DOMAIN_NAME}`
 
 /**
  * Separate stack for ACM certificates and Route 53 hosted zone.
@@ -23,6 +24,7 @@ export class CertificateStack extends Stack {
   public readonly imagesCertificate: certificatemanager.Certificate
   public readonly pokedexCertificate: certificatemanager.Certificate
   public readonly sandboxCertificate: certificatemanager.Certificate
+  public readonly storybookCertificate: certificatemanager.Certificate
 
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props)
@@ -48,6 +50,8 @@ export class CertificateStack extends Stack {
     this.pokedexCertificate = this.dnsValidatedCertificate('PokedexCert', POKEDEX_DOMAIN_NAME)
 
     this.sandboxCertificate = this.dnsValidatedCertificate('SandboxCert', SANDBOX_DOMAIN_NAME)
+
+    this.storybookCertificate = this.dnsValidatedCertificate('StorybookCert', STORYBOOK_DOMAIN_NAME)
   }
 
   private dnsValidatedCertificate(id: string, domainName: string) {

@@ -4,12 +4,12 @@ AWS CDK infrastructure for [akli.dev](https://akli.dev). Manages static site hos
 
 ## Architecture
 
-Nine CDK stacks deployed across regions:
+Ten CDK stacks deployed across regions:
 
 | Stack | Region | Resources |
 |-------|--------|-----------|
 | CertificateStack | us-east-1 | Route 53 hosted zone, ACM certificates (required by CloudFront) |
-| AkliInfrastructureStack | eu-west-2 | S3 buckets (site, Pokedex, Sandbox), CloudFront distribution, Route 53 records, IAM users, GitHub OIDC provider, per-app deploy roles |
+| AkliInfrastructureStack | eu-west-2 | S3 buckets (site, Pokedex, Sandbox, Storybook), CloudFront distribution, Route 53 records, IAM users, GitHub OIDC provider, per-app deploy roles |
 | PokedexStack | eu-west-2 | DynamoDB table, HTTP API Gateway, Lambda handlers |
 | AuthStack | eu-west-2 | Cognito user pool, HTTP API Gateway, Lambda handlers, JWT authoriser, CloudWatch alarms |
 | RecipeStack | eu-west-2 | DynamoDB table, S3 image bucket, HTTP API Gateway, Lambda handlers (CRUD, image upload, image resizer), JWT authoriser |
@@ -17,8 +17,9 @@ Nine CDK stacks deployed across regions:
 | ApiStack | eu-west-2 | CloudFront distribution for api.akli.dev, routes to Pokedex, Auth, and Recipe APIs |
 | PokedexSiteStack | eu-west-2 | CloudFront distribution for pokedex.akli.dev, OAC, Route 53 records — serves the Pokedex app from its own bucket root (`AppSiteStack`) |
 | SandboxSiteStack | eu-west-2 | CloudFront distribution for sandbox.akli.dev, OAC, Route 53 records — serves the Sand-box app from its own bucket root (`AppSiteStack`) |
+| StorybookSiteStack | eu-west-2 | CloudFront distribution for storybook.akli.dev, OAC, Route 53 records — serves the `akli-ui` Storybook build from its own bucket root (`AppSiteStack`) |
 
-`PokedexSiteStack`/`SandboxSiteStack` are both instances of the same reusable `AppSiteStack` class (`lib/app-site-stack.ts`), parameterised per app — the intended pattern for any future per-app subdomain.
+`PokedexSiteStack`/`SandboxSiteStack`/`StorybookSiteStack` are all instances of the same reusable `AppSiteStack` class (`lib/app-site-stack.ts`), parameterised per app — the intended pattern for any future per-app subdomain.
 
 **Migration complete:** Pokedex and Sand-box have fully cut over from path-based routing (`akli.dev/apps/pokedex`, `akli.dev/apps/sand-box`) to the dedicated subdomains above. The old `apps/pokedex*`/`apps/sand-box*` behaviours and the `subdirectoryIndexHandler` CloudFront Function have been removed from `AkliInfrastructureStack` (see `docs/prds/subdomain-per-app-migration.md`). Stale `apps/pokedex/`/`apps/sand-box/`-prefixed content still needs deleting from `PokedexBucket`/`SandboxBucket` (tracked separately).
 
@@ -34,7 +35,7 @@ Route 53 (akli.dev, www.akli.dev)
 - **Default (SSR):** Lambda Function URL origin with S3 failover (OriginGroup, 5xx), 60s TTL, query string forwarding
 - **Static assets (*.js, *.css, etc.):** S3 origin, optimised caching
 - **images/*:** S3 origin, 30-day default TTL, 365-day max, query string caching
-- **pokedex.akli.dev, sandbox.akli.dev (own distributions):** each app's bucket root as origin, `errorResponses` (403/404 → `/index.html`, 200) for proper SPA fallback instead of a CloudFront Function
+- **pokedex.akli.dev, sandbox.akli.dev, storybook.akli.dev (own distributions):** each app's bucket root as origin, `errorResponses` (403/404 → `/index.html`, 200) for proper SPA fallback instead of a CloudFront Function
 
 ### Security
 
@@ -84,10 +85,10 @@ GitHub Actions workflow on `.github/workflows/deploy.yml`:
 One IAM user with credentials stored in Secrets Manager, for this repo's own CDK bootstrap/deploy:
 - `cdk-github-actions` — CDK bootstrap and deploy
 
-A GitHub OIDC provider (`token.actions.githubusercontent.com`) and per-app IAM roles let `personal-website`, `pokedex`, and `sand-box` deploy without long-lived static credentials — each role trusts only its own repo on `main` and can only touch its own S3 bucket:
-- `personal-website-deploy`, `pokedex-deploy`, `sandbox-deploy`
+A GitHub OIDC provider (`token.actions.githubusercontent.com`) and per-app IAM roles let `personal-website`, `pokedex`, `sand-box`, and `akli-ui` (Storybook) deploy without long-lived static credentials — each role trusts only its own repo on `main` and can only touch its own S3 bucket:
+- `personal-website-deploy`, `pokedex-deploy`, `sandbox-deploy`, `storybook-deploy`
 
-Each app's dedicated distribution (`PokedexSiteStack`/`SandboxSiteStack`) serves its own dedicated bucket (`PokedexBucket`/`SandboxBucket`) root, so each OIDC deploy role only ever needs access to its own bucket. The legacy shared `github-actions-deploy` IAM user and its static-key credential, used before this OIDC migration, have been removed.
+Each app's dedicated distribution (`PokedexSiteStack`/`SandboxSiteStack`/`StorybookSiteStack`) serves its own dedicated bucket (`PokedexBucket`/`SandboxBucket`/`StorybookBucket`) root, so each OIDC deploy role only ever needs access to its own bucket. The legacy shared `github-actions-deploy` IAM user and its static-key credential, used before this OIDC migration, have been removed.
 
 ## Tags
 

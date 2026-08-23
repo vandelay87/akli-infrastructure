@@ -17,6 +17,7 @@ interface AppCase {
 const CASES: AppCase[] = [
   { appName: 'Pokedex', domainName: 'pokedex.akli.dev', recordName: 'pokedex' },
   { appName: 'Sandbox', domainName: 'sandbox.akli.dev', recordName: 'sandbox' },
+  { appName: 'Storybook', domainName: 'storybook.akli.dev', recordName: 'storybook' },
 ]
 
 interface Harness {

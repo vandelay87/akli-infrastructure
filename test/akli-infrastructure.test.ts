@@ -143,14 +143,15 @@ describe('AkliInfrastructureStack', () => {
     })
   })
 
-  describe('Per-app dedicated S3 buckets (Pokedex, Sandbox)', () => {
+  describe('Per-app dedicated S3 buckets (Pokedex, Sandbox, Storybook)', () => {
     const dedicatedBuckets = [
       { app: 'Pokedex', idPrefix: 'PokedexBucket' },
       { app: 'Sandbox', idPrefix: 'SandboxBucket' },
+      { app: 'Storybook', idPrefix: 'StorybookBucket' },
     ]
 
-    it('creates exactly three S3 buckets in total (Site, Pokedex, Sandbox)', () => {
-      template.resourceCountIs('AWS::S3::Bucket', 3)
+    it('creates exactly four S3 buckets in total (Site, Pokedex, Sandbox, Storybook)', () => {
+      template.resourceCountIs('AWS::S3::Bucket', 4)
     })
 
     describe.each(dedicatedBuckets)('$app bucket', ({ idPrefix }) => {
@@ -198,10 +199,15 @@ describe('AkliInfrastructureStack', () => {
       })
     })
 
-    it('gives Pokedex and Sandbox distinct buckets (not the same bucket twice)', () => {
-      const pokedexBucket = findResourceByLogicalIdPrefix(template, 'AWS::S3::Bucket', 'PokedexBucket')
-      const sandboxBucket = findResourceByLogicalIdPrefix(template, 'AWS::S3::Bucket', 'SandboxBucket')
-      expect(pokedexBucket).not.toBe(sandboxBucket)
+    it('gives every dedicated app bucket a distinct underlying bucket (no logical-ID collisions across apps)', () => {
+      // Driven by the dedicatedBuckets table above so a future 4th/5th app is
+      // covered automatically without touching this test. Compares logical
+      // IDs (not object references from repeated template.toJSON() calls,
+      // which are always distinct objects regardless of content).
+      const bucketLogicalIds = dedicatedBuckets.map(
+        ({ idPrefix }) => findResourceEntryByLogicalIdPrefix(template, 'AWS::S3::Bucket', idPrefix)[0],
+      )
+      expect(new Set(bucketLogicalIds).size).toBe(bucketLogicalIds.length)
     })
   })
 
@@ -486,6 +492,15 @@ describe('AkliInfrastructureStack', () => {
         repo: 'sand-box',
         bucketLogicalIdPrefix: 'SandboxBucket',
         hasLambdaAccess: false,
+        sharedDistributionInvalidation: false,
+      },
+      {
+        roleLogicalIdPrefix: 'StorybookDeployRole',
+        repo: 'akli-ui',
+        bucketLogicalIdPrefix: 'StorybookBucket',
+        hasLambdaAccess: false,
+        // Same as Pokedex/Sandbox — StorybookDeployRole gets its invalidation grant
+        // from StorybookSiteStack once that stack exists (#239), not here.
         sharedDistributionInvalidation: false,
       },
     ] as const
