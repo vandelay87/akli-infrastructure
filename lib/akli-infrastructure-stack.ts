@@ -210,11 +210,17 @@ export class AkliInfrastructureStack extends Stack {
       ],
     })
 
-    const githubDeployPrincipal = (repo: string): iam.OpenIdConnectPrincipal =>
+    // Takes the full `sub` claim, not a bare repo name — GitHub's `sub_claim_prefix` format is a
+    // per-repo platform default (classic `repo:owner/repo` vs. newer ID-embedded
+    // `repo:owner@id/repo@id`), not something derivable from the repo name. #253: akli-ui silently
+    // got the ID-embedded format, breaking a role built on the classic assumption. Before adding a
+    // new call site, verify the actual value with
+    // `gh api repos/vandelay87/<repo>/actions/oidc/customization/sub` — don't guess.
+    const githubDeployPrincipal = (sub: string): iam.OpenIdConnectPrincipal =>
       new iam.OpenIdConnectPrincipal(githubOidcProvider, {
         StringEquals: {
           'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
-          'token.actions.githubusercontent.com:sub': `repo:vandelay87/${repo}:ref:refs/heads/main`,
+          'token.actions.githubusercontent.com:sub': sub,
         },
       })
 
@@ -235,7 +241,7 @@ export class AkliInfrastructureStack extends Stack {
     // Per-app GitHub Actions deploy Roles — OIDC-federated
     const personalWebsiteDeployRole = new iam.Role(this, 'PersonalWebsiteDeployRole', {
       roleName: 'personal-website-deploy',
-      assumedBy: githubDeployPrincipal('personal-website'),
+      assumedBy: githubDeployPrincipal('repo:vandelay87/personal-website:ref:refs/heads/main'),
       description: 'GitHub Actions OIDC deploy role for personal-website',
     })
     personalWebsiteDeployRole.addToPolicy(s3AppAccessStatement(siteBucket))
@@ -248,7 +254,7 @@ export class AkliInfrastructureStack extends Stack {
 
     const pokedexDeployRole = new iam.Role(this, 'PokedexDeployRole', {
       roleName: 'pokedex-deploy',
-      assumedBy: githubDeployPrincipal('pokedex'),
+      assumedBy: githubDeployPrincipal('repo:vandelay87/pokedex:ref:refs/heads/main'),
       description: 'GitHub Actions OIDC deploy role for pokedex',
     })
     pokedexDeployRole.addToPolicy(s3AppAccessStatement(pokedexBucket))
@@ -256,7 +262,7 @@ export class AkliInfrastructureStack extends Stack {
 
     const sandboxDeployRole = new iam.Role(this, 'SandboxDeployRole', {
       roleName: 'sandbox-deploy',
-      assumedBy: githubDeployPrincipal('sand-box'),
+      assumedBy: githubDeployPrincipal('repo:vandelay87/sand-box:ref:refs/heads/main'),
       description: 'GitHub Actions OIDC deploy role for sand-box',
     })
     sandboxDeployRole.addToPolicy(s3AppAccessStatement(sandboxBucket))
@@ -264,7 +270,9 @@ export class AkliInfrastructureStack extends Stack {
 
     const storybookDeployRole = new iam.Role(this, 'StorybookDeployRole', {
       roleName: 'storybook-deploy',
-      assumedBy: githubDeployPrincipal('akli-ui'),
+      // ID-embedded sub_claim_prefix — akli-ui is newer than GitHub's cutover to this format.
+      // Verified via CloudTrail against a real AssumeRoleWithWebIdentity denial (#253).
+      assumedBy: githubDeployPrincipal('repo:vandelay87@20014244/akli-ui@1343905357:ref:refs/heads/main'),
       description: 'GitHub Actions OIDC deploy role for storybook',
     })
     storybookDeployRole.addToPolicy(s3AppAccessStatement(storybookBucket))
