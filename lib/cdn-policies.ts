@@ -55,12 +55,13 @@ export function createImageCachePolicy(
 export function createSecurityHeadersPolicy(
   scope: Construct,
   id: string = 'SecurityHeaders',
+  frameOption: cloudfront.HeadersFrameOption = cloudfront.HeadersFrameOption.DENY,
 ): cloudfront.ResponseHeadersPolicy {
   return new cloudfront.ResponseHeadersPolicy(scope, id, {
     securityHeadersBehavior: {
       contentTypeOptions: { override: true },
       frameOptions: {
-        frameOption: cloudfront.HeadersFrameOption.DENY,
+        frameOption,
         override: true,
       },
       referrerPolicy: {

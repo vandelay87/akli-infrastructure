@@ -22,6 +22,12 @@ export interface AppSiteStackProps extends StackProps {
   bucket: s3.IBucket
   /** Cross-stack deploy role reference (PokedexDeployRole/SandboxDeployRole) — granted invalidation rights on this stack's own distribution below */
   deployRole: iam.IRole
+  /**
+   * X-Frame-Options override for the response headers policy. Defaults to
+   * DENY (createSecurityHeadersPolicy's default). Storybook needs SAMEORIGIN
+   * since its manager UI frames its own iframe.html — see #255.
+   */
+  frameOption?: cloudfront.HeadersFrameOption
 }
 
 /**
@@ -33,7 +39,7 @@ export class AppSiteStack extends Stack {
   constructor(scope: Construct, id: string, props: AppSiteStackProps) {
     super(scope, id, props)
 
-    const { appName, recordName, hostedZone, certificate, bucket, deployRole } = props
+    const { appName, recordName, hostedZone, certificate, bucket, deployRole, frameOption } = props
     const domainName = `${recordName}.${hostedZone.zoneName}`
 
     // See `createCrossStackOacOrigin` in s3-policies.ts for the
@@ -45,7 +51,7 @@ export class AppSiteStack extends Stack {
       bucket,
     )
 
-    const securityHeadersPolicy = createSecurityHeadersPolicy(this)
+    const securityHeadersPolicy = createSecurityHeadersPolicy(this, 'SecurityHeaders', frameOption)
 
     const distribution = new cloudfront.Distribution(this, `${appName}Distribution`, {
       domainNames: [domainName],

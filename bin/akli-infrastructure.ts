@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import { AkliInfrastructureStack } from '../lib/akli-infrastructure-stack';
 import { ApiStack } from '../lib/api-stack';
 import { AppSiteStack } from '../lib/app-site-stack';
@@ -133,6 +134,9 @@ new AppSiteStack(app, 'StorybookSiteStack', {
   certificate: certStack.storybookCertificate,
   bucket: akliInfrastructureStack.storybookBucket,
   deployRole: akliInfrastructureStack.storybookDeployRole,
+  // Storybook's manager UI frames its own iframe.html — DENY would block
+  // that same-origin framing. See #255.
+  frameOption: cloudfront.HeadersFrameOption.SAMEORIGIN,
   description: 'CloudFront distribution for storybook.akli.dev',
   tags: {
     Project: 'akli-storybook',
