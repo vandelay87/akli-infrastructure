@@ -51,9 +51,7 @@ export class AppSiteStack extends Stack {
       bucket,
     )
 
-    const securityHeadersPolicy = frameOption
-      ? createSecurityHeadersPolicy(this, 'SecurityHeaders', frameOption)
-      : createSecurityHeadersPolicy(this)
+    const securityHeadersPolicy = createSecurityHeadersPolicy(this, 'SecurityHeaders', frameOption)
 
     const distribution = new cloudfront.Distribution(this, `${appName}Distribution`, {
       domainNames: [domainName],

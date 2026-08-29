@@ -15,18 +15,16 @@ interface AppCase {
   recordName: string
   /** Omitted for Pokedex/Sandbox (default DENY); set for Storybook (#255). */
   frameOption?: cloudfront.HeadersFrameOption
-  expectedFrameOption: string
 }
 
 const CASES: AppCase[] = [
-  { appName: 'Pokedex', domainName: 'pokedex.akli.dev', recordName: 'pokedex', expectedFrameOption: 'DENY' },
-  { appName: 'Sandbox', domainName: 'sandbox.akli.dev', recordName: 'sandbox', expectedFrameOption: 'DENY' },
+  { appName: 'Pokedex', domainName: 'pokedex.akli.dev', recordName: 'pokedex' },
+  { appName: 'Sandbox', domainName: 'sandbox.akli.dev', recordName: 'sandbox' },
   {
     appName: 'Storybook',
     domainName: 'storybook.akli.dev',
     recordName: 'storybook',
     frameOption: cloudfront.HeadersFrameOption.SAMEORIGIN,
-    expectedFrameOption: 'SAMEORIGIN',
   },
 ]
 
@@ -85,7 +83,7 @@ function createHarness(testCase: AppCase): Harness {
     certificate,
     bucket,
     deployRole,
-    ...(testCase.frameOption !== undefined && { frameOption: testCase.frameOption }),
+    frameOption: testCase.frameOption,
     tags: {
       Project: `akli-${testCase.recordName}`,
       Environment: 'production',
@@ -178,11 +176,14 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
       expect(ref).toMatch(/SecurityHeaders/)
     })
 
-    it(`configures the security headers policy's X-Frame-Options as ${testCase.expectedFrameOption}`, () => {
+    it(`configures the security headers policy's X-Frame-Options as ${testCase.frameOption ?? cloudfront.HeadersFrameOption.DENY}`, () => {
       harness.siteTemplate.hasResourceProperties('AWS::CloudFront::ResponseHeadersPolicy', {
         ResponseHeadersPolicyConfig: Match.objectLike({
           SecurityHeadersConfig: Match.objectLike({
-            FrameOptions: { FrameOption: testCase.expectedFrameOption, Override: true },
+            FrameOptions: {
+              FrameOption: testCase.frameOption ?? cloudfront.HeadersFrameOption.DENY,
+              Override: true,
+            },
           }),
         }),
       })
