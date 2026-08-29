@@ -496,8 +496,7 @@ describe('AkliInfrastructureStack', () => {
       },
       {
         roleLogicalIdPrefix: 'StorybookDeployRole',
-        // akli-ui gets GitHub's newer ID-embedded sub_claim_prefix, not the classic
-        // repo:owner/repo format the other three repos use — see #253.
+        // ID-embedded sub — see #253
         sub: 'repo:vandelay87@20014244/akli-ui@1343905357:ref:refs/heads/main',
         bucketLogicalIdPrefix: 'StorybookBucket',
         hasLambdaAccess: false,

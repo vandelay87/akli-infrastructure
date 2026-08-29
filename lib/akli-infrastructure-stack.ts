@@ -212,10 +212,9 @@ export class AkliInfrastructureStack extends Stack {
 
     // Takes the full `sub` claim, not a bare repo name — GitHub's `sub_claim_prefix` format is a
     // per-repo platform default (classic `repo:owner/repo` vs. newer ID-embedded
-    // `repo:owner@id/repo@id`), not something derivable from the repo name. #253: akli-ui silently
-    // got the ID-embedded format, breaking a role built on the classic assumption. Before adding a
-    // new call site, verify the actual value with
-    // `gh api repos/vandelay87/<repo>/actions/oidc/customization/sub` — don't guess.
+    // `repo:owner@id/repo@id`), not derivable from the repo name. Before adding a new call site,
+    // verify the actual value with `gh api repos/vandelay87/<repo>/actions/oidc/customization/sub`
+    // — don't guess (see storybookDeployRole below for why).
     const githubDeployPrincipal = (sub: string): iam.OpenIdConnectPrincipal =>
       new iam.OpenIdConnectPrincipal(githubOidcProvider, {
         StringEquals: {
