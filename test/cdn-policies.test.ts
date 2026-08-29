@@ -204,5 +204,18 @@ describe('cdn-policies', () => {
         }),
       })
     })
+
+    it('accepts an explicit frameOption override (e.g. SAMEORIGIN) instead of the default DENY', () => {
+      const stack = harnessStack()
+      createSecurityHeadersPolicy(stack, 'OverriddenSecurityHeaders', cloudfront.HeadersFrameOption.SAMEORIGIN)
+      const overriddenTemplate = Template.fromStack(stack)
+      overriddenTemplate.hasResourceProperties('AWS::CloudFront::ResponseHeadersPolicy', {
+        ResponseHeadersPolicyConfig: Match.objectLike({
+          SecurityHeadersConfig: Match.objectLike({
+            FrameOptions: { FrameOption: 'SAMEORIGIN', Override: true },
+          }),
+        }),
+      })
+    })
   })
 })

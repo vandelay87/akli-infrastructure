@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib'
 import { Match, Template } from 'aws-cdk-lib/assertions'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
 import * as iam from 'aws-cdk-lib/aws-iam'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as s3 from 'aws-cdk-lib/aws-s3'
@@ -12,12 +13,21 @@ interface AppCase {
   appName: string
   domainName: string
   recordName: string
+  /** Omitted for Pokedex/Sandbox (default DENY); set for Storybook (#255). */
+  frameOption?: cloudfront.HeadersFrameOption
+  expectedFrameOption: string
 }
 
 const CASES: AppCase[] = [
-  { appName: 'Pokedex', domainName: 'pokedex.akli.dev', recordName: 'pokedex' },
-  { appName: 'Sandbox', domainName: 'sandbox.akli.dev', recordName: 'sandbox' },
-  { appName: 'Storybook', domainName: 'storybook.akli.dev', recordName: 'storybook' },
+  { appName: 'Pokedex', domainName: 'pokedex.akli.dev', recordName: 'pokedex', expectedFrameOption: 'DENY' },
+  { appName: 'Sandbox', domainName: 'sandbox.akli.dev', recordName: 'sandbox', expectedFrameOption: 'DENY' },
+  {
+    appName: 'Storybook',
+    domainName: 'storybook.akli.dev',
+    recordName: 'storybook',
+    frameOption: cloudfront.HeadersFrameOption.SAMEORIGIN,
+    expectedFrameOption: 'SAMEORIGIN',
+  },
 ]
 
 interface Harness {
@@ -75,6 +85,7 @@ function createHarness(testCase: AppCase): Harness {
     certificate,
     bucket,
     deployRole,
+    ...(testCase.frameOption !== undefined && { frameOption: testCase.frameOption }),
     tags: {
       Project: `akli-${testCase.recordName}`,
       Environment: 'production',
@@ -165,6 +176,16 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
       // createSecurityHeadersPolicy gives the policy a stable construct id
       // starting with "SecurityHeaders" (name left unset — see cdn-policies.ts).
       expect(ref).toMatch(/SecurityHeaders/)
+    })
+
+    it(`configures the security headers policy's X-Frame-Options as ${testCase.expectedFrameOption}`, () => {
+      harness.siteTemplate.hasResourceProperties('AWS::CloudFront::ResponseHeadersPolicy', {
+        ResponseHeadersPolicyConfig: Match.objectLike({
+          SecurityHeadersConfig: Match.objectLike({
+            FrameOptions: { FrameOption: testCase.expectedFrameOption, Override: true },
+          }),
+        }),
+      })
     })
 
     it('default behaviour origin uses OAC (OriginAccessControlId is non-null)', () => {
