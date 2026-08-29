@@ -471,7 +471,7 @@ describe('AkliInfrastructureStack', () => {
     const DEPLOY_APPS = [
       {
         roleLogicalIdPrefix: 'PersonalWebsiteDeployRole',
-        repo: 'personal-website',
+        sub: 'repo:vandelay87/personal-website:ref:refs/heads/main',
         bucketLogicalIdPrefix: 'SiteBucket',
         hasLambdaAccess: true,
         // PersonalWebsiteDeployRole still invalidates the one shared distribution
@@ -482,21 +482,22 @@ describe('AkliInfrastructureStack', () => {
       },
       {
         roleLogicalIdPrefix: 'PokedexDeployRole',
-        repo: 'pokedex',
+        sub: 'repo:vandelay87/pokedex:ref:refs/heads/main',
         bucketLogicalIdPrefix: 'PokedexBucket',
         hasLambdaAccess: false,
         sharedDistributionInvalidation: false,
       },
       {
         roleLogicalIdPrefix: 'SandboxDeployRole',
-        repo: 'sand-box',
+        sub: 'repo:vandelay87/sand-box:ref:refs/heads/main',
         bucketLogicalIdPrefix: 'SandboxBucket',
         hasLambdaAccess: false,
         sharedDistributionInvalidation: false,
       },
       {
         roleLogicalIdPrefix: 'StorybookDeployRole',
-        repo: 'akli-ui',
+        // ID-embedded sub — see #253
+        sub: 'repo:vandelay87@20014244/akli-ui@1343905357:ref:refs/heads/main',
         bucketLogicalIdPrefix: 'StorybookBucket',
         hasLambdaAccess: false,
         // Same as Pokedex/Sandbox — StorybookDeployRole gets its invalidation grant
@@ -505,8 +506,8 @@ describe('AkliInfrastructureStack', () => {
       },
     ] as const
 
-    describe.each(DEPLOY_APPS)('$roleLogicalIdPrefix', ({ roleLogicalIdPrefix, repo, bucketLogicalIdPrefix, hasLambdaAccess, sharedDistributionInvalidation }) => {
-      it(`trusts only repo:vandelay87/${repo}:ref:refs/heads/main via the GitHub OIDC provider`, () => {
+    describe.each(DEPLOY_APPS)('$roleLogicalIdPrefix', ({ roleLogicalIdPrefix, sub, bucketLogicalIdPrefix, hasLambdaAccess, sharedDistributionInvalidation }) => {
+      it(`trusts only ${sub} via the GitHub OIDC provider`, () => {
         const [, role] = findResourceEntryByLogicalIdPrefix(template, 'AWS::IAM::Role', roleLogicalIdPrefix)
         const statements = trustPolicyStatements(role)
 
@@ -522,7 +523,7 @@ describe('AkliInfrastructureStack', () => {
         const scopedConditions = { ...(condition?.StringEquals ?? {}), ...(condition?.StringLike ?? {}) }
 
         expect(scopedConditions['token.actions.githubusercontent.com:aud']).toBe('sts.amazonaws.com')
-        expect(scopedConditions['token.actions.githubusercontent.com:sub']).toBe(`repo:vandelay87/${repo}:ref:refs/heads/main`)
+        expect(scopedConditions['token.actions.githubusercontent.com:sub']).toBe(sub)
       })
 
       it(`grants S3 access scoped only to its own bucket (${bucketLogicalIdPrefix})`, () => {
