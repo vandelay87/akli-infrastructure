@@ -122,7 +122,7 @@ export class AkliInfrastructureStack extends Stack {
 
     const staticFileExtensions = [
       '*.js', '*.css', '*.ico', '*.svg', '*.webp',
-      '*.woff2', '*.png', '*.jpg', '*.json', '*.xml', '*.txt', '*.pdf',
+      '*.woff2', '*.png', '*.jpg', '*.json', '*.xml', '*.txt', '*.pdf', '*.webmanifest',
     ]
 
     const staticAssetBehaviors: Record<string, cloudfront.BehaviorOptions> = {}
