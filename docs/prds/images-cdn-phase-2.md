@@ -53,11 +53,13 @@ https://images.akli.dev/blog/<post-slug>/<filename>.webp
 
 Concrete examples (matching the personal-website sibling PRD's actual posts):
 ```
-https://images.akli.dev/blog/building-a-pokedex/pokedex-desktop.webp
-https://images.akli.dev/blog/akli-ui-storybook/storybook-button-docs.webp
+https://images.akli.dev/blog/building-a-pokedex/pokedex-desktop-full.webp
+https://images.akli.dev/blog/akli-ui-storybook/storybook-button-docs-medium.webp
 ```
 
 **2026-09 note:** originally specified as flat (`blog/<filename>.webp`). Changed to nest by post slug before either sibling PRD was implemented — see the personal-website PRD's "Image organization: nested by post slug" section for the rationale (consistency with the `recipes/<id>/<file>` convention, collision avoidance, scoped cleanup). No change to this stack's CloudFront config as a result: the `blog/*` `additionalBehaviors` path pattern already matches nested paths, since CloudFront's `*` wildcard matches everything after the prefix, slashes included.
+
+**2026-09 second note:** the personal-website sibling PRD separately added responsive image sizing ([PR #445](https://github.com/vandelay87/personal-website/pull/445), landed ahead of this migration on the current live path) — every blog image is now three sized files (`-thumb`/`-medium`/`-full` suffix, matching the recipe `ImageResizer`'s own width/quality scheme), not one. Examples above updated to show a real suffixed filename. Again, no change needed to this stack: the `-thumb`/`-medium`/`-full` suffix is just part of the filename as far as CloudFront/S3 are concerned, no different from any other object key.
 
 ### S3 key shape (changing in sibling PRD)
 
