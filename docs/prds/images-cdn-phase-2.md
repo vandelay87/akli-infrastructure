@@ -39,7 +39,7 @@ Phase 1 set up `images.akli.dev` as a dedicated images CDN but only wired the re
 
 - **As a public reader** of the site, I want every image on the page (recipe or blog) to load from `images.akli.dev`, so the site has a coherent image-serving story and I get consistent caching/headers.
 - **As the architect**, I want a single distribution / single subdomain to evolve image policy on (cache, headers, future signed URLs), so I'm not running parallel CDN configurations.
-- **As the operator**, I want the site bucket to be readable from both the existing site distribution and the new images distribution via separate OACs with separate `aws:SourceArn` conditions, so each path has its own audit trail.
+- **As the operator**, I want the site bucket to be readable from both the existing site distribution and the new images distribution via separate OACs and separate bucket-policy statements, so each path has its own audit trail — the existing distribution keeps an exact-`aws:SourceArn` grant, the new one uses the account's established wildcard-`aws:SourceArn` cross-stack pattern (see Technical Considerations).
 
 ## Design & UX
 
@@ -80,7 +80,7 @@ URL maps 1:1 to S3 key on `images.akli.dev` — no CloudFront Function rewrite (
 
 ### Cross-stack: site bucket reference (and the circular-dependency trap)
 
-The site bucket (`SiteBucket` in `lib/akli-infrastructure-stack.ts:41`) is currently a `const` inside `AkliInfrastructureStack`'s constructor. To consume it from `ImagesStack`, it must be hoisted to a public readonly property — same pattern phase 1 used for the recipe-images bucket on `RecipeStack`.
+The site bucket (`SiteBucket` in `lib/akli-infrastructure-stack.ts:50`, created via the `createHardenedAppBucket` helper) is currently a `const` inside `AkliInfrastructureStack`'s constructor. To consume it from `ImagesStack`, it must be hoisted to a public readonly property — same pattern phase 1 used for the recipe-images bucket on `RecipeStack`.
 
 ```ts
 // lib/akli-infrastructure-stack.ts — refactor required:
@@ -89,11 +89,13 @@ export class AkliInfrastructureStack extends Stack {
   // …
   constructor(scope, id, props) {
     super(scope, id, props)
-    this.siteBucket = new s3.Bucket(this, 'SiteBucket', { /* unchanged */ })
-    // All references to `siteBucket` in this file become `this.siteBucket`:
-    //   line 125: origins.S3BucketOrigin.withOriginAccessControl(this.siteBucket, …)
-    //   line 223: this.siteBucket.addToResourcePolicy(…)
-    //   lines 229–230, 284–285, 343: ARN/name references via this.siteBucket
+    this.siteBucket = createHardenedAppBucket(this, 'SiteBucket')
+    // All references to the local `siteBucket` const in this file become
+    // `this.siteBucket` — as of this PRD's writing that's the origin
+    // construction (line 90), the existing `grantCloudFrontRead` call
+    // (line 179), the personal-website deploy-role policy grant (line 246),
+    // and the CfnOutput (line 319). Re-verify these line numbers against the
+    // file at implementation time — the hoist itself will shift some of them.
   }
 }
 ```
@@ -104,56 +106,32 @@ Both stacks are in `eu-west-2` (intra-region for this reference).
 
 **The circular-dependency trap:** the obvious next step — having `ImagesStack` call `siteBucket.addToResourcePolicy(...)` with a statement scoped via `aws:SourceArn` to ImagesStack's own distribution ARN — would create a circular cross-stack reference. CDK routes `addToResourcePolicy` calls back to the bucket-owning stack (`AkliInfrastructureStack`), so the policy statement (which references a CDK token from ImagesStack's distribution) ends up creating an `AkliInfrastructureStack → ImagesStack` Fn::ImportValue. Combined with the existing `ImagesStack → AkliInfrastructureStack` reference (via the bucket prop), CDK fails synth with a circular-dependency error.
 
-### Resolution: scope the new grant via `aws:SourceAccount`, not `aws:SourceArn`
+### Resolution: reuse the existing cross-stack OAC helpers — don't re-derive a bespoke grant
 
-The new policy statement on the site bucket is added INSIDE `AkliInfrastructureStack` (where the bucket lives) and uses `aws:SourceAccount` to scope CloudFront access to this AWS account, not `aws:SourceArn` to a specific distribution. This eliminates the need to reference ImagesStack's distribution ARN at all — no cross-stack reference, no circular dependency.
+**This section originally designed a one-off `aws:SourceAccount`-scoped policy statement to work around the cycle. That's now unnecessary — don't build it.** Since this PRD was written, exactly this problem was solved and extracted into two shared helpers in `lib/s3-policies.ts`, already exercised by `ImagesStack` itself (for `recipeImageBucket`) and by `AppSiteStack` (for each per-app bucket):
+
+- `createCrossStackOacOrigin(scope, oacId, importedBucketId, bucket)` — re-imports the bucket via `fromBucketAttributes` (so CDK's auto-bucket-policy-attachment, which would try to scope `aws:SourceArn` to the exact distribution and trigger the cycle, is skipped) and returns a ready-to-use origin backed by a fresh `S3OriginAccessControl`.
+- `grantCloudFrontReadCrossStack(bucket, account)` — adds the bucket-policy statement from the bucket-owning stack, scoped via `StringLike` to `aws:SourceArn: arn:aws:cloudfront::<account>:distribution/*` (wildcard, not the exact distribution — same reason the exact ARN isn't knowable without creating the cycle).
+
+Use both directly — no new policy design needed:
 
 ```ts
-// lib/akli-infrastructure-stack.ts — add ALONGSIDE the existing statement at line 223
-this.siteBucket.addToResourcePolicy(new iam.PolicyStatement({
-  sid: 'AllowImagesAccountCloudFront',
-  effect: iam.Effect.ALLOW,
-  principals: [new iam.ServicePrincipal('cloudfront.amazonaws.com')],
-  actions: ['s3:GetObject'],
-  resources: [`${this.siteBucket.bucketArn}/*`],
-  conditions: {
-    StringEquals: {
-      'aws:SourceAccount': this.account,
-    },
-  },
-}))
+// lib/images-stack.ts — phase 2 addition, mirrors the existing recipeImageOrigin call
+const siteOrigin = createCrossStackOacOrigin(this, 'SiteImagesOAC', 'ImportedSiteBucket', siteBucket)
 ```
 
-**Trade-off (deliberate, documented):** any CloudFront distribution in this AWS account could read from the site bucket via OAC, not just `ImagesDistribution`. Mitigations:
-- Single-tenant personal AWS account; you control every distribution that exists.
-- Existing site distribution still has its tighter `aws:SourceArn` grant — it's not affected.
-- The bucket retains `BlockPublicAccess.BLOCK_ALL`; no public access is opened.
-- If the project ever needs multi-tenancy or stricter scoping, the right fix is to extract `SiteBucket` into its own dedicated stack (`SiteBucketStack`) so both consumers can add `aws:SourceArn`-scoped grants from a stack that has no upstream dependency. That's a larger refactor — out of scope here, tracked as future work.
+```ts
+// lib/akli-infrastructure-stack.ts — call alongside the existing grantCloudFrontRead(this.siteBucket, …) call
+grantCloudFrontReadCrossStack(this.siteBucket, this.account)
+```
 
-### `S3BucketOrigin.withOriginAccessControl` for cross-stack bucket — defaults are correct
-
-`origins.S3BucketOrigin.withOriginAccessControl(siteBucket, { originAccessControl: siteOac })` defaults `originAccessLevels` to `[READ]` — which is exactly what's needed (CloudFront issues `GetObject`/`HeadObject`, never `ListBucket` for static content). No override needed. Per phase 1's caveat, the auto-bucket-policy attachment is skipped for cross-stack buckets — that's fine, because the policy statement is now added in `AkliInfrastructureStack` directly per above.
+**Trade-off (inherited from the existing pattern, not new to this PRD):** the wildcard `StringLike` grant means any CloudFront distribution in this AWS account could read from the site bucket via OAC, not just `ImagesDistribution` — the same trade-off `RecipeStack`'s image bucket and every app-site bucket already accept via this same helper. Mitigations (same as those existing call sites): single-tenant personal AWS account; the bucket retains `BlockPublicAccess.BLOCK_ALL`; the existing site distribution keeps its own tighter, non-cross-stack `aws:SourceArn`-scoped grant via `grantCloudFrontRead`, unaffected by this addition.
 
 ### Dual-OAC on the site bucket
 
-The site bucket already has one OAC granting access to the existing site distribution (created by `S3BucketOrigin.withOriginAccessControl(siteBucket)` at `lib/akli-infrastructure-stack.ts:125`, with the bucket policy statement at `lib/akli-infrastructure-stack.ts:223`).
+The site bucket already has one OAC granting access to the existing site distribution (created via `S3BucketOrigin.withOriginAccessControl(siteBucket)` inside `AkliInfrastructureStack`, paired with the existing `grantCloudFrontRead` policy statement — see line references above).
 
-Phase 2 adds a **second OAC** owned by `ImagesStack` (used by the new `siteOrigin` on `ImagesDistribution`) and a **second policy statement** on the site bucket — added in `AkliInfrastructureStack` per the resolution above. The policy statement uses `aws:SourceAccount` rather than `aws:SourceArn` to avoid the circular-dependency trap; the OAC itself is still scoped to the new distribution (the OAC is what signs origin requests with `sigv4`; the bucket-policy condition controls which principals are allowed).
-
-```ts
-// lib/images-stack.ts — phase 2 additions
-const siteOac = new cloudfront.S3OriginAccessControl(this, 'SiteImagesOAC')
-const siteOrigin = origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
-  originAccessControl: siteOac,
-})
-// NOTE: do NOT call siteBucket.addToResourcePolicy here — would route back to
-// AkliInfrastructureStack and create a circular ref via distribution.distributionId.
-// The grant is added in AkliInfrastructureStack itself (see Resolution section above).
-```
-
-The new statement (added in `AkliInfrastructureStack`) does **not** include `s3:ListBucket` (unlike the existing site distribution's grant which includes both `s3:GetObject` and `s3:ListBucket`). CloudFront serving objects only needs `GetObject` / `HeadObject` — not granting `ListBucket` is least-privilege.
-
-**Sid uniqueness:** the new statement uses `Sid: 'AllowImagesAccountCloudFront'`. The existing one uses `Sid: 'AllowCloudFrontServicePrincipal'`. Both Sids must remain distinct; CDK does not deduplicate by Sid, but matching Sids in a single policy is invalid IAM.
+Phase 2 adds a **second OAC**, created by `createCrossStackOacOrigin` inside `ImagesStack` for the new `siteOrigin`, and a **second policy statement** on the site bucket, added by `grantCloudFrontReadCrossStack` inside `AkliInfrastructureStack` per the resolution above. Nothing in the codebase today has one bucket served by two separate distributions simultaneously, so this specific combination is new — but it's composed entirely from the same two helper functions already proven at three other call sites, not a new mechanism.
 
 ### Adding the `blog/*` behavior
 
@@ -185,7 +163,7 @@ Reuse the shared `lib/cdn-policies.ts` module created in phase 1. No new policie
 1. akli-infrastructure deploy (this PRD) — single CI deploy
    - AkliInfrastructureStack:
      - siteBucket hoisted to public property
-     - Adds 2nd policy statement on site bucket (aws:SourceAccount)
+     - Adds 2nd policy statement on site bucket (`grantCloudFrontReadCrossStack`)
    - ImagesStack:
      - 2nd OAC (SiteImagesOAC)
      - 2nd origin pointing at siteBucket
@@ -232,16 +210,13 @@ ACs are split into automated (Jest + `aws-cdk-lib/assertions`; testable via `pnp
 
 ### Automated — `AkliInfrastructureStack` adds second site-bucket policy statement
 
-- [ ] After phase 2 synth, the `AWS::S3::BucketPolicy` for the site bucket (synthesized in `AkliInfrastructureStack`'s template) has TWO statements: the original `AllowCloudFrontServicePrincipal` statement AND a new `AllowImagesAccountCloudFront` statement.
+- [ ] After phase 2 synth, the `AWS::S3::BucketPolicy` for the site bucket (synthesized in `AkliInfrastructureStack`'s template) has TWO statements: the original `AllowCloudFrontServicePrincipal` statement (from `grantCloudFrontRead`) AND a new statement (from `grantCloudFrontReadCrossStack`).
 - [ ] The new statement has `Effect: Allow`, `Action: s3:GetObject` (only — NOT `s3:ListBucket`), `Principal: { Service: 'cloudfront.amazonaws.com' }`, `Resource: <site-bucket-arn>/*`.
-- [ ] The new statement's `Condition.StringEquals.aws:SourceAccount` resolves to the AWS account ID (`{ "Ref": "AWS::AccountId" }` or equivalent token).
-- [ ] **Negative assertion:** the new statement does NOT use `aws:SourceArn` (would create the circular dependency the resolution avoids).
+- [ ] The new statement's `Condition.StringLike.'aws:SourceArn'` resolves to `arn:aws:cloudfront::<account>:distribution/*` (wildcard-scoped — matches `grantCloudFrontReadCrossStack`'s existing, already-tested behavior at its other call sites, not a new design).
 - [ ] **Negative assertion:** the new statement does NOT include `s3:ListBucket` (least-privilege regression guard).
 - [ ] **Negative assertion:** no statement grants `Principal: '*'`.
-- [ ] **Regression guard:** the original `AllowCloudFrontServicePrincipal` statement is unchanged — same `Sid`, same actions (`s3:GetObject`, `s3:ListBucket`), same resources, same condition shape (`aws:SourceArn` to the existing site distribution).
-- [ ] **Sid uniqueness:** the two statements have distinct `Sid` values (`AllowCloudFrontServicePrincipal` vs `AllowImagesAccountCloudFront`).
+- [ ] **Regression guard:** the original `AllowCloudFrontServicePrincipal` statement is unchanged — same `Sid`, same actions (`s3:GetObject`, `s3:ListBucket`), same resources, same condition shape (exact `aws:SourceArn` to the existing site distribution).
 - [ ] The site bucket retains `BlockPublicAccess.BLOCK_ALL`.
-- [ ] **Casing consistency:** both statements use the same casing for their condition key (e.g. both `aws:SourceArn`/`aws:SourceAccount`, or both `AWS:SourceArn`/`AWS:SourceAccount` — IAM treats them equivalently but house style should be consistent; pick lowercase per AWS docs and assert).
 
 ### Automated — `AkliInfrastructureStack` regression (existing site distribution untouched)
 
@@ -306,8 +281,12 @@ All resolved during PRD review:
 - **301 redirect strategy** → resolved to **none**. Explicit user decision: keeps legacy URL patterns out of IaC. Documented as Non-Goal with the trade-off (broken inbound links to old image URLs after sibling PRD ships).
 - **OAC reuse vs. new** → resolved to **new dedicated OAC** (`SiteImagesOAC`) for the ImagesStack distribution against the site bucket.
 - **Cross-stack site bucket reference** → resolved to **expose as public readonly property on `AkliInfrastructureStack`**, consume directly in `ImagesStack` props. Same pattern as phase 1's `RecipeStack.imageBucket`.
-- **Cross-stack policy mutation circular dependency** (surfaced in CDK review) → resolved to **add the new bucket-policy statement inside `AkliInfrastructureStack`** (where the bucket lives) and **scope it via `aws:SourceAccount`** (not `aws:SourceArn`) so no reference to ImagesStack's distribution ARN is needed. Trade-off documented in Technical Considerations.
+- **Cross-stack policy mutation circular dependency** (surfaced in CDK review) → originally resolved to a bespoke `aws:SourceAccount`-scoped statement added inside `AkliInfrastructureStack`. **Superseded** (2026-09, PRD refresh): the shared `grantCloudFrontReadCrossStack`/`createCrossStackOacOrigin` helpers in `lib/s3-policies.ts` — extracted after this PRD was originally written, already reused by `ImagesStack` and `AppSiteStack` — solve the identical problem via a `StringLike`-wildcarded `aws:SourceArn` instead. Use the helpers directly; no new policy design needed. Trade-off (same shape, different condition key) documented in Technical Considerations.
 - **Cache and headers policies** → resolved to **reuse phase 1's shared `lib/cdn-policies.ts` module**. No new policies introduced.
-- **Future hardening if `aws:SourceAccount` becomes too permissive** → out of scope, but the right path is to extract `SiteBucket` into its own dedicated stack so multiple distribution-scoped grants can be added without circular dependencies. Tracked as a future consideration, not blocking phase 2.
+- **Future hardening if the wildcard cross-stack grant becomes too permissive** → out of scope, but the right path is to extract `SiteBucket` into its own dedicated stack so multiple distribution-scoped grants can be added without circular dependencies. Tracked as a future consideration, not blocking phase 2.
 
 No remaining open questions for phase 2.
+
+### 2026-09 refresh note
+
+This PRD sat unimplemented long enough that the codebase moved under it (confirmed via GitHub: no epic, no issues, nothing merged — genuinely never built, not lost work). Re-verified against current `main` and updated: the circular-dependency workaround now reuses `grantCloudFrontReadCrossStack`/`createCrossStackOacOrigin` (extracted into `lib/s3-policies.ts` after this PRD was written) instead of a bespoke `aws:SourceAccount` statement, and stale line references into `akli-infrastructure-stack.ts` were corrected. No change to the PRD's actual design — same distribution layout, same S3 key scheme, same no-redirects decision. Sibling PRD: `personal-website/docs/prds/images-cdn-phase-2.md` was refreshed alongside this one (its scope grew from 1 to 3 MDX posts).
