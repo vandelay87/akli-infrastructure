@@ -77,7 +77,17 @@ function findLambdaStatement(statements: Record<string, unknown>[]): Record<stri
   return findStatementByAction(statements, 'lambda:UpdateFunctionCode')
 }
 
-function createTestStack(): Template {
+const STATIC_EXTENSIONS = [
+  '*.js', '*.css', '*.ico', '*.svg', '*.webp',
+  '*.woff2', '*.png', '*.jpg', '*.json', '*.xml', '*.txt', '*.pdf', '*.webmanifest',
+]
+
+function bucketPolicyStatements(template: Template, bucketIdPrefix: string): CfnPolicyStatement[] {
+  const policy = findResourceByLogicalIdPrefix(template, 'AWS::S3::BucketPolicy', `${bucketIdPrefix}Policy`)
+  return (policy.Properties.PolicyDocument as { Statement: CfnPolicyStatement[] }).Statement
+}
+
+function createTestStack(): { stack: AkliInfrastructureStack; template: Template } {
   const app = new cdk.App()
 
   // Create mock dependencies that the stack requires
@@ -100,14 +110,15 @@ function createTestStack(): Template {
     certificate,
   })
 
-  return Template.fromStack(stack)
+  return { stack, template: Template.fromStack(stack) }
 }
 
 describe('AkliInfrastructureStack', () => {
+  let stack: AkliInfrastructureStack
   let template: Template
 
   beforeAll(() => {
-    template = createTestStack()
+    ({ stack, template } = createTestStack())
   })
 
   describe('SSR Lambda function', () => {
@@ -131,14 +142,14 @@ describe('AkliInfrastructureStack', () => {
   })
 
   describe('S3 bucket', () => {
-    it('blocks all public access', () => {
-      template.hasResourceProperties('AWS::S3::Bucket', {
-        PublicAccessBlockConfiguration: {
-          BlockPublicAcls: true,
-          BlockPublicPolicy: true,
-          IgnorePublicAcls: true,
-          RestrictPublicBuckets: true,
-        },
+    it('blocks all public access on the site bucket', () => {
+      const bucket = findResourceByLogicalIdPrefix(template, 'AWS::S3::Bucket', 'SiteBucket')
+
+      expect(bucket.Properties.PublicAccessBlockConfiguration).toEqual({
+        BlockPublicAcls: true,
+        BlockPublicPolicy: true,
+        IgnorePublicAcls: true,
+        RestrictPublicBuckets: true,
       })
     })
   })
@@ -183,10 +194,7 @@ describe('AkliInfrastructureStack', () => {
       })
 
       it('enforces SSL by denying non-HTTPS requests in its bucket policy', () => {
-        const policy = findResourceByLogicalIdPrefix(template, 'AWS::S3::BucketPolicy', `${idPrefix}Policy`)
-        const statements = (policy.Properties.PolicyDocument as { Statement: CfnPolicyStatement[] }).Statement
-
-        expect(statements).toEqual(
+        expect(bucketPolicyStatements(template, idPrefix)).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
               Effect: 'Deny',
@@ -208,6 +216,88 @@ describe('AkliInfrastructureStack', () => {
         ({ idPrefix }) => findResourceEntryByLogicalIdPrefix(template, 'AWS::S3::Bucket', idPrefix)[0],
       )
       expect(new Set(bucketLogicalIds).size).toBe(bucketLogicalIds.length)
+    })
+  })
+
+  describe('Site bucket exposure and cross-stack CloudFront read access', () => {
+    let siteBucketLogicalId: string
+
+    beforeAll(() => {
+      [siteBucketLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::S3::Bucket', 'SiteBucket')
+    })
+
+    it('exposes the site bucket as a public siteBucket property backed by the SiteBucket resource', () => {
+      expect(stack.resolve(stack.siteBucket.bucketName)).toEqual({ Ref: siteBucketLogicalId })
+    })
+
+    it('adds exactly one cross-stack statement granting s3:GetObject (not s3:ListBucket) to any CloudFront distribution in this account', () => {
+      const crossStackStatements = bucketPolicyStatements(template, 'SiteBucket').filter(
+        (s) => (s.Condition as { StringLike?: unknown } | undefined)?.StringLike !== undefined,
+      )
+
+      expect(crossStackStatements).toEqual([{
+        Effect: 'Allow',
+        Principal: { Service: 'cloudfront.amazonaws.com' },
+        Action: 's3:GetObject',
+        Resource: {
+          'Fn::Join': ['', [{ 'Fn::GetAtt': [siteBucketLogicalId, 'Arn'] }, '/*']],
+        },
+        Condition: {
+          StringLike: { 'aws:SourceArn': 'arn:aws:cloudfront::123456789012:distribution/*' },
+        },
+      }])
+    })
+
+    it('no Allow statement in the site bucket policy grants a wildcard principal', () => {
+      const wildcardAllows = bucketPolicyStatements(template, 'SiteBucket').filter((s) => {
+        if (s.Effect !== 'Allow') return false
+        if (s.Principal === '*') return true
+        return (s.Principal as { AWS?: unknown } | undefined)?.AWS === '*'
+      })
+
+      expect(wildcardAllows).toEqual([])
+    })
+
+    it('keeps the original AllowCloudFrontServicePrincipal statement scoped to the site distribution', () => {
+      const [distributionLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::CloudFront::Distribution', '')
+      const original = bucketPolicyStatements(template, 'SiteBucket').filter((s) => s.Sid === 'AllowCloudFrontServicePrincipal')
+
+      expect(original).toEqual([{
+        Sid: 'AllowCloudFrontServicePrincipal',
+        Effect: 'Allow',
+        Principal: { Service: 'cloudfront.amazonaws.com' },
+        Action: ['s3:GetObject', 's3:ListBucket'],
+        Resource: [
+          { 'Fn::GetAtt': [siteBucketLogicalId, 'Arn'] },
+          { 'Fn::Join': ['', [{ 'Fn::GetAtt': [siteBucketLogicalId, 'Arn'] }, '/*']] },
+        ],
+        Condition: {
+          StringEquals: {
+            'AWS:SourceArn': {
+              'Fn::Join': ['', ['arn:aws:cloudfront::123456789012:distribution/', { Ref: distributionLogicalId }]],
+            },
+          },
+        },
+      }])
+    })
+
+    it('leaves the site distribution origins, cache behaviours and OACs unchanged', () => {
+      const config = distributionConfig(cfnDistribution(template))
+      const cacheBehaviors = config.CacheBehaviors as CfnCacheBehavior[]
+
+      expect(config.Origins as CfnOrigin[]).toHaveLength(2)
+      expect(cacheBehaviors.map((b) => b.PathPattern)).toEqual([...STATIC_EXTENSIONS, 'images/*'])
+
+      template.resourceCountIs('AWS::CloudFront::OriginAccessControl', 2)
+      template.hasResourceProperties('AWS::CloudFront::OriginAccessControl', {
+        OriginAccessControlConfig: {
+          Description: 'OAC for akli.dev',
+          Name: Match.stringLikeRegexp('SiteOAC'),
+          OriginAccessControlOriginType: 's3',
+          SigningBehavior: 'always',
+          SigningProtocol: 'sigv4',
+        },
+      })
     })
   })
 
@@ -255,15 +345,10 @@ describe('AkliInfrastructureStack', () => {
     })
 
     it('has static asset cache behaviours that route to S3 for each file extension', () => {
-      const staticExtensions = [
-        '*.js', '*.css', '*.ico', '*.svg', '*.webp',
-        '*.woff2', '*.png', '*.jpg', '*.json', '*.xml', '*.txt', '*.pdf', '*.webmanifest',
-      ]
-
       template.hasResourceProperties('AWS::CloudFront::Distribution', {
         DistributionConfig: {
           CacheBehaviors: Match.arrayWith(
-            staticExtensions.map((ext) =>
+            STATIC_EXTENSIONS.map((ext) =>
               Match.objectLike({
                 PathPattern: ext,
                 Compress: true,
