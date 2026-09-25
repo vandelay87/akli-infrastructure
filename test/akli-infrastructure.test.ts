@@ -2,7 +2,6 @@ import * as cdk from 'aws-cdk-lib'
 import { Match, Template } from 'aws-cdk-lib/assertions'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as route53 from 'aws-cdk-lib/aws-route53'
-import * as s3 from 'aws-cdk-lib/aws-s3'
 import { AkliInfrastructureStack } from '../lib/akli-infrastructure-stack'
 import { findResourceEntryByLogicalIdPrefix, findStatementByAction, referencesLogicalId } from './cdk-test-helpers'
 import type { CfnResource } from './cdk-test-helpers'
@@ -78,20 +77,14 @@ function findLambdaStatement(statements: Record<string, unknown>[]): Record<stri
   return findStatementByAction(statements, 'lambda:UpdateFunctionCode')
 }
 
-function siteBucketPolicyStatements(template: Template): CfnPolicyStatement[] {
-  const policy = findResourceByLogicalIdPrefix(template, 'AWS::S3::BucketPolicy', 'SiteBucketPolicy')
+const STATIC_EXTENSIONS = [
+  '*.js', '*.css', '*.ico', '*.svg', '*.webp',
+  '*.woff2', '*.png', '*.jpg', '*.json', '*.xml', '*.txt', '*.pdf', '*.webmanifest',
+]
+
+function bucketPolicyStatements(template: Template, bucketIdPrefix: string): CfnPolicyStatement[] {
+  const policy = findResourceByLogicalIdPrefix(template, 'AWS::S3::BucketPolicy', `${bucketIdPrefix}Policy`)
   return (policy.Properties.PolicyDocument as { Statement: CfnPolicyStatement[] }).Statement
-}
-
-function isCloudFrontServicePrincipal(statement: CfnPolicyStatement): boolean {
-  return (statement.Principal as { Service?: unknown } | undefined)?.Service === 'cloudfront.amazonaws.com'
-}
-
-function crossStackCloudFrontStatements(template: Template): CfnPolicyStatement[] {
-  return siteBucketPolicyStatements(template).filter((s) => {
-    const condition = s.Condition as { StringLike?: unknown } | undefined
-    return isCloudFrontServicePrincipal(s) && condition?.StringLike !== undefined
-  })
 }
 
 function createTestStack(): { stack: AkliInfrastructureStack; template: Template } {
@@ -149,14 +142,14 @@ describe('AkliInfrastructureStack', () => {
   })
 
   describe('S3 bucket', () => {
-    it('blocks all public access', () => {
-      template.hasResourceProperties('AWS::S3::Bucket', {
-        PublicAccessBlockConfiguration: {
-          BlockPublicAcls: true,
-          BlockPublicPolicy: true,
-          IgnorePublicAcls: true,
-          RestrictPublicBuckets: true,
-        },
+    it('blocks all public access on the site bucket', () => {
+      const bucket = findResourceByLogicalIdPrefix(template, 'AWS::S3::Bucket', 'SiteBucket')
+
+      expect(bucket.Properties.PublicAccessBlockConfiguration).toEqual({
+        BlockPublicAcls: true,
+        BlockPublicPolicy: true,
+        IgnorePublicAcls: true,
+        RestrictPublicBuckets: true,
       })
     })
   })
@@ -201,10 +194,7 @@ describe('AkliInfrastructureStack', () => {
       })
 
       it('enforces SSL by denying non-HTTPS requests in its bucket policy', () => {
-        const policy = findResourceByLogicalIdPrefix(template, 'AWS::S3::BucketPolicy', `${idPrefix}Policy`)
-        const statements = (policy.Properties.PolicyDocument as { Statement: CfnPolicyStatement[] }).Statement
-
-        expect(statements).toEqual(
+        expect(bucketPolicyStatements(template, idPrefix)).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
               Effect: 'Deny',
@@ -237,20 +227,15 @@ describe('AkliInfrastructureStack', () => {
     })
 
     it('exposes the site bucket as a public siteBucket property backed by the SiteBucket resource', () => {
-      const siteBucket = stack.siteBucket
-
-      expect(siteBucket).toBeInstanceOf(s3.Bucket)
-      expect(stack.resolve(siteBucket.bucketName)).toEqual({ Ref: siteBucketLogicalId })
+      expect(stack.resolve(stack.siteBucket.bucketName)).toEqual({ Ref: siteBucketLogicalId })
     })
 
-    it('adds exactly one wildcard-scoped cross-stack CloudFront statement to the site bucket policy', () => {
-      expect(crossStackCloudFrontStatements(template)).toHaveLength(1)
-    })
+    it('adds exactly one cross-stack statement granting s3:GetObject (not s3:ListBucket) to any CloudFront distribution in this account', () => {
+      const crossStackStatements = bucketPolicyStatements(template, 'SiteBucket').filter(
+        (s) => (s.Condition as { StringLike?: unknown } | undefined)?.StringLike !== undefined,
+      )
 
-    it('scopes the cross-stack statement to s3:GetObject on objects, for any CloudFront distribution in this account', () => {
-      const [statement] = crossStackCloudFrontStatements(template)
-
-      expect(statement).toEqual({
+      expect(crossStackStatements).toEqual([{
         Effect: 'Allow',
         Principal: { Service: 'cloudfront.amazonaws.com' },
         Action: 's3:GetObject',
@@ -260,19 +245,11 @@ describe('AkliInfrastructureStack', () => {
         Condition: {
           StringLike: { 'aws:SourceArn': 'arn:aws:cloudfront::123456789012:distribution/*' },
         },
-      })
-    })
-
-    it('does not grant s3:ListBucket via the cross-stack statement', () => {
-      const [statement] = crossStackCloudFrontStatements(template)
-      expect(statement).toBeDefined()
-
-      const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action]
-      expect(actions).not.toContain('s3:ListBucket')
+      }])
     })
 
     it('no Allow statement in the site bucket policy grants a wildcard principal', () => {
-      const wildcardAllows = siteBucketPolicyStatements(template).filter((s) => {
+      const wildcardAllows = bucketPolicyStatements(template, 'SiteBucket').filter((s) => {
         if (s.Effect !== 'Allow') return false
         if (s.Principal === '*') return true
         return (s.Principal as { AWS?: unknown } | undefined)?.AWS === '*'
@@ -283,7 +260,7 @@ describe('AkliInfrastructureStack', () => {
 
     it('keeps the original AllowCloudFrontServicePrincipal statement scoped to the site distribution', () => {
       const [distributionLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::CloudFront::Distribution', '')
-      const original = siteBucketPolicyStatements(template).filter((s) => s.Sid === 'AllowCloudFrontServicePrincipal')
+      const original = bucketPolicyStatements(template, 'SiteBucket').filter((s) => s.Sid === 'AllowCloudFrontServicePrincipal')
 
       expect(original).toEqual([{
         Sid: 'AllowCloudFrontServicePrincipal',
@@ -304,26 +281,12 @@ describe('AkliInfrastructureStack', () => {
       }])
     })
 
-    it('keeps BlockPublicAccess.BLOCK_ALL on the site bucket', () => {
-      const bucket = findResourceByLogicalIdPrefix(template, 'AWS::S3::Bucket', 'SiteBucket')
-
-      expect(bucket.Properties.PublicAccessBlockConfiguration).toEqual({
-        BlockPublicAcls: true,
-        BlockPublicPolicy: true,
-        IgnorePublicAcls: true,
-        RestrictPublicBuckets: true,
-      })
-    })
-
     it('leaves the site distribution origins, cache behaviours and OACs unchanged', () => {
       const config = distributionConfig(cfnDistribution(template))
       const cacheBehaviors = config.CacheBehaviors as CfnCacheBehavior[]
 
       expect(config.Origins as CfnOrigin[]).toHaveLength(2)
-      expect(cacheBehaviors.map((b) => b.PathPattern)).toEqual([
-        '*.js', '*.css', '*.ico', '*.svg', '*.webp', '*.woff2', '*.png', '*.jpg',
-        '*.json', '*.xml', '*.txt', '*.pdf', '*.webmanifest', 'images/*',
-      ])
+      expect(cacheBehaviors.map((b) => b.PathPattern)).toEqual([...STATIC_EXTENSIONS, 'images/*'])
 
       template.resourceCountIs('AWS::CloudFront::OriginAccessControl', 2)
       template.hasResourceProperties('AWS::CloudFront::OriginAccessControl', {
@@ -382,15 +345,10 @@ describe('AkliInfrastructureStack', () => {
     })
 
     it('has static asset cache behaviours that route to S3 for each file extension', () => {
-      const staticExtensions = [
-        '*.js', '*.css', '*.ico', '*.svg', '*.webp',
-        '*.woff2', '*.png', '*.jpg', '*.json', '*.xml', '*.txt', '*.pdf', '*.webmanifest',
-      ]
-
       template.hasResourceProperties('AWS::CloudFront::Distribution', {
         DistributionConfig: {
           CacheBehaviors: Match.arrayWith(
-            staticExtensions.map((ext) =>
+            STATIC_EXTENSIONS.map((ext) =>
               Match.objectLike({
                 PathPattern: ext,
                 Compress: true,
