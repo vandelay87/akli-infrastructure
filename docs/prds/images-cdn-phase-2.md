@@ -20,9 +20,9 @@ Phase 1 set up `images.akli.dev` as a dedicated images CDN but only wired the re
 
 ## Goals
 
-- The `images.akli.dev` distribution serves blog images at `https://images.akli.dev/blog/<filename>.webp` after the personal-website side ships.
+- The `images.akli.dev` distribution serves blog images at `https://images.akli.dev/blog/<post-slug>/<filename>.webp` after the personal-website side ships (nested by post slug, not flat — see 2026-09 note below).
 - The site bucket exposes content through two distributions concurrently (the existing `akli.dev` site distribution AND the new `images.akli.dev` distribution), each with its own OAC and bucket-policy statement.
-- Blog image S3 keys move from `images/blog/<file>` to `blog/<file>` (driven by the sibling PRD changing `public/` directory layout). The new `images.akli.dev/blog/*` behavior maps URL → S3 key 1:1 with no rewrite layer.
+- Blog image S3 keys move from `images/blog/<file>` to `blog/<post-slug>/<file>` (driven by the sibling PRD changing `public/` directory layout). The `blog/*` behavior's `*` matches everything after the prefix including slashes, so nested keys route with no CloudFront-side change and no rewrite layer.
 - The existing `akli.dev/images/*` behavior on the site distribution stays in place during the cutover window, then becomes a candidate for removal once all consumers are confirmed to use the new URLs (tracked separately).
 
 ## Non-Goals
@@ -48,25 +48,29 @@ Backend / infrastructure only. No UI.
 ### URL pattern
 
 ```
-https://images.akli.dev/blog/<filename>.webp
+https://images.akli.dev/blog/<post-slug>/<filename>.webp
 ```
 
-Concrete examples:
+Concrete examples (matching the personal-website sibling PRD's actual posts):
 ```
-https://images.akli.dev/blog/system-prompt-engineering.webp
-https://images.akli.dev/blog/typescript-utility-types-cover.webp
+https://images.akli.dev/blog/building-a-pokedex/pokedex-desktop-full.webp
+https://images.akli.dev/blog/akli-ui-storybook/storybook-button-docs-medium.webp
 ```
+
+**2026-09 note:** originally specified as flat (`blog/<filename>.webp`). Changed to nest by post slug before either sibling PRD was implemented — see the personal-website PRD's "Image organization: nested by post slug" section for the rationale (consistency with the `recipes/<id>/<file>` convention, collision avoidance, scoped cleanup). No change to this stack's CloudFront config as a result: the `blog/*` `additionalBehaviors` path pattern already matches nested paths, since CloudFront's `*` wildcard matches everything after the prefix, slashes included.
+
+**2026-09 second note:** the personal-website sibling PRD separately added responsive image sizing ([PR #445](https://github.com/vandelay87/personal-website/pull/445), landed ahead of this migration on the current live path) — every blog image is now three sized files (`-thumb`/`-medium`/`-full` suffix, matching the recipe `ImageResizer`'s own width/quality scheme), not one. Examples above updated to show a real suffixed filename. Again, no change needed to this stack: the `-thumb`/`-medium`/`-full` suffix is just part of the filename as far as CloudFront/S3 are concerned, no different from any other object key.
 
 ### S3 key shape (changing in sibling PRD)
 
 | | Before sibling PRD ships | After sibling PRD ships |
 |---|---|---|
-| Source in personal-website | `public/images/blog/<file>.webp` | `public/blog/<file>.webp` |
-| Site bucket key | `images/blog/<file>.webp` | `blog/<file>.webp` |
+| Source in personal-website | `public/images/blog/<file>.webp` | `public/blog/<post-slug>/<file>.webp` |
+| Site bucket key | `images/blog/<file>.webp` | `blog/<post-slug>/<file>.webp` |
 | URL on existing distribution | `akli.dev/images/blog/<file>.webp` (works) | (still works against old keys until they're removed) |
-| URL on new distribution | n/a | `images.akli.dev/blog/<file>.webp` (this PRD) |
+| URL on new distribution | n/a | `images.akli.dev/blog/<post-slug>/<file>.webp` (this PRD) |
 
-URL maps 1:1 to S3 key on `images.akli.dev` — no CloudFront Function rewrite (consistent with phase 1's principle).
+URL maps 1:1 to S3 key on `images.akli.dev` — no CloudFront Function rewrite (consistent with phase 1's principle). The added `<post-slug>` segment is just another path component; the 1:1 mapping and no-rewrite principle both still hold.
 
 ### `ImagesStack` distribution layout after this PRD
 
