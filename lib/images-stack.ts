@@ -16,6 +16,7 @@ interface ImagesStackProps extends StackProps {
   hostedZone: route53.IHostedZone
   imagesCertificate: certificatemanager.ICertificate
   recipeImageBucket: s3.IBucket
+  siteBucket: s3.IBucket
 }
 
 export class ImagesStack extends Stack {

@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib'
 import { Match, Template } from 'aws-cdk-lib/assertions'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as route53 from 'aws-cdk-lib/aws-route53'
+import * as s3 from 'aws-cdk-lib/aws-s3'
 import { ImagesStack } from '../lib/images-stack'
 import { RecipeStack } from '../lib/recipe-stack'
 
@@ -46,12 +47,18 @@ function createHarness(): Harness {
     },
   })
 
+  const siteStack = new cdk.Stack(app, 'TestSiteStack', {
+    env: { account: '123456789012', region: 'eu-west-2' },
+  })
+  const siteBucket = new s3.Bucket(siteStack, 'TestSiteBucket')
+
   const imagesStack = new ImagesStack(app, 'TestImagesStack', {
     env: { account: '123456789012', region: 'eu-west-2' },
     crossRegionReferences: true,
     hostedZone,
     imagesCertificate,
     recipeImageBucket: recipeStack.imageBucket,
+    siteBucket,
     tags: {
       Project: 'akli-images',
       Environment: 'production',

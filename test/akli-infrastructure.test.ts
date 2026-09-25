@@ -237,10 +237,10 @@ describe('AkliInfrastructureStack', () => {
     })
 
     it('exposes the site bucket as a public siteBucket property backed by the SiteBucket resource', () => {
-      const siteBucket = (stack as unknown as { siteBucket?: unknown }).siteBucket
+      const siteBucket = stack.siteBucket
 
       expect(siteBucket).toBeInstanceOf(s3.Bucket)
-      expect(stack.resolve((siteBucket as s3.Bucket).bucketName)).toEqual({ Ref: siteBucketLogicalId })
+      expect(stack.resolve(siteBucket.bucketName)).toEqual({ Ref: siteBucketLogicalId })
     })
 
     it('adds exactly one wildcard-scoped cross-stack CloudFront statement to the site bucket policy', () => {
