@@ -99,6 +99,38 @@ function findDistribution(template: Template, aliasMatcher: string): CfnDistribu
   throw new Error(`No CloudFront::Distribution with alias ${aliasMatcher} in template`)
 }
 
+type CfnCacheBehavior = {
+  PathPattern: string
+  TargetOriginId: string
+  AllowedMethods: string[]
+  Compress: boolean
+  ViewerProtocolPolicy: string
+  CachePolicyId: { Ref?: string }
+  ResponseHeadersPolicyId: { Ref?: string }
+}
+
+type CfnOrigin = {
+  Id: string
+  DomainName: unknown
+  OriginAccessControlId?: { 'Fn::GetAtt'?: [string, string] }
+}
+
+function findCacheBehavior(template: Template, pathPattern: string): CfnCacheBehavior {
+  const distribution = findDistribution(template, 'images.akli.dev')
+  const behaviors = (distribution.Properties.DistributionConfig.CacheBehaviors ?? []) as CfnCacheBehavior[]
+  const behavior = behaviors.find((b) => b.PathPattern === pathPattern)
+  if (!behavior) throw new Error(`No CacheBehavior with PathPattern ${pathPattern} in template`)
+  return behavior
+}
+
+function findOriginForBucket(template: Template, bucketLogicalIdPrefix: string): CfnOrigin {
+  const distribution = findDistribution(template, 'images.akli.dev')
+  const origins = (distribution.Properties.DistributionConfig.Origins ?? []) as CfnOrigin[]
+  const origin = origins.find((o) => referencesLogicalId(o.DomainName, bucketLogicalIdPrefix))
+  if (!origin) throw new Error(`No origin referencing bucket ${bucketLogicalIdPrefix} in template`)
+  return origin
+}
+
 // Identify the image cache policy by its unique TTLs (30d default / 365d max);
 // other CachePolicy resources in the template have different TTLs (e.g. SSR's
 // 60s default). Cannot match by Name because cache policy names are
@@ -148,16 +180,14 @@ describe('ImagesStack', () => {
       expect((viewerCertificate as { SslSupportMethod?: string }).SslSupportMethod).toBe('sni-only')
     })
 
-    it('default behaviour has a viewer-request FunctionAssociation', () => {
+    it('default behaviour has exactly one FunctionAssociation, on viewer-request', () => {
       const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
       const defaultBehavior = distribution.Properties.DistributionConfig.DefaultCacheBehavior as {
         FunctionAssociations?: Array<{ EventType: string; FunctionARN: unknown }>
       }
-      expect(defaultBehavior.FunctionAssociations).toBeDefined()
-      expect(defaultBehavior.FunctionAssociations).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ EventType: 'viewer-request' }),
-        ]),
+      expect(defaultBehavior.FunctionAssociations).toHaveLength(1)
+      expect(defaultBehavior.FunctionAssociations?.[0]).toEqual(
+        expect.objectContaining({ EventType: 'viewer-request' }),
       )
     })
 
@@ -188,235 +218,86 @@ describe('ImagesStack', () => {
       })
     })
 
-    it('recipes/* behaviour has AllowedMethods: [GET, HEAD] only (excludes OPTIONS)', () => {
-      harness.imagesTemplate.hasResourceProperties('AWS::CloudFront::Distribution', {
-        DistributionConfig: Match.objectLike({
-          CacheBehaviors: Match.arrayWith([
-            Match.objectLike({
-              PathPattern: 'recipes/*',
-              AllowedMethods: ['GET', 'HEAD'],
-            }),
-          ]),
-        }),
+    describe.each(['recipes/*', 'blog/*'])('%s behaviour', (pathPattern) => {
+      it('allows only GET and HEAD, compresses, and redirects to HTTPS', () => {
+        const behavior = findCacheBehavior(harness.imagesTemplate, pathPattern)
+        expect(behavior.AllowedMethods).toEqual(['GET', 'HEAD'])
+        expect(behavior.Compress).toBe(true)
+        expect(behavior.ViewerProtocolPolicy).toBe('redirect-to-https')
       })
-    })
 
-    it('recipes/* behaviour sets Compress: true and ViewerProtocolPolicy: redirect-to-https', () => {
-      harness.imagesTemplate.hasResourceProperties('AWS::CloudFront::Distribution', {
-        DistributionConfig: Match.objectLike({
-          CacheBehaviors: Match.arrayWith([
-            Match.objectLike({
-              PathPattern: 'recipes/*',
-              Compress: true,
-              ViewerProtocolPolicy: 'redirect-to-https',
-            }),
-          ]),
-        }),
+      it('CachePolicyId references the shared image cache policy', () => {
+        const behavior = findCacheBehavior(harness.imagesTemplate, pathPattern)
+        expect(behavior.CachePolicyId.Ref).toBe(findImageCachePolicyLogicalId(harness.imagesTemplate))
       })
-    })
 
-    it('recipes/* behaviour CachePolicyId references the shared image cache policy', () => {
-      const cachePolicyLogicalId = findImageCachePolicyLogicalId(harness.imagesTemplate)
-      const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const recipesBehavior = (distribution.Properties.DistributionConfig.CacheBehaviors ?? [])
-        .find((b) => (b as { PathPattern?: string }).PathPattern === 'recipes/*') as
-        | { CachePolicyId?: { Ref?: string } | string }
-        | undefined
-      expect(recipesBehavior).toBeDefined()
-      const cachePolicyId = recipesBehavior?.CachePolicyId
-      const ref = (cachePolicyId as { Ref?: string } | undefined)?.Ref
-      expect(ref).toBe(cachePolicyLogicalId)
-    })
-
-    it('recipes/* behaviour ResponseHeadersPolicyId references the shared security headers policy', () => {
-      const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const recipesBehavior = (distribution.Properties.DistributionConfig.CacheBehaviors ?? [])
-        .find((b) => (b as { PathPattern?: string }).PathPattern === 'recipes/*') as
-        | { ResponseHeadersPolicyId?: { Ref?: string } | string }
-        | undefined
-      expect(recipesBehavior).toBeDefined()
-      const headersPolicyId = recipesBehavior?.ResponseHeadersPolicyId
-      const ref = (headersPolicyId as { Ref?: string } | undefined)?.Ref
-      expect(ref).toBeDefined()
-      // The shared security headers policy is constructed via createSecurityHeadersPolicy
-      // which gives it a stable construct id starting with "SecurityHeaders".
-      expect(ref).toMatch(/SecurityHeaders/)
+      it('ResponseHeadersPolicyId references the shared security headers policy', () => {
+        const [headersPolicyLogicalId] = findResourceEntryByLogicalIdPrefix(
+          harness.imagesTemplate,
+          'AWS::CloudFront::ResponseHeadersPolicy',
+          'SecurityHeaders',
+        )
+        const behavior = findCacheBehavior(harness.imagesTemplate, pathPattern)
+        expect(behavior.ResponseHeadersPolicyId.Ref).toBe(headersPolicyLogicalId)
+      })
     })
 
     it('recipes/* origin uses OAC (OriginAccessControlId is non-null)', () => {
       const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const origins = distribution.Properties.DistributionConfig.Origins ?? []
-      const recipesBehavior = (distribution.Properties.DistributionConfig.CacheBehaviors ?? [])
-        .find((b) => (b as { PathPattern?: string }).PathPattern === 'recipes/*') as
-        | { TargetOriginId?: string }
-        | undefined
-      expect(recipesBehavior?.TargetOriginId).toBeDefined()
-      const recipesOrigin = origins.find(
-        (o) => (o as { Id?: string }).Id === recipesBehavior?.TargetOriginId,
-      ) as { OriginAccessControlId?: unknown } | undefined
+      const origins = (distribution.Properties.DistributionConfig.Origins ?? []) as CfnOrigin[]
+      const recipesBehavior = findCacheBehavior(harness.imagesTemplate, 'recipes/*')
+      const recipesOrigin = origins.find((o) => o.Id === recipesBehavior.TargetOriginId)
       expect(recipesOrigin).toBeDefined()
       expect(recipesOrigin?.OriginAccessControlId).toBeDefined()
       expect(recipesOrigin?.OriginAccessControlId).not.toBeNull()
     })
 
-    it('recipes/* origin DomainName resolves to the recipe-images bucket regional domain', () => {
-      const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const origins = distribution.Properties.DistributionConfig.Origins ?? []
-      const recipesBehavior = (distribution.Properties.DistributionConfig.CacheBehaviors ?? [])
-        .find((b) => (b as { PathPattern?: string }).PathPattern === 'recipes/*') as
-        | { TargetOriginId?: string }
-        | undefined
-      const recipesOrigin = origins.find(
-        (o) => (o as { Id?: string }).Id === recipesBehavior?.TargetOriginId,
-      ) as { DomainName?: unknown } | undefined
-      expect(recipesOrigin?.DomainName).toBeDefined()
-      // Cross-stack bucket regional domain comes through as an Fn::ImportValue
-      // or {Ref/GetAtt} of a SSM-imported value. Serialise and assert it
-      // references the bucket's RegionalDomainName.
-      const serialised = JSON.stringify(recipesOrigin?.DomainName)
-      expect(serialised).toMatch(/RegionalDomainName|s3\.eu-west-2\.amazonaws\.com/)
-    })
-
-    it('recipes/* behaviour still targets the recipe-images bucket origin', () => {
-      const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const origins = distribution.Properties.DistributionConfig.Origins ?? []
-      const recipeImagesOrigin = origins.find(
-        (o) => referencesLogicalId((o as { DomainName?: unknown }).DomainName, 'RecipeImagesBucket'),
-      ) as { Id?: string } | undefined
-      const recipesBehavior = (distribution.Properties.DistributionConfig.CacheBehaviors ?? [])
-        .find((b) => (b as { PathPattern?: string }).PathPattern === 'recipes/*') as
-        | { TargetOriginId?: string }
-        | undefined
-      expect(recipeImagesOrigin?.Id).toBeDefined()
-      expect(recipesBehavior?.TargetOriginId).toBe(recipeImagesOrigin?.Id)
-    })
-
-    it('default behaviour keeps exactly one FunctionAssociation', () => {
-      const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const defaultBehavior = distribution.Properties.DistributionConfig.DefaultCacheBehavior as {
-        FunctionAssociations?: unknown[]
-      }
-      expect(defaultBehavior.FunctionAssociations).toHaveLength(1)
-    })
-
-    it('has two origins: the recipe-images bucket and the site bucket', () => {
-      const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const origins = distribution.Properties.DistributionConfig.Origins ?? []
-      expect(origins).toHaveLength(2)
-      const referencesBucket = (prefix: string) => origins.some(
-        (o) => referencesLogicalId((o as { DomainName?: unknown }).DomainName, prefix),
+    it('recipes/* targets the recipe-images bucket origin, whose DomainName is the bucket regional domain', () => {
+      const recipeImagesOrigin = findOriginForBucket(harness.imagesTemplate, 'RecipeImagesBucket')
+      const recipesBehavior = findCacheBehavior(harness.imagesTemplate, 'recipes/*')
+      expect(recipesBehavior.TargetOriginId).toBe(recipeImagesOrigin.Id)
+      expect(JSON.stringify(recipeImagesOrigin.DomainName)).toMatch(
+        /RegionalDomainName|s3\.eu-west-2\.amazonaws\.com/,
       )
-      expect(referencesBucket('RecipeImagesBucket')).toBe(true)
-      expect(referencesBucket('TestSiteBucket')).toBe(true)
     })
 
-    it('site-bucket origin DomainName resolves to the site bucket regional domain', () => {
+    it('has two origins: the recipe-images bucket and the site bucket regional domain', () => {
       const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const origins = distribution.Properties.DistributionConfig.Origins ?? []
-      const siteOrigin = origins.find(
-        (o) => referencesLogicalId((o as { DomainName?: unknown }).DomainName, 'TestSiteBucket'),
-      ) as { DomainName?: unknown } | undefined
-      expect(siteOrigin).toBeDefined()
-      expect(JSON.stringify(siteOrigin?.DomainName)).toMatch(/s3\.eu-west-2\.amazonaws\.com/)
+      expect(distribution.Properties.DistributionConfig.Origins).toHaveLength(2)
+      findOriginForBucket(harness.imagesTemplate, 'RecipeImagesBucket')
+      const siteOrigin = findOriginForBucket(harness.imagesTemplate, 'TestSiteBucket')
+      expect(JSON.stringify(siteOrigin.DomainName)).toMatch(/s3\.eu-west-2\.amazonaws\.com/)
     })
 
     it('site-bucket and recipe-images origins reference distinct OAC resources', () => {
-      const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const origins = distribution.Properties.DistributionConfig.Origins ?? []
-      const oacLogicalIdFor = (bucketPrefix: string): string | undefined => {
-        const origin = origins.find(
-          (o) => referencesLogicalId((o as { DomainName?: unknown }).DomainName, bucketPrefix),
-        ) as { OriginAccessControlId?: { 'Fn::GetAtt'?: [string, string] } } | undefined
-        return origin?.OriginAccessControlId?.['Fn::GetAtt']?.[0]
-      }
+      const oacLogicalIdFor = (bucketPrefix: string) =>
+        findOriginForBucket(harness.imagesTemplate, bucketPrefix).OriginAccessControlId?.['Fn::GetAtt']?.[0]
       const recipeOacId = oacLogicalIdFor('RecipeImagesBucket')
       const siteOacId = oacLogicalIdFor('TestSiteBucket')
       expect(recipeOacId).toBeDefined()
       expect(siteOacId).toBeDefined()
       expect(siteOacId).not.toBe(recipeOacId)
-      const oacs = harness.imagesTemplate.findResources('AWS::CloudFront::OriginAccessControl')
-      expect(Object.keys(oacs)).toEqual(expect.arrayContaining([recipeOacId, siteOacId]))
-    })
-
-    it('blog/* behaviour has AllowedMethods: [GET, HEAD], Compress: true and ViewerProtocolPolicy: redirect-to-https', () => {
-      harness.imagesTemplate.hasResourceProperties('AWS::CloudFront::Distribution', {
-        DistributionConfig: Match.objectLike({
-          CacheBehaviors: Match.arrayWith([
-            Match.objectLike({
-              PathPattern: 'blog/*',
-              AllowedMethods: ['GET', 'HEAD'],
-              Compress: true,
-              ViewerProtocolPolicy: 'redirect-to-https',
-            }),
-          ]),
-        }),
-      })
-    })
-
-    it('blog/* behaviour CachePolicyId references the shared image cache policy', () => {
-      const cachePolicyLogicalId = findImageCachePolicyLogicalId(harness.imagesTemplate)
-      const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const blogBehavior = (distribution.Properties.DistributionConfig.CacheBehaviors ?? [])
-        .find((b) => (b as { PathPattern?: string }).PathPattern === 'blog/*') as
-        | { CachePolicyId?: { Ref?: string } | string }
-        | undefined
-      expect(blogBehavior).toBeDefined()
-      const ref = (blogBehavior?.CachePolicyId as { Ref?: string } | undefined)?.Ref
-      expect(ref).toBe(cachePolicyLogicalId)
-    })
-
-    it('blog/* behaviour ResponseHeadersPolicyId references the shared security headers policy', () => {
-      const [headersPolicyLogicalId] = findResourceEntryByLogicalIdPrefix(
-        harness.imagesTemplate,
-        'AWS::CloudFront::ResponseHeadersPolicy',
-        'SecurityHeaders',
-      )
-      const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const blogBehavior = (distribution.Properties.DistributionConfig.CacheBehaviors ?? [])
-        .find((b) => (b as { PathPattern?: string }).PathPattern === 'blog/*') as
-        | { ResponseHeadersPolicyId?: { Ref?: string } | string }
-        | undefined
-      expect(blogBehavior).toBeDefined()
-      const ref = (blogBehavior?.ResponseHeadersPolicyId as { Ref?: string } | undefined)?.Ref
-      expect(ref).toBe(headersPolicyLogicalId)
     })
 
     it('blog/* behaviour targets the site-bucket origin, not the recipe-images origin', () => {
-      const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const origins = distribution.Properties.DistributionConfig.Origins ?? []
-      const originIdFor = (bucketPrefix: string): string | undefined => (origins.find(
-        (o) => referencesLogicalId((o as { DomainName?: unknown }).DomainName, bucketPrefix),
-      ) as { Id?: string } | undefined)?.Id
-      const siteOriginId = originIdFor('TestSiteBucket')
-      const recipeImagesOriginId = originIdFor('RecipeImagesBucket')
-      const blogBehavior = (distribution.Properties.DistributionConfig.CacheBehaviors ?? [])
-        .find((b) => (b as { PathPattern?: string }).PathPattern === 'blog/*') as
-        | { TargetOriginId?: string }
-        | undefined
-      expect(blogBehavior).toBeDefined()
-      expect(siteOriginId).toBeDefined()
-      expect(blogBehavior?.TargetOriginId).toBe(siteOriginId)
-      expect(blogBehavior?.TargetOriginId).not.toBe(recipeImagesOriginId)
+      const siteOriginId = findOriginForBucket(harness.imagesTemplate, 'TestSiteBucket').Id
+      const recipeImagesOriginId = findOriginForBucket(harness.imagesTemplate, 'RecipeImagesBucket').Id
+      const blogBehavior = findCacheBehavior(harness.imagesTemplate, 'blog/*')
+      expect(blogBehavior.TargetOriginId).toBe(siteOriginId)
+      expect(blogBehavior.TargetOriginId).not.toBe(recipeImagesOriginId)
     })
 
-    it('creates an AWS::CloudFront::OriginAccessControl with sigv4 + always', () => {
-      harness.imagesTemplate.hasResourceProperties('AWS::CloudFront::OriginAccessControl', {
-        OriginAccessControlConfig: Match.objectLike({
-          SigningProtocol: 'sigv4',
-          SigningBehavior: 'always',
-        }),
-      })
-    })
-
-    it('creates exactly two OriginAccessControls, the site-bucket one with sigv4 + always', () => {
+    it('creates exactly two OriginAccessControls, both sigv4 + always', () => {
       harness.imagesTemplate.resourceCountIs('AWS::CloudFront::OriginAccessControl', 2)
-      const [, siteOac] = findResourceEntryByLogicalIdPrefix(
-        harness.imagesTemplate,
+      harness.imagesTemplate.resourcePropertiesCountIs(
         'AWS::CloudFront::OriginAccessControl',
-        'SiteImagesOAC',
-      )
-      expect(siteOac.Properties.OriginAccessControlConfig).toEqual(
-        expect.objectContaining({ SigningProtocol: 'sigv4', SigningBehavior: 'always' }),
+        {
+          OriginAccessControlConfig: Match.objectLike({
+            SigningProtocol: 'sigv4',
+            SigningBehavior: 'always',
+          }),
+        },
+        2,
       )
     })
   })
