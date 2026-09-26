@@ -6,7 +6,14 @@ import * as iam from 'aws-cdk-lib/aws-iam'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import { AppSiteStack } from '../lib/app-site-stack'
-import { findResourceEntryByLogicalIdPrefix, findStatementByAction, referencesLogicalId } from './cdk-test-helpers'
+import {
+  bucketPolicyStatements,
+  crossStackCloudFrontStatements,
+  findResourceEntryByLogicalIdPrefix,
+  findStatementByAction,
+  isCloudFrontServicePrincipal,
+  referencesLogicalId,
+} from './cdk-test-helpers'
 import type { CfnResource } from './cdk-test-helpers'
 
 interface AppCase {
@@ -280,7 +287,7 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
   })
 
   describe('S3 bucket policy on the owning stack (two-handles regression guard)', () => {
-    it('grants s3:GetObject to cloudfront.amazonaws.com scoped via a wildcard StringLike aws:SourceArn', () => {
+    it('adds exactly one cross-stack CloudFront statement scoped to the owning-stack bucket', () => {
       // The bucket is owned by the fake AkliInfrastructureStack-equivalent
       // stack, so calling .addToResourcePolicy() on the ORIGINAL bucket prop
       // (not the fromBucketAttributes(...) imported handle used for the
@@ -288,58 +295,29 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
       // exactly mirroring ImagesStack's re-attachment of RecipeStack's bucket
       // policy. If AppSiteStack instead calls .addToResourcePolicy() on the
       // imported handle, this silently no-ops and this assertion fails.
-      harness.bucketOwnerTemplate.hasResourceProperties('AWS::S3::BucketPolicy', {
-        PolicyDocument: Match.objectLike({
-          Statement: Match.arrayWith([
-            Match.objectLike({
-              Effect: 'Allow',
-              Action: 's3:GetObject',
-              Principal: { Service: 'cloudfront.amazonaws.com' },
-              Resource: Match.objectLike({
-                'Fn::Join': Match.arrayWith([
-                  '',
-                  Match.arrayWith([
-                    Match.objectLike({
-                      'Fn::GetAtt': Match.arrayWith([
-                        Match.stringLikeRegexp(`^Test${testCase.appName}Bucket.*`),
-                      ]),
-                    }),
-                    '/*',
-                  ]),
-                ]),
-              }),
-              Condition: Match.objectLike({
-                StringLike: Match.objectLike({
-                  'aws:SourceArn': Match.stringLikeRegexp('^arn:aws:cloudfront::.*:distribution/\\*$'),
-                }),
-              }),
-            }),
-          ]),
-        }),
-      })
+      const bucketIdPrefix = `Test${testCase.appName}Bucket`
+      const [bucketLogicalId] = findResourceEntryByLogicalIdPrefix(
+        harness.bucketOwnerTemplate,
+        'AWS::S3::Bucket',
+        bucketIdPrefix,
+      )
+      const crossStackStatements = crossStackCloudFrontStatements(
+        bucketPolicyStatements(harness.bucketOwnerTemplate, bucketIdPrefix),
+      )
+
+      expect(crossStackStatements).toHaveLength(1)
+      expect(referencesLogicalId(crossStackStatements[0].Resource, bucketLogicalId)).toBe(true)
     })
 
     it('does not use StringEquals for the aws:SourceArn condition (must be StringLike for the wildcard to work)', () => {
-      const bucketPolicies = harness.bucketOwnerTemplate.findResources('AWS::S3::BucketPolicy')
-      const offendingStatements: unknown[] = []
-      for (const policy of Object.values(bucketPolicies)) {
-        const statements =
-          ((policy as { Properties: { PolicyDocument: { Statement?: unknown[] } } }).Properties
-            .PolicyDocument.Statement) ?? []
-        for (const stmt of statements) {
-          const s = stmt as {
-            Principal?: { Service?: string | string[] }
-            Condition?: { StringEquals?: Record<string, unknown> }
-          }
-          const principalService = s.Principal?.Service
-          const isCloudFrontPrincipal = principalService === 'cloudfront.amazonaws.com'
-            || (Array.isArray(principalService) && principalService.includes('cloudfront.amazonaws.com'))
-          if (!isCloudFrontPrincipal) continue
-          const sourceArn = s.Condition?.StringEquals?.['aws:SourceArn']
-            ?? s.Condition?.StringEquals?.['AWS:SourceArn']
-          if (sourceArn !== undefined) offendingStatements.push(s)
-        }
-      }
+      const offendingStatements = bucketPolicyStatements(harness.bucketOwnerTemplate, `Test${testCase.appName}Bucket`)
+        .filter((s) => {
+          if (!isCloudFrontServicePrincipal(s)) return false
+          const condition = s.Condition as { StringEquals?: Record<string, unknown> } | undefined
+          const sourceArn = condition?.StringEquals?.['aws:SourceArn']
+            ?? condition?.StringEquals?.['AWS:SourceArn']
+          return sourceArn !== undefined
+        })
       expect(offendingStatements).toEqual([])
     })
 

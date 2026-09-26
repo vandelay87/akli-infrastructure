@@ -31,3 +31,58 @@ export function findStatementByAction(statements: Record<string, unknown>[], act
     return actions.includes(action)
   })
 }
+
+export type CfnPolicyStatement = { Sid?: string; Effect: string; Principal?: unknown; Action?: unknown; Resource?: unknown; Condition?: unknown }
+
+export type CfnOrigin = {
+  Id: string
+  DomainName?: Record<string, unknown>
+  S3OriginConfig?: unknown
+  CustomOriginConfig?: unknown
+  OriginAccessControlId?: { 'Fn::GetAtt'?: [string, string] }
+}
+
+export type CfnCacheBehavior = {
+  PathPattern: string
+  TargetOriginId: string
+  AllowedMethods?: string[]
+  Compress?: boolean
+  ViewerProtocolPolicy?: string
+  CachePolicyId?: { Ref?: string }
+  ResponseHeadersPolicyId?: { Ref?: string }
+}
+
+export type CfnDistributionConfig = {
+  Aliases?: string[]
+  Origins?: CfnOrigin[]
+  CacheBehaviors?: CfnCacheBehavior[]
+  DefaultCacheBehavior?: Record<string, unknown>
+  ViewerCertificate?: Record<string, unknown>
+  [key: string]: unknown
+}
+
+/** The template's sole AWS::CloudFront::Distribution. */
+export function cfnDistribution(template: Template): CfnResource {
+  return findResourceEntryByLogicalIdPrefix(template, 'AWS::CloudFront::Distribution', '')[1]
+}
+
+export function distributionConfig(dist: CfnResource): CfnDistributionConfig {
+  return dist.Properties.DistributionConfig as CfnDistributionConfig
+}
+
+export function bucketPolicyStatements(template: Template, bucketIdPrefix: string): CfnPolicyStatement[] {
+  const [, policy] = findResourceEntryByLogicalIdPrefix(template, 'AWS::S3::BucketPolicy', `${bucketIdPrefix}Policy`)
+  return (policy.Properties.PolicyDocument as { Statement: CfnPolicyStatement[] }).Statement
+}
+
+export function isCloudFrontServicePrincipal(statement: { Principal?: unknown }): boolean {
+  const service = (statement.Principal as { Service?: unknown } | undefined)?.Service
+  return Array.isArray(service) ? service.includes('cloudfront.amazonaws.com') : service === 'cloudfront.amazonaws.com'
+}
+
+/** Statements added by `grantCloudFrontReadCrossStack`: CloudFront principal with a `StringLike` condition. */
+export function crossStackCloudFrontStatements(statements: CfnPolicyStatement[]): CfnPolicyStatement[] {
+  return statements.filter(
+    (s) => isCloudFrontServicePrincipal(s) && (s.Condition as { StringLike?: unknown } | undefined)?.StringLike !== undefined,
+  )
+}

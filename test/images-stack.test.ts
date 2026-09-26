@@ -5,7 +5,14 @@ import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import { ImagesStack } from '../lib/images-stack'
 import { RecipeStack } from '../lib/recipe-stack'
-import { findResourceEntryByLogicalIdPrefix, referencesLogicalId } from './cdk-test-helpers'
+import {
+  bucketPolicyStatements,
+  crossStackCloudFrontStatements,
+  findResourceEntryByLogicalIdPrefix,
+  isCloudFrontServicePrincipal,
+  referencesLogicalId,
+} from './cdk-test-helpers'
+import type { CfnCacheBehavior, CfnDistributionConfig, CfnOrigin, CfnResource } from './cdk-test-helpers'
 
 interface Harness {
   imagesTemplate: Template
@@ -74,17 +81,8 @@ function createHarness(): Harness {
   }
 }
 
-type CfnResource = { Type: string; Properties: Record<string, unknown> }
 type CfnDistributionResource = CfnResource & {
-  Properties: {
-    DistributionConfig: {
-      Aliases?: string[]
-      Origins?: Array<Record<string, unknown>>
-      CacheBehaviors?: Array<Record<string, unknown>>
-      DefaultCacheBehavior?: Record<string, unknown>
-      ViewerCertificate?: Record<string, unknown>
-    }
-  }
+  Properties: { DistributionConfig: CfnDistributionConfig }
 }
 
 function findDistribution(template: Template, aliasMatcher: string): CfnDistributionResource {
@@ -99,25 +97,9 @@ function findDistribution(template: Template, aliasMatcher: string): CfnDistribu
   throw new Error(`No CloudFront::Distribution with alias ${aliasMatcher} in template`)
 }
 
-type CfnCacheBehavior = {
-  PathPattern: string
-  TargetOriginId: string
-  AllowedMethods: string[]
-  Compress: boolean
-  ViewerProtocolPolicy: string
-  CachePolicyId: { Ref?: string }
-  ResponseHeadersPolicyId: { Ref?: string }
-}
-
-type CfnOrigin = {
-  Id: string
-  DomainName: unknown
-  OriginAccessControlId?: { 'Fn::GetAtt'?: [string, string] }
-}
-
 function findCacheBehavior(template: Template, pathPattern: string): CfnCacheBehavior {
   const distribution = findDistribution(template, 'images.akli.dev')
-  const behaviors = (distribution.Properties.DistributionConfig.CacheBehaviors ?? []) as CfnCacheBehavior[]
+  const behaviors = distribution.Properties.DistributionConfig.CacheBehaviors ?? []
   const behavior = behaviors.find((b) => b.PathPattern === pathPattern)
   if (!behavior) throw new Error(`No CacheBehavior with PathPattern ${pathPattern} in template`)
   return behavior
@@ -125,7 +107,7 @@ function findCacheBehavior(template: Template, pathPattern: string): CfnCacheBeh
 
 function findOriginForBucket(template: Template, bucketLogicalIdPrefix: string): CfnOrigin {
   const distribution = findDistribution(template, 'images.akli.dev')
-  const origins = (distribution.Properties.DistributionConfig.Origins ?? []) as CfnOrigin[]
+  const origins = distribution.Properties.DistributionConfig.Origins ?? []
   const origin = origins.find((o) => referencesLogicalId(o.DomainName, bucketLogicalIdPrefix))
   if (!origin) throw new Error(`No origin referencing bucket ${bucketLogicalIdPrefix} in template`)
   return origin
@@ -228,7 +210,7 @@ describe('ImagesStack', () => {
 
       it('CachePolicyId references the shared image cache policy', () => {
         const behavior = findCacheBehavior(harness.imagesTemplate, pathPattern)
-        expect(behavior.CachePolicyId.Ref).toBe(findImageCachePolicyLogicalId(harness.imagesTemplate))
+        expect(behavior.CachePolicyId?.Ref).toBe(findImageCachePolicyLogicalId(harness.imagesTemplate))
       })
 
       it('ResponseHeadersPolicyId references the shared security headers policy', () => {
@@ -238,13 +220,13 @@ describe('ImagesStack', () => {
           'SecurityHeaders',
         )
         const behavior = findCacheBehavior(harness.imagesTemplate, pathPattern)
-        expect(behavior.ResponseHeadersPolicyId.Ref).toBe(headersPolicyLogicalId)
+        expect(behavior.ResponseHeadersPolicyId?.Ref).toBe(headersPolicyLogicalId)
       })
     })
 
     it('recipes/* origin uses OAC (OriginAccessControlId is non-null)', () => {
       const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const origins = (distribution.Properties.DistributionConfig.Origins ?? []) as CfnOrigin[]
+      const origins = distribution.Properties.DistributionConfig.Origins ?? []
       const recipesBehavior = findCacheBehavior(harness.imagesTemplate, 'recipes/*')
       const recipesOrigin = origins.find((o) => o.Id === recipesBehavior.TargetOriginId)
       expect(recipesOrigin).toBeDefined()
@@ -345,126 +327,59 @@ describe('ImagesStack', () => {
   })
 
   describe('S3 bucket policy on RecipeImagesBucket (RecipeStack template)', () => {
-    it('grants s3:GetObject to cloudfront.amazonaws.com scoped via aws:SourceArn', () => {
+    it('adds exactly one cross-stack CloudFront statement scoped to the recipe-images bucket', () => {
       // The recipe-images bucket is owned by RecipeStack, so the bucket policy
       // additions made by ImagesStack land on RecipeStack's synthesised template.
-      harness.recipeTemplate.hasResourceProperties('AWS::S3::BucketPolicy', {
-        PolicyDocument: Match.objectLike({
-          Statement: Match.arrayWith([
-            Match.objectLike({
-              Effect: 'Allow',
-              Action: 's3:GetObject',
-              Principal: { Service: 'cloudfront.amazonaws.com' },
-              Resource: Match.objectLike({
-                'Fn::Join': Match.arrayWith([
-                  '',
-                  Match.arrayWith([
-                    Match.objectLike({
-                      'Fn::GetAtt': Match.arrayWith([
-                        Match.stringLikeRegexp('^RecipeImagesBucket.*'),
-                      ]),
-                    }),
-                    '/*',
-                  ]),
-                ]),
-              }),
-              Condition: Match.objectLike({
-                StringLike: Match.objectLike({
-                  'aws:SourceArn': Match.anyValue(),
-                }),
-              }),
-            }),
-          ]),
-        }),
-      })
+      const [bucketLogicalId] = findResourceEntryByLogicalIdPrefix(
+        harness.recipeTemplate,
+        'AWS::S3::Bucket',
+        'RecipeImagesBucket',
+      )
+      const crossStackStatements = crossStackCloudFrontStatements(
+        bucketPolicyStatements(harness.recipeTemplate, 'RecipeImagesBucket'),
+      )
+
+      expect(crossStackStatements).toHaveLength(1)
+      expect(referencesLogicalId(crossStackStatements[0].Resource, bucketLogicalId)).toBe(true)
     })
 
     it('no Allow statement grants Principal: "*"', () => {
       // Restrict to Effect: Allow — the bucket has a Deny statement for
       // non-TLS access from Principal { AWS: '*' } as part of enforceSSL,
       // which is a security control we must preserve, not weaken.
-      const wildcardAllowStatements: unknown[] = []
-      const bucketPolicies = harness.recipeTemplate.findResources('AWS::S3::BucketPolicy')
-      for (const policy of Object.values(bucketPolicies)) {
-        const statements =
-          ((policy as { Properties: { PolicyDocument: { Statement?: unknown[] } } }).Properties
-            .PolicyDocument.Statement) ?? []
-        for (const stmt of statements) {
-          const s = stmt as { Effect?: string; Principal?: unknown }
-          if (s.Effect !== 'Allow') continue
-          if (s.Principal === '*') {
-            wildcardAllowStatements.push(s)
-            continue
-          }
-          if (s.Principal && typeof s.Principal === 'object') {
-            const aws = (s.Principal as { AWS?: unknown }).AWS
-            if (aws === '*') wildcardAllowStatements.push(s)
-          }
-        }
-      }
+      const wildcardAllowStatements = bucketPolicyStatements(harness.recipeTemplate, 'RecipeImagesBucket').filter((s) => {
+        if (s.Effect !== 'Allow') return false
+        if (s.Principal === '*') return true
+        return (s.Principal as { AWS?: unknown } | undefined)?.AWS === '*'
+      })
       expect(wildcardAllowStatements).toEqual([])
     })
 
     it('no statement grants s3:ListBucket to the CloudFront service principal', () => {
-      const offendingStatements: unknown[] = []
-      const bucketPolicies = harness.recipeTemplate.findResources('AWS::S3::BucketPolicy')
-      for (const policy of Object.values(bucketPolicies)) {
-        const statements =
-          ((policy as { Properties: { PolicyDocument: { Statement?: unknown[] } } }).Properties
-            .PolicyDocument.Statement) ?? []
-        for (const stmt of statements) {
-          const s = stmt as {
-            Action?: string | string[]
-            Principal?: { Service?: string | string[] }
-          }
-          const principalService = s.Principal?.Service
-          const isCloudFrontPrincipal = principalService === 'cloudfront.amazonaws.com'
-            || (Array.isArray(principalService)
-              && principalService.includes('cloudfront.amazonaws.com'))
-          if (!isCloudFrontPrincipal) continue
-          const action = s.Action
-          const grantsList = Array.isArray(action)
-            ? action.includes('s3:ListBucket')
-            : action === 's3:ListBucket'
-          if (grantsList) offendingStatements.push(s)
-        }
-      }
+      const offendingStatements = bucketPolicyStatements(harness.recipeTemplate, 'RecipeImagesBucket').filter((s) => {
+        if (!isCloudFrontServicePrincipal(s)) return false
+        const actions = Array.isArray(s.Action) ? s.Action : [s.Action]
+        return actions.includes('s3:ListBucket')
+      })
       expect(offendingStatements).toEqual([])
     })
 
     it('every statement granting the CloudFront principal includes an aws:SourceArn condition', () => {
-      const cloudfrontStatementsWithoutSourceArn: unknown[] = []
-      let cloudfrontStatementsSeen = 0
-      const bucketPolicies = harness.recipeTemplate.findResources('AWS::S3::BucketPolicy')
-      for (const policy of Object.values(bucketPolicies)) {
-        const statements =
-          ((policy as { Properties: { PolicyDocument: { Statement?: unknown[] } } }).Properties
-            .PolicyDocument.Statement) ?? []
-        for (const stmt of statements) {
-          const s = stmt as {
-            Principal?: { Service?: string | string[] }
-            Condition?: {
-              StringEquals?: Record<string, unknown>
-              StringLike?: Record<string, unknown>
-            }
-          }
-          const principalService = s.Principal?.Service
-          const isCloudFrontPrincipal = principalService === 'cloudfront.amazonaws.com'
-            || (Array.isArray(principalService)
-              && principalService.includes('cloudfront.amazonaws.com'))
-          if (!isCloudFrontPrincipal) continue
-          cloudfrontStatementsSeen += 1
-          const sourceArn = s.Condition?.StringEquals?.['aws:SourceArn']
-            ?? s.Condition?.StringEquals?.['AWS:SourceArn']
-            ?? s.Condition?.StringLike?.['aws:SourceArn']
-            ?? s.Condition?.StringLike?.['AWS:SourceArn']
-          if (sourceArn === undefined || sourceArn === null) {
-            cloudfrontStatementsWithoutSourceArn.push(s)
-          }
-        }
-      }
+      const cloudfrontStatements = bucketPolicyStatements(harness.recipeTemplate, 'RecipeImagesBucket')
+        .filter(isCloudFrontServicePrincipal)
+      const cloudfrontStatementsWithoutSourceArn = cloudfrontStatements.filter((s) => {
+        const condition = s.Condition as {
+          StringEquals?: Record<string, unknown>
+          StringLike?: Record<string, unknown>
+        } | undefined
+        const sourceArn = condition?.StringEquals?.['aws:SourceArn']
+          ?? condition?.StringEquals?.['AWS:SourceArn']
+          ?? condition?.StringLike?.['aws:SourceArn']
+          ?? condition?.StringLike?.['AWS:SourceArn']
+        return sourceArn === undefined || sourceArn === null
+      })
       expect(cloudfrontStatementsWithoutSourceArn).toEqual([])
-      expect(cloudfrontStatementsSeen).toBeGreaterThan(0)
+      expect(cloudfrontStatements.length).toBeGreaterThan(0)
     })
 
     it('the bucket retains BlockPublicAcls/IgnorePublicAcls/BlockPublicPolicy/RestrictPublicBuckets: true', () => {
