@@ -223,6 +223,9 @@ describe('AkliInfrastructureStack', () => {
 
       expect(crossStackStatements).toHaveLength(1)
       expect(referencesLogicalId(crossStackStatements[0].Resource, siteBucketLogicalId)).toBe(true)
+      expect(crossStackStatements[0].Condition).toEqual({
+        StringLike: { 'aws:SourceArn': 'arn:aws:cloudfront::123456789012:distribution/*' },
+      })
     })
 
     it('no Allow statement in the site bucket policy grants a wildcard principal', () => {
