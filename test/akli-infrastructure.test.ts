@@ -10,9 +10,11 @@ import {
   distributionConfig,
   findResourceEntryByLogicalIdPrefix,
   findStatementByAction,
+  isWildcardAllow,
   referencesLogicalId,
+  statementActions,
 } from './cdk-test-helpers'
-import type { CfnOrigin, CfnResource } from './cdk-test-helpers'
+import type { CfnOrigin, CfnPolicyStatement, CfnResource } from './cdk-test-helpers'
 
 function findResourceByLogicalIdPrefix(template: Template, type: string, idPrefix: string): CfnResource {
   return findResourceEntryByLogicalIdPrefix(template, type, idPrefix)[1]
@@ -209,9 +211,11 @@ describe('AkliInfrastructureStack', () => {
 
   describe('Site bucket exposure and cross-stack CloudFront read access', () => {
     let siteBucketLogicalId: string
+    let siteBucketStatements: CfnPolicyStatement[]
 
     beforeAll(() => {
       [siteBucketLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::S3::Bucket', 'SiteBucket')
+      siteBucketStatements = bucketPolicyStatements(template, 'SiteBucket')
     })
 
     it('exposes the site bucket as a public siteBucket property backed by the SiteBucket resource', () => {
@@ -219,7 +223,7 @@ describe('AkliInfrastructureStack', () => {
     })
 
     it('adds exactly one cross-stack CloudFront statement scoped to the site bucket', () => {
-      const crossStackStatements = crossStackCloudFrontStatements(bucketPolicyStatements(template, 'SiteBucket'))
+      const crossStackStatements = crossStackCloudFrontStatements(siteBucketStatements)
 
       expect(crossStackStatements).toHaveLength(1)
       expect(referencesLogicalId(crossStackStatements[0].Resource, siteBucketLogicalId)).toBe(true)
@@ -229,18 +233,14 @@ describe('AkliInfrastructureStack', () => {
     })
 
     it('no Allow statement in the site bucket policy grants a wildcard principal', () => {
-      const wildcardAllows = bucketPolicyStatements(template, 'SiteBucket').filter((s) => {
-        if (s.Effect !== 'Allow') return false
-        if (s.Principal === '*') return true
-        return (s.Principal as { AWS?: unknown } | undefined)?.AWS === '*'
-      })
+      const wildcardAllows = siteBucketStatements.filter(isWildcardAllow)
 
       expect(wildcardAllows).toEqual([])
     })
 
     it('keeps the original AllowCloudFrontServicePrincipal statement scoped to the site distribution', () => {
       const [distributionLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::CloudFront::Distribution', '')
-      const original = bucketPolicyStatements(template, 'SiteBucket').filter((s) => s.Sid === 'AllowCloudFrontServicePrincipal')
+      const original = siteBucketStatements.filter((s) => s.Sid === 'AllowCloudFrontServicePrincipal')
 
       expect(original).toEqual([{
         Sid: 'AllowCloudFrontServicePrincipal',
@@ -462,7 +462,7 @@ describe('AkliInfrastructureStack', () => {
     it('uses the Function URL origin as the primary in the OriginGroup failover', () => {
       const config = distributionConfig(cfnDistribution(template))
       const origins = config.Origins ?? []
-      const originGroups = config.OriginGroups as { Items: [{ Members: { Items: [{ OriginId: string }, { OriginId: string }] } }] }
+      const originGroups = config.OriginGroups ?? { Items: [] }
 
       const functionUrlOrigin = origins.find(isFunctionUrlOrigin)
       expect(functionUrlOrigin).toBeDefined()
@@ -576,10 +576,7 @@ describe('AkliInfrastructureStack', () => {
         const [, role] = findResourceEntryByLogicalIdPrefix(template, 'AWS::IAM::Role', roleLogicalIdPrefix)
         const statements = trustPolicyStatements(role)
 
-        const webIdentityStatement = statements.find((s) => {
-          const actions = Array.isArray(s.Action) ? s.Action : [s.Action]
-          return actions.includes('sts:AssumeRoleWithWebIdentity')
-        })
+        const webIdentityStatement = statements.find((s) => statementActions(s).includes('sts:AssumeRoleWithWebIdentity'))
 
         expect(webIdentityStatement).toBeDefined()
         expect(webIdentityStatement?.Effect).toBe('Allow')
@@ -596,16 +593,13 @@ describe('AkliInfrastructureStack', () => {
         const [bucketLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::S3::Bucket', bucketLogicalIdPrefix)
         const statements = policyStatementsForRole(template, roleLogicalId)
 
-        const s3Statement = statements.find((s) => {
-          const actions = (Array.isArray(s.Action) ? s.Action : [s.Action]) as string[]
-          return actions.some((a) => a.startsWith('s3:'))
-        })
+        const s3Statement = statements.find((s) => statementActions(s).some((a) => a.startsWith('s3:')))
 
         expect(s3Statement).toBeDefined()
         expect(s3Statement?.Effect).toBe('Allow')
         expect(referencesLogicalId(s3Statement?.Resource, bucketLogicalId)).toBe(true)
 
-        const actions = (Array.isArray(s3Statement?.Action) ? s3Statement?.Action : [s3Statement?.Action]) as string[]
+        const actions = statementActions(s3Statement ?? {})
         expect(actions).toEqual(
           expect.arrayContaining(['s3:GetObject', 's3:PutObject', 's3:DeleteObject', 's3:ListBucket']),
         )

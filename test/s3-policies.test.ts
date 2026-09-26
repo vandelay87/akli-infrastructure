@@ -4,7 +4,8 @@ import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import { grantCloudFrontRead, grantCloudFrontReadCrossStack } from '../lib/s3-policies'
-import { bucketPolicyStatements, findResourceEntryByLogicalIdPrefix } from './cdk-test-helpers'
+import { bucketPolicyStatements, findResourceEntryByLogicalIdPrefix, statementActions } from './cdk-test-helpers'
+import type { CfnPolicyStatement } from './cdk-test-helpers'
 
 const ACCOUNT = '123456789012'
 
@@ -13,19 +14,20 @@ function createStack(): cdk.Stack {
 }
 
 describe('grantCloudFrontReadCrossStack', () => {
-  let template: Template
+  let statements: CfnPolicyStatement[]
   let bucketLogicalId: string
 
   beforeAll(() => {
     const stack = createStack()
     const bucket = new s3.Bucket(stack, 'Bucket')
     grantCloudFrontReadCrossStack(bucket, ACCOUNT)
-    template = Template.fromStack(stack)
+    const template = Template.fromStack(stack)
     ;[bucketLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::S3::Bucket', 'Bucket')
+    statements = bucketPolicyStatements(template, 'Bucket')
   })
 
   it('adds a single GetObject statement on the bucket objects, scoped to any CloudFront distribution in the account', () => {
-    expect(bucketPolicyStatements(template, 'Bucket')).toEqual([{
+    expect(statements).toEqual([{
       Effect: 'Allow',
       Principal: { Service: 'cloudfront.amazonaws.com' },
       Action: 's3:GetObject',
@@ -39,8 +41,7 @@ describe('grantCloudFrontReadCrossStack', () => {
   })
 
   it('does not grant s3:ListBucket', () => {
-    const actions = bucketPolicyStatements(template, 'Bucket').flatMap((s) => (Array.isArray(s.Action) ? s.Action : [s.Action]))
-    expect(actions).not.toContain('s3:ListBucket')
+    expect(statements.flatMap(statementActions)).not.toContain('s3:ListBucket')
   })
 })
 
