@@ -6,7 +6,17 @@ import * as iam from 'aws-cdk-lib/aws-iam'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import { AppSiteStack } from '../lib/app-site-stack'
-import { findResourceEntryByLogicalIdPrefix, findStatementByAction, referencesLogicalId } from './cdk-test-helpers'
+import {
+  bucketPolicyStatements,
+  cfnDistribution,
+  crossStackCloudFrontStatements,
+  distributionConfig,
+  findResourceEntryByLogicalIdPrefix,
+  findStatementByAction,
+  isCloudFrontServicePrincipal,
+  referencesLogicalId,
+  sourceArnCondition,
+} from './cdk-test-helpers'
 import type { CfnResource } from './cdk-test-helpers'
 
 interface AppCase {
@@ -98,33 +108,11 @@ function createHarness(testCase: AppCase): Harness {
   }
 }
 
-type CfnDistributionResource = CfnResource & {
-  Properties: {
-    DistributionConfig: {
-      Aliases?: string[]
-      DefaultRootObject?: string
-      Origins?: Array<Record<string, unknown>>
-      DefaultCacheBehavior?: Record<string, unknown>
-      ViewerCertificate?: Record<string, unknown>
-      CustomErrorResponses?: Array<Record<string, unknown>>
-    }
-  }
-}
 type CfnPolicyResource = CfnResource & {
   Properties: {
     PolicyDocument: { Statement: Record<string, unknown>[] }
     Roles?: unknown[]
   }
-}
-
-// Per the PRD's "Note on testing precision": AppSiteStack instances are
-// separate Stack instances, each producing its own template with exactly
-// one CloudFront::Distribution — so grabbing the sole one is unambiguous.
-function getSoleDistribution(template: Template): CfnDistributionResource {
-  const matches = template.findResources('AWS::CloudFront::Distribution')
-  const entries = Object.values(matches)
-  expect(entries).toHaveLength(1)
-  return entries[0] as CfnDistributionResource
 }
 
 describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
@@ -136,18 +124,18 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
 
   describe('CloudFront distribution', () => {
     it(`creates exactly one AWS::CloudFront::Distribution with Aliases: [${testCase.domainName}]`, () => {
-      const distribution = getSoleDistribution(harness.siteTemplate)
-      expect(distribution.Properties.DistributionConfig.Aliases).toEqual([testCase.domainName])
+      const config = distributionConfig(cfnDistribution(harness.siteTemplate))
+      expect(config.Aliases).toEqual([testCase.domainName])
     })
 
     it('sets DefaultRootObject: index.html', () => {
-      const distribution = getSoleDistribution(harness.siteTemplate)
-      expect(distribution.Properties.DistributionConfig.DefaultRootObject).toBe('index.html')
+      const config = distributionConfig(cfnDistribution(harness.siteTemplate))
+      expect(config.DefaultRootObject).toBe('index.html')
     })
 
     it(`configures ViewerCertificate.AcmCertificateArn referencing its own ${testCase.appName} certificate`, () => {
-      const distribution = getSoleDistribution(harness.siteTemplate)
-      const viewerCertificate = distribution.Properties.DistributionConfig.ViewerCertificate
+      const config = distributionConfig(cfnDistribution(harness.siteTemplate))
+      const viewerCertificate = config.ViewerCertificate
       expect(viewerCertificate).toBeDefined()
       const acmArn = (viewerCertificate as { AcmCertificateArn?: unknown }).AcmCertificateArn
       // Cross-region cert refs come through SSM dynamic references — must exist and be non-null.
@@ -157,16 +145,16 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
     })
 
     it('default behaviour sets ViewerProtocolPolicy: redirect-to-https', () => {
-      const distribution = getSoleDistribution(harness.siteTemplate)
-      const defaultBehavior = distribution.Properties.DistributionConfig.DefaultCacheBehavior as {
+      const config = distributionConfig(cfnDistribution(harness.siteTemplate))
+      const defaultBehavior = config.DefaultCacheBehavior as {
         ViewerProtocolPolicy?: string
       }
       expect(defaultBehavior.ViewerProtocolPolicy).toBe('redirect-to-https')
     })
 
     it('default behaviour ResponseHeadersPolicyId references the shared security headers policy', () => {
-      const distribution = getSoleDistribution(harness.siteTemplate)
-      const defaultBehavior = distribution.Properties.DistributionConfig.DefaultCacheBehavior as {
+      const config = distributionConfig(cfnDistribution(harness.siteTemplate))
+      const defaultBehavior = config.DefaultCacheBehavior as {
         ResponseHeadersPolicyId?: { Ref?: string } | string
       }
       const ref = (defaultBehavior.ResponseHeadersPolicyId as { Ref?: string } | undefined)?.Ref
@@ -190,22 +178,20 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
     })
 
     it('default behaviour origin uses OAC (OriginAccessControlId is non-null)', () => {
-      const distribution = getSoleDistribution(harness.siteTemplate)
-      const origins = distribution.Properties.DistributionConfig.Origins ?? []
-      const defaultBehavior = distribution.Properties.DistributionConfig.DefaultCacheBehavior as {
+      const config = distributionConfig(cfnDistribution(harness.siteTemplate))
+      const origins = config.Origins ?? []
+      const defaultBehavior = config.DefaultCacheBehavior as {
         TargetOriginId?: string
       }
-      const origin = origins.find(
-        (o) => (o as { Id?: string }).Id === defaultBehavior.TargetOriginId,
-      ) as { OriginAccessControlId?: unknown } | undefined
+      const origin = origins.find((o) => o.Id === defaultBehavior.TargetOriginId)
       expect(origin).toBeDefined()
       expect(origin?.OriginAccessControlId).toBeDefined()
       expect(origin?.OriginAccessControlId).not.toBeNull()
     })
 
     it('CustomErrorResponses covers 403 -> /index.html, 200 (SPA fallback)', () => {
-      const distribution = getSoleDistribution(harness.siteTemplate)
-      const errorResponses = distribution.Properties.DistributionConfig.CustomErrorResponses ?? []
+      const config = distributionConfig(cfnDistribution(harness.siteTemplate))
+      const errorResponses = config.CustomErrorResponses ?? []
       expect(errorResponses).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -218,8 +204,8 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
     })
 
     it('CustomErrorResponses covers 404 -> /index.html, 200 (SPA fallback)', () => {
-      const distribution = getSoleDistribution(harness.siteTemplate)
-      const errorResponses = distribution.Properties.DistributionConfig.CustomErrorResponses ?? []
+      const config = distributionConfig(cfnDistribution(harness.siteTemplate))
+      const errorResponses = config.CustomErrorResponses ?? []
       expect(errorResponses).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -280,7 +266,9 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
   })
 
   describe('S3 bucket policy on the owning stack (two-handles regression guard)', () => {
-    it('grants s3:GetObject to cloudfront.amazonaws.com scoped via a wildcard StringLike aws:SourceArn', () => {
+    const bucketIdPrefix = `Test${testCase.appName}Bucket`
+
+    it('adds exactly one cross-stack CloudFront statement scoped to the owning-stack bucket', () => {
       // The bucket is owned by the fake AkliInfrastructureStack-equivalent
       // stack, so calling .addToResourcePolicy() on the ORIGINAL bucket prop
       // (not the fromBucketAttributes(...) imported handle used for the
@@ -288,58 +276,23 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
       // exactly mirroring ImagesStack's re-attachment of RecipeStack's bucket
       // policy. If AppSiteStack instead calls .addToResourcePolicy() on the
       // imported handle, this silently no-ops and this assertion fails.
-      harness.bucketOwnerTemplate.hasResourceProperties('AWS::S3::BucketPolicy', {
-        PolicyDocument: Match.objectLike({
-          Statement: Match.arrayWith([
-            Match.objectLike({
-              Effect: 'Allow',
-              Action: 's3:GetObject',
-              Principal: { Service: 'cloudfront.amazonaws.com' },
-              Resource: Match.objectLike({
-                'Fn::Join': Match.arrayWith([
-                  '',
-                  Match.arrayWith([
-                    Match.objectLike({
-                      'Fn::GetAtt': Match.arrayWith([
-                        Match.stringLikeRegexp(`^Test${testCase.appName}Bucket.*`),
-                      ]),
-                    }),
-                    '/*',
-                  ]),
-                ]),
-              }),
-              Condition: Match.objectLike({
-                StringLike: Match.objectLike({
-                  'aws:SourceArn': Match.stringLikeRegexp('^arn:aws:cloudfront::.*:distribution/\\*$'),
-                }),
-              }),
-            }),
-          ]),
-        }),
-      })
+      const [bucketLogicalId] = findResourceEntryByLogicalIdPrefix(
+        harness.bucketOwnerTemplate,
+        'AWS::S3::Bucket',
+        bucketIdPrefix,
+      )
+      const crossStackStatements = crossStackCloudFrontStatements(
+        bucketPolicyStatements(harness.bucketOwnerTemplate, bucketIdPrefix),
+      )
+
+      expect(crossStackStatements).toHaveLength(1)
+      expect(referencesLogicalId(crossStackStatements[0].Resource, bucketLogicalId)).toBe(true)
     })
 
     it('does not use StringEquals for the aws:SourceArn condition (must be StringLike for the wildcard to work)', () => {
-      const bucketPolicies = harness.bucketOwnerTemplate.findResources('AWS::S3::BucketPolicy')
-      const offendingStatements: unknown[] = []
-      for (const policy of Object.values(bucketPolicies)) {
-        const statements =
-          ((policy as { Properties: { PolicyDocument: { Statement?: unknown[] } } }).Properties
-            .PolicyDocument.Statement) ?? []
-        for (const stmt of statements) {
-          const s = stmt as {
-            Principal?: { Service?: string | string[] }
-            Condition?: { StringEquals?: Record<string, unknown> }
-          }
-          const principalService = s.Principal?.Service
-          const isCloudFrontPrincipal = principalService === 'cloudfront.amazonaws.com'
-            || (Array.isArray(principalService) && principalService.includes('cloudfront.amazonaws.com'))
-          if (!isCloudFrontPrincipal) continue
-          const sourceArn = s.Condition?.StringEquals?.['aws:SourceArn']
-            ?? s.Condition?.StringEquals?.['AWS:SourceArn']
-          if (sourceArn !== undefined) offendingStatements.push(s)
-        }
-      }
+      const offendingStatements = bucketPolicyStatements(harness.bucketOwnerTemplate, bucketIdPrefix).filter(
+        (s) => isCloudFrontServicePrincipal(s) && sourceArnCondition(s)?.operator === 'StringEquals',
+      )
       expect(offendingStatements).toEqual([])
     })
 
@@ -366,8 +319,8 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
 
       let isCrossRegionToken = false
       try {
-        const distribution = getSoleDistribution(harness.siteTemplate)
-        const acmArn = (distribution.Properties.DistributionConfig.ViewerCertificate as
+        const config = distributionConfig(cfnDistribution(harness.siteTemplate))
+        const acmArn = (config.ViewerCertificate as
           | { AcmCertificateArn?: unknown }
           | undefined)?.AcmCertificateArn
         if (acmArn !== undefined && acmArn !== null) {
