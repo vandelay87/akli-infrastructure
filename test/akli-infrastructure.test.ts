@@ -3,26 +3,21 @@ import { Match, Template } from 'aws-cdk-lib/assertions'
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import { AkliInfrastructureStack } from '../lib/akli-infrastructure-stack'
-import { findResourceEntryByLogicalIdPrefix, findStatementByAction, referencesLogicalId } from './cdk-test-helpers'
-import type { CfnResource } from './cdk-test-helpers'
-
-type CfnOrigin = { Id: string; S3OriginConfig?: unknown; OriginAccessControlId?: unknown; DomainName?: Record<string, unknown>; CustomOriginConfig?: unknown }
-type CfnCacheBehavior = { PathPattern: string; TargetOriginId: string }
-type CfnPolicyStatement = { Sid?: string; Effect: string; Principal?: unknown; Action?: unknown; Resource?: unknown; Condition?: unknown }
-
-function cfnDistribution(template: Template): CfnResource {
-  const resources = template.toJSON().Resources as Record<string, CfnResource>
-  const dist = Object.values(resources).find((r) => r.Type === 'AWS::CloudFront::Distribution')
-  if (!dist) throw new Error('CloudFront::Distribution not found in template')
-  return dist
-}
+import {
+  bucketPolicyStatements,
+  cfnDistribution,
+  crossStackCloudFrontStatements,
+  distributionConfig,
+  findResourceEntryByLogicalIdPrefix,
+  findStatementByAction,
+  isWildcardAllow,
+  referencesLogicalId,
+  statementActions,
+} from './cdk-test-helpers'
+import type { CfnOrigin, CfnPolicyStatement, CfnResource } from './cdk-test-helpers'
 
 function findResourceByLogicalIdPrefix(template: Template, type: string, idPrefix: string): CfnResource {
   return findResourceEntryByLogicalIdPrefix(template, type, idPrefix)[1]
-}
-
-function distributionConfig(dist: CfnResource): Record<string, unknown> {
-  return dist.Properties.DistributionConfig as Record<string, unknown>
 }
 
 function isFunctionUrlOrigin(origin: CfnOrigin): boolean {
@@ -81,11 +76,6 @@ const STATIC_EXTENSIONS = [
   '*.js', '*.css', '*.ico', '*.svg', '*.webp',
   '*.woff2', '*.png', '*.jpg', '*.json', '*.xml', '*.txt', '*.pdf', '*.webmanifest',
 ]
-
-function bucketPolicyStatements(template: Template, bucketIdPrefix: string): CfnPolicyStatement[] {
-  const policy = findResourceByLogicalIdPrefix(template, 'AWS::S3::BucketPolicy', `${bucketIdPrefix}Policy`)
-  return (policy.Properties.PolicyDocument as { Statement: CfnPolicyStatement[] }).Statement
-}
 
 function createTestStack(): { stack: AkliInfrastructureStack; template: Template } {
   const app = new cdk.App()
@@ -221,46 +211,36 @@ describe('AkliInfrastructureStack', () => {
 
   describe('Site bucket exposure and cross-stack CloudFront read access', () => {
     let siteBucketLogicalId: string
+    let siteBucketStatements: CfnPolicyStatement[]
 
     beforeAll(() => {
       [siteBucketLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::S3::Bucket', 'SiteBucket')
+      siteBucketStatements = bucketPolicyStatements(template, 'SiteBucket')
     })
 
     it('exposes the site bucket as a public siteBucket property backed by the SiteBucket resource', () => {
       expect(stack.resolve(stack.siteBucket.bucketName)).toEqual({ Ref: siteBucketLogicalId })
     })
 
-    it('adds exactly one cross-stack statement granting s3:GetObject (not s3:ListBucket) to any CloudFront distribution in this account', () => {
-      const crossStackStatements = bucketPolicyStatements(template, 'SiteBucket').filter(
-        (s) => (s.Condition as { StringLike?: unknown } | undefined)?.StringLike !== undefined,
-      )
+    it('adds exactly one cross-stack CloudFront statement scoped to the site bucket', () => {
+      const crossStackStatements = crossStackCloudFrontStatements(siteBucketStatements)
 
-      expect(crossStackStatements).toEqual([{
-        Effect: 'Allow',
-        Principal: { Service: 'cloudfront.amazonaws.com' },
-        Action: 's3:GetObject',
-        Resource: {
-          'Fn::Join': ['', [{ 'Fn::GetAtt': [siteBucketLogicalId, 'Arn'] }, '/*']],
-        },
-        Condition: {
-          StringLike: { 'aws:SourceArn': 'arn:aws:cloudfront::123456789012:distribution/*' },
-        },
-      }])
+      expect(crossStackStatements).toHaveLength(1)
+      expect(referencesLogicalId(crossStackStatements[0].Resource, siteBucketLogicalId)).toBe(true)
+      expect(crossStackStatements[0].Condition).toEqual({
+        StringLike: { 'aws:SourceArn': 'arn:aws:cloudfront::123456789012:distribution/*' },
+      })
     })
 
     it('no Allow statement in the site bucket policy grants a wildcard principal', () => {
-      const wildcardAllows = bucketPolicyStatements(template, 'SiteBucket').filter((s) => {
-        if (s.Effect !== 'Allow') return false
-        if (s.Principal === '*') return true
-        return (s.Principal as { AWS?: unknown } | undefined)?.AWS === '*'
-      })
+      const wildcardAllows = siteBucketStatements.filter(isWildcardAllow)
 
       expect(wildcardAllows).toEqual([])
     })
 
     it('keeps the original AllowCloudFrontServicePrincipal statement scoped to the site distribution', () => {
       const [distributionLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::CloudFront::Distribution', '')
-      const original = bucketPolicyStatements(template, 'SiteBucket').filter((s) => s.Sid === 'AllowCloudFrontServicePrincipal')
+      const original = siteBucketStatements.filter((s) => s.Sid === 'AllowCloudFrontServicePrincipal')
 
       expect(original).toEqual([{
         Sid: 'AllowCloudFrontServicePrincipal',
@@ -283,9 +263,9 @@ describe('AkliInfrastructureStack', () => {
 
     it('leaves the site distribution origins, cache behaviours and OACs unchanged', () => {
       const config = distributionConfig(cfnDistribution(template))
-      const cacheBehaviors = config.CacheBehaviors as CfnCacheBehavior[]
+      const cacheBehaviors = config.CacheBehaviors ?? []
 
-      expect(config.Origins as CfnOrigin[]).toHaveLength(2)
+      expect(config.Origins).toHaveLength(2)
       expect(cacheBehaviors.map((b) => b.PathPattern)).toEqual([...STATIC_EXTENSIONS, 'images/*'])
 
       template.resourceCountIs('AWS::CloudFront::OriginAccessControl', 2)
@@ -363,10 +343,10 @@ describe('AkliInfrastructureStack', () => {
 
     it('static asset behaviours use S3 origin, not the failover group', () => {
       const config = distributionConfig(cfnDistribution(template))
-      const cacheBehaviors = config.CacheBehaviors as CfnCacheBehavior[]
+      const cacheBehaviors = config.CacheBehaviors ?? []
       const jsAssetBehavior = cacheBehaviors.find((b) => b.PathPattern === '*.js')
 
-      const origins = config.Origins as CfnOrigin[]
+      const origins = config.Origins ?? []
       const s3OriginIds = origins
         .filter((o) => o.S3OriginConfig !== undefined || o.OriginAccessControlId !== undefined)
         .map((o) => o.Id)
@@ -376,7 +356,7 @@ describe('AkliInfrastructureStack', () => {
 
     it('no longer has the old per-app path-routing behaviours removed in #216 (apps/pokedex*, apps/sand-box*)', () => {
       const config = distributionConfig(cfnDistribution(template))
-      const cacheBehaviors = (config.CacheBehaviors ?? []) as CfnCacheBehavior[]
+      const cacheBehaviors = config.CacheBehaviors ?? []
       const pathPatterns = cacheBehaviors.map((b) => b.PathPattern)
 
       expect(pathPatterns).not.toContain('apps/pokedex*')
@@ -471,7 +451,7 @@ describe('AkliInfrastructureStack', () => {
 
   describe('CloudFront Function URL origin', () => {
     it('has the Lambda Function URL as a CloudFront origin with OAC', () => {
-      const origins = distributionConfig(cfnDistribution(template)).Origins as CfnOrigin[]
+      const origins = distributionConfig(cfnDistribution(template)).Origins ?? []
       const lambdaOrigin = origins.find(isFunctionUrlOrigin)
 
       expect(lambdaOrigin).toBeDefined()
@@ -481,8 +461,8 @@ describe('AkliInfrastructureStack', () => {
 
     it('uses the Function URL origin as the primary in the OriginGroup failover', () => {
       const config = distributionConfig(cfnDistribution(template))
-      const origins = config.Origins as CfnOrigin[]
-      const originGroups = config.OriginGroups as { Items: [{ Members: { Items: [{ OriginId: string }, { OriginId: string }] } }] }
+      const origins = config.Origins ?? []
+      const originGroups = config.OriginGroups ?? { Items: [] }
 
       const functionUrlOrigin = origins.find(isFunctionUrlOrigin)
       expect(functionUrlOrigin).toBeDefined()
@@ -596,10 +576,7 @@ describe('AkliInfrastructureStack', () => {
         const [, role] = findResourceEntryByLogicalIdPrefix(template, 'AWS::IAM::Role', roleLogicalIdPrefix)
         const statements = trustPolicyStatements(role)
 
-        const webIdentityStatement = statements.find((s) => {
-          const actions = Array.isArray(s.Action) ? s.Action : [s.Action]
-          return actions.includes('sts:AssumeRoleWithWebIdentity')
-        })
+        const webIdentityStatement = statements.find((s) => statementActions(s).includes('sts:AssumeRoleWithWebIdentity'))
 
         expect(webIdentityStatement).toBeDefined()
         expect(webIdentityStatement?.Effect).toBe('Allow')
@@ -616,16 +593,13 @@ describe('AkliInfrastructureStack', () => {
         const [bucketLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::S3::Bucket', bucketLogicalIdPrefix)
         const statements = policyStatementsForRole(template, roleLogicalId)
 
-        const s3Statement = statements.find((s) => {
-          const actions = (Array.isArray(s.Action) ? s.Action : [s.Action]) as string[]
-          return actions.some((a) => a.startsWith('s3:'))
-        })
+        const s3Statement = statements.find((s) => statementActions(s).some((a) => a.startsWith('s3:')))
 
         expect(s3Statement).toBeDefined()
         expect(s3Statement?.Effect).toBe('Allow')
         expect(referencesLogicalId(s3Statement?.Resource, bucketLogicalId)).toBe(true)
 
-        const actions = (Array.isArray(s3Statement?.Action) ? s3Statement?.Action : [s3Statement?.Action]) as string[]
+        const actions = statementActions(s3Statement ?? {})
         expect(actions).toEqual(
           expect.arrayContaining(['s3:GetObject', 's3:PutObject', 's3:DeleteObject', 's3:ListBucket']),
         )
