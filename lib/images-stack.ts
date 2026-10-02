@@ -25,8 +25,6 @@ export class ImagesStack extends Stack {
 
     const { hostedZone, imagesCertificate, recipeImageBucket, siteBucket } = props
 
-    // See `createCrossStackOacOrigin` in s3-policies.ts for the
-    // cross-stack-reimport / cyclic-dependency rationale.
     const recipeImageOrigin = createCrossStackOacOrigin(
       this,
       'ImagesOAC',

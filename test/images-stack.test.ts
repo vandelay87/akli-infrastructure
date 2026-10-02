@@ -299,16 +299,28 @@ describe('ImagesStack', () => {
     })
   })
 
-  describe('S3 bucket policy on TestSiteBucket (site stack template)', () => {
-    it('adds exactly one cross-stack CloudFront statement scoped to the site bucket', () => {
-      const [bucketLogicalId] = findResourceEntryByLogicalIdPrefix(harness.siteTemplate, 'AWS::S3::Bucket', 'TestSiteBucket')
-      const crossStackStatements = crossStackCloudFrontStatements(bucketPolicyStatements(harness.siteTemplate, 'TestSiteBucket'))
+  describe.each([
+    { bucketIdPrefix: 'TestSiteBucket', ownerTemplate: (h: Harness) => h.siteTemplate },
+    { bucketIdPrefix: 'RecipeImagesBucket', ownerTemplate: (h: Harness) => h.recipeTemplate },
+  ])('cross-stack CloudFront grant on $bucketIdPrefix (owning stack template)', ({ bucketIdPrefix, ownerTemplate }) => {
+    it('adds exactly one cross-stack CloudFront statement scoped to the bucket and pinned to the account', () => {
+      const template = ownerTemplate(harness)
+      const [bucketLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::S3::Bucket', bucketIdPrefix)
+      const crossStackStatements = crossStackCloudFrontStatements(bucketPolicyStatements(template, bucketIdPrefix))
 
       expect(crossStackStatements).toHaveLength(1)
       expect(referencesLogicalId(crossStackStatements[0].Resource, bucketLogicalId)).toBe(true)
       expect(crossStackStatements[0].Condition).toEqual({
         StringLike: { 'aws:SourceArn': 'arn:aws:cloudfront::123456789012:distribution/*' },
       })
+    })
+
+    it('no Allow statement grants Principal: "*"', () => {
+      // Restrict to Effect: Allow — the bucket has a Deny statement for
+      // non-TLS access from Principal { AWS: '*' } as part of enforceSSL,
+      // which is a security control we must preserve, not weaken.
+      const wildcardAllowStatements = bucketPolicyStatements(ownerTemplate(harness), bucketIdPrefix).filter(isWildcardAllow)
+      expect(wildcardAllowStatements).toEqual([])
     })
   })
 
@@ -317,28 +329,6 @@ describe('ImagesStack', () => {
 
     beforeAll(() => {
       statements = bucketPolicyStatements(harness.recipeTemplate, 'RecipeImagesBucket')
-    })
-
-    it('adds exactly one cross-stack CloudFront statement scoped to the recipe-images bucket', () => {
-      // The recipe-images bucket is owned by RecipeStack, so the bucket policy
-      // additions made by ImagesStack land on RecipeStack's synthesised template.
-      const [bucketLogicalId] = findResourceEntryByLogicalIdPrefix(
-        harness.recipeTemplate,
-        'AWS::S3::Bucket',
-        'RecipeImagesBucket',
-      )
-      const crossStackStatements = crossStackCloudFrontStatements(statements)
-
-      expect(crossStackStatements).toHaveLength(1)
-      expect(referencesLogicalId(crossStackStatements[0].Resource, bucketLogicalId)).toBe(true)
-    })
-
-    it('no Allow statement grants Principal: "*"', () => {
-      // Restrict to Effect: Allow — the bucket has a Deny statement for
-      // non-TLS access from Principal { AWS: '*' } as part of enforceSSL,
-      // which is a security control we must preserve, not weaken.
-      const wildcardAllowStatements = statements.filter(isWildcardAllow)
-      expect(wildcardAllowStatements).toEqual([])
     })
 
     it('no statement grants s3:ListBucket to the CloudFront service principal', () => {

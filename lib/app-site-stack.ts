@@ -42,8 +42,6 @@ export class AppSiteStack extends Stack {
     const { appName, recordName, hostedZone, certificate, bucket, deployRole, frameOption } = props
     const domainName = `${recordName}.${hostedZone.zoneName}`
 
-    // See `createCrossStackOacOrigin` in s3-policies.ts for the
-    // cross-stack-reimport / cyclic-dependency rationale.
     const origin = createCrossStackOacOrigin(
       this,
       `${appName}OAC`,
