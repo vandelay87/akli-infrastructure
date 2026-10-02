@@ -260,13 +260,6 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
     const bucketIdPrefix = `Test${testCase.appName}Bucket`
 
     it('adds exactly one cross-stack CloudFront statement scoped to the owning-stack bucket', () => {
-      // The bucket is owned by the fake AkliInfrastructureStack-equivalent
-      // stack, so calling .addToResourcePolicy() on the ORIGINAL bucket prop
-      // (not the fromBucketAttributes(...) imported handle used for the
-      // CloudFront origin) must land the policy on THAT stack's template —
-      // exactly mirroring ImagesStack's re-attachment of RecipeStack's bucket
-      // policy. If AppSiteStack instead calls .addToResourcePolicy() on the
-      // imported handle, this silently no-ops and this assertion fails.
       const [bucketLogicalId] = findResourceEntryByLogicalIdPrefix(
         harness.bucketOwnerTemplate,
         'AWS::S3::Bucket',

@@ -131,6 +131,8 @@ grantCloudFrontReadCrossStack(this.siteBucket, this.account)
 
 **Trade-off (inherited from the existing pattern, not new to this PRD):** the wildcard `StringLike` grant means any CloudFront distribution in this AWS account could read from the site bucket via OAC, not just `ImagesDistribution` — the same trade-off `RecipeStack`'s image bucket and every app-site bucket already accept via this same helper. Mitigations (same as those existing call sites): single-tenant personal AWS account; the bucket retains `BlockPublicAccess.BLOCK_ALL`; the existing site distribution keeps its own tighter, non-cross-stack `aws:SourceArn`-scoped grant via `grantCloudFrontRead`, unaffected by this addition.
 
+**2026-10 note:** [#275](https://github.com/vandelay87/akli-infrastructure/issues/275) later folded the grant into `createCrossStackOacOrigin` and stopped exporting `grantCloudFrontReadCrossStack`, so the site-bucket statement is now added from `ImagesStack` alongside the origin rather than by a separate call in `AkliInfrastructureStack`. The synthesized templates are unchanged: the statement still lands in `AkliInfrastructureStack`'s bucket policy.
+
 ### Dual-OAC on the site bucket
 
 The site bucket already has one OAC granting access to the existing site distribution (created via `S3BucketOrigin.withOriginAccessControl(siteBucket)` inside `AkliInfrastructureStack`, paired with the existing `grantCloudFrontRead` policy statement — see line references above).
