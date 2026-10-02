@@ -7,11 +7,13 @@ import { ImagesStack } from '../lib/images-stack'
 import { RecipeStack } from '../lib/recipe-stack'
 import {
   bucketPolicyStatements,
+  cfnDistribution,
   crossStackCloudFrontStatements,
   distributionConfig,
   findResourceEntryByLogicalIdPrefix,
   isCloudFrontServicePrincipal,
   isWildcardAllow,
+  originForBehavior,
   referencesLogicalId,
   sourceArnCondition,
   statementActions,
@@ -85,28 +87,15 @@ function createHarness(): Harness {
   }
 }
 
-function findDistribution(template: Template, aliasMatcher: string): CfnResource {
-  const resources = template.toJSON().Resources as Record<string, CfnResource>
-  for (const resource of Object.values(resources)) {
-    if (resource.Type !== 'AWS::CloudFront::Distribution') continue
-    if (distributionConfig(resource).Aliases?.includes(aliasMatcher)) {
-      return resource
-    }
-  }
-  throw new Error(`No CloudFront::Distribution with alias ${aliasMatcher} in template`)
-}
-
 function findCacheBehavior(template: Template, pathPattern: string): CfnCacheBehavior {
-  const distribution = findDistribution(template, 'images.akli.dev')
-  const behaviors = distributionConfig(distribution).CacheBehaviors ?? []
+  const behaviors = distributionConfig(cfnDistribution(template)).CacheBehaviors ?? []
   const behavior = behaviors.find((b) => b.PathPattern === pathPattern)
   if (!behavior) throw new Error(`No CacheBehavior with PathPattern ${pathPattern} in template`)
   return behavior
 }
 
 function findOriginForBucket(template: Template, bucketLogicalIdPrefix: string): CfnOrigin {
-  const distribution = findDistribution(template, 'images.akli.dev')
-  const origins = distributionConfig(distribution).Origins ?? []
+  const origins = distributionConfig(cfnDistribution(template)).Origins ?? []
   const origin = origins.find((o) => referencesLogicalId(o.DomainName, bucketLogicalIdPrefix))
   if (!origin) throw new Error(`No origin referencing bucket ${bucketLogicalIdPrefix} in template`)
   return origin
@@ -151,23 +140,19 @@ describe('ImagesStack', () => {
     })
 
     it('configures ViewerCertificate.AcmCertificateArn referencing ImagesCert', () => {
-      const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const viewerCertificate = distributionConfig(distribution).ViewerCertificate
+      const viewerCertificate = distributionConfig(cfnDistribution(harness.imagesTemplate)).ViewerCertificate
       expect(viewerCertificate).toBeDefined()
-      const acmArn = (viewerCertificate as { AcmCertificateArn?: unknown }).AcmCertificateArn
+      const acmArn = viewerCertificate?.AcmCertificateArn
       // Cross-region cert refs come through SSM dynamic references — must exist and be non-null.
       expect(acmArn).toBeDefined()
       // SslSupportMethod is sni-only when an ACM cert is set (vs the default cloudfront cert)
-      expect((viewerCertificate as { SslSupportMethod?: string }).SslSupportMethod).toBe('sni-only')
+      expect(viewerCertificate?.SslSupportMethod).toBe('sni-only')
     })
 
     it('default behaviour has exactly one FunctionAssociation, on viewer-request', () => {
-      const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const defaultBehavior = distributionConfig(distribution).DefaultCacheBehavior as {
-        FunctionAssociations?: Array<{ EventType: string; FunctionARN: unknown }>
-      }
-      expect(defaultBehavior.FunctionAssociations).toHaveLength(1)
-      expect(defaultBehavior.FunctionAssociations?.[0]).toEqual(
+      const defaultBehavior = distributionConfig(cfnDistribution(harness.imagesTemplate)).DefaultCacheBehavior
+      expect(defaultBehavior?.FunctionAssociations).toHaveLength(1)
+      expect(defaultBehavior?.FunctionAssociations?.[0]).toEqual(
         expect.objectContaining({ EventType: 'viewer-request' }),
       )
     })
@@ -186,17 +171,8 @@ describe('ImagesStack', () => {
     })
 
     it('CacheBehaviors array contains exactly two entries: recipes/* and blog/*', () => {
-      const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const cacheBehaviors = distributionConfig(distribution).CacheBehaviors ?? []
-      expect(cacheBehaviors).toHaveLength(2)
-      harness.imagesTemplate.hasResourceProperties('AWS::CloudFront::Distribution', {
-        DistributionConfig: Match.objectLike({
-          CacheBehaviors: Match.arrayWith([
-            Match.objectLike({ PathPattern: 'recipes/*' }),
-            Match.objectLike({ PathPattern: 'blog/*' }),
-          ]),
-        }),
-      })
+      const cacheBehaviors = distributionConfig(cfnDistribution(harness.imagesTemplate)).CacheBehaviors ?? []
+      expect(cacheBehaviors.map((b) => b.PathPattern)).toEqual(['recipes/*', 'blog/*'])
     })
 
     describe.each(['recipes/*', 'blog/*'])('%s behaviour', (pathPattern) => {
@@ -224,10 +200,8 @@ describe('ImagesStack', () => {
     })
 
     it('recipes/* origin uses OAC (OriginAccessControlId is non-null)', () => {
-      const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      const origins = distributionConfig(distribution).Origins ?? []
-      const recipesBehavior = findCacheBehavior(harness.imagesTemplate, 'recipes/*')
-      const recipesOrigin = origins.find((o) => o.Id === recipesBehavior.TargetOriginId)
+      const config = distributionConfig(cfnDistribution(harness.imagesTemplate))
+      const recipesOrigin = originForBehavior(config, findCacheBehavior(harness.imagesTemplate, 'recipes/*'))
       expect(recipesOrigin).toBeDefined()
       expect(recipesOrigin?.OriginAccessControlId).toBeDefined()
       expect(recipesOrigin?.OriginAccessControlId).not.toBeNull()
@@ -243,9 +217,7 @@ describe('ImagesStack', () => {
     })
 
     it('has two origins: the recipe-images bucket and the site bucket regional domain', () => {
-      const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-      expect(distributionConfig(distribution).Origins).toHaveLength(2)
-      findOriginForBucket(harness.imagesTemplate, 'RecipeImagesBucket')
+      expect(distributionConfig(cfnDistribution(harness.imagesTemplate)).Origins).toHaveLength(2)
       const siteOrigin = findOriginForBucket(harness.imagesTemplate, 'TestSiteBucket')
       expect(JSON.stringify(siteOrigin.DomainName)).toMatch(/s3\.eu-west-2\.amazonaws\.com/)
     })
@@ -453,10 +425,7 @@ describe('ImagesStack', () => {
 
       let isCrossRegionToken = false
       try {
-        const distribution = findDistribution(harness.imagesTemplate, 'images.akli.dev')
-        const acmArn = (distributionConfig(distribution).ViewerCertificate as
-          | { AcmCertificateArn?: unknown }
-          | undefined)?.AcmCertificateArn
+        const acmArn = distributionConfig(cfnDistribution(harness.imagesTemplate)).ViewerCertificate?.AcmCertificateArn
         if (acmArn !== undefined && acmArn !== null) {
           const serialised = JSON.stringify(acmArn)
           isCrossRegionToken = typeof acmArn === 'object'
