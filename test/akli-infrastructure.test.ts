@@ -6,7 +6,6 @@ import { AkliInfrastructureStack } from '../lib/akli-infrastructure-stack'
 import {
   bucketPolicyStatements,
   cfnDistribution,
-  crossStackCloudFrontStatements,
   distributionConfig,
   findResourceEntryByLogicalIdPrefix,
   findStatementByAction,
@@ -210,7 +209,7 @@ describe('AkliInfrastructureStack', () => {
     })
   })
 
-  describe('Site bucket exposure and cross-stack CloudFront read access', () => {
+  describe('Site bucket exposure and CloudFront read access', () => {
     let siteBucketLogicalId: string
     let siteBucketStatements: CfnPolicyStatement[]
 
@@ -221,16 +220,6 @@ describe('AkliInfrastructureStack', () => {
 
     it('exposes the site bucket as a public siteBucket property backed by the SiteBucket resource', () => {
       expect(stack.resolve(stack.siteBucket.bucketName)).toEqual({ Ref: siteBucketLogicalId })
-    })
-
-    it('adds exactly one cross-stack CloudFront statement scoped to the site bucket', () => {
-      const crossStackStatements = crossStackCloudFrontStatements(siteBucketStatements)
-
-      expect(crossStackStatements).toHaveLength(1)
-      expect(referencesLogicalId(crossStackStatements[0].Resource, siteBucketLogicalId)).toBe(true)
-      expect(crossStackStatements[0].Condition).toEqual({
-        StringLike: { 'aws:SourceArn': 'arn:aws:cloudfront::123456789012:distribution/*' },
-      })
     })
 
     it('no Allow statement in the site bucket policy grants a wildcard principal', () => {

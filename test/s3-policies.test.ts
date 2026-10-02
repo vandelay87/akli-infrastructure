@@ -3,30 +3,33 @@ import { Template } from 'aws-cdk-lib/assertions'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
 import * as s3 from 'aws-cdk-lib/aws-s3'
-import { grantCloudFrontRead, grantCloudFrontReadCrossStack } from '../lib/s3-policies'
+import { createCrossStackOacOrigin, grantCloudFrontRead } from '../lib/s3-policies'
 import { bucketPolicyStatements, findResourceEntryByLogicalIdPrefix, statementActions } from './cdk-test-helpers'
 import type { CfnPolicyStatement } from './cdk-test-helpers'
 
 const ACCOUNT = '123456789012'
+const ENV = { account: ACCOUNT, region: 'eu-west-2' }
 
 function createStack(): cdk.Stack {
-  return new cdk.Stack(new cdk.App(), 'TestStack', { env: { account: ACCOUNT, region: 'eu-west-2' } })
+  return new cdk.Stack(new cdk.App(), 'TestStack', { env: ENV })
 }
 
-describe('grantCloudFrontReadCrossStack', () => {
+describe('createCrossStackOacOrigin', () => {
   let statements: CfnPolicyStatement[]
   let bucketLogicalId: string
 
   beforeAll(() => {
-    const stack = createStack()
-    const bucket = new s3.Bucket(stack, 'Bucket')
-    grantCloudFrontReadCrossStack(bucket, ACCOUNT)
-    const template = Template.fromStack(stack)
+    const app = new cdk.App()
+    const bucketStack = new cdk.Stack(app, 'BucketStack', { env: ENV })
+    const originStack = new cdk.Stack(app, 'OriginStack', { env: ENV })
+    const bucket = new s3.Bucket(bucketStack, 'Bucket')
+    createCrossStackOacOrigin(originStack, 'OAC', 'ImportedBucket', bucket)
+    const template = Template.fromStack(bucketStack)
     ;[bucketLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::S3::Bucket', 'Bucket')
     statements = bucketPolicyStatements(template, 'Bucket')
   })
 
-  it('adds a single GetObject statement on the bucket objects, scoped to any CloudFront distribution in the account', () => {
+  it('adds a single GetObject statement to the bucket policy in the owning stack, scoped to any CloudFront distribution in the account', () => {
     expect(statements).toEqual([{
       Effect: 'Allow',
       Principal: { Service: 'cloudfront.amazonaws.com' },

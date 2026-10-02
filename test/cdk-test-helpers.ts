@@ -118,7 +118,7 @@ export function sourceArnCondition(statement: CfnPolicyStatement): 'StringEquals
   return undefined
 }
 
-/** Statements added by `grantCloudFrontReadCrossStack`: CloudFront principal with a `StringLike` SourceArn condition. */
+/** Statements added by `createCrossStackOacOrigin`: CloudFront principal with a `StringLike` SourceArn condition. */
 export function crossStackCloudFrontStatements(statements: CfnPolicyStatement[]): CfnPolicyStatement[] {
   return statements.filter((s) => isCloudFrontServicePrincipal(s) && sourceArnCondition(s) === 'StringLike')
 }

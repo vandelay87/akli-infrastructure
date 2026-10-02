@@ -1,4 +1,4 @@
-import { RemovalPolicy } from 'aws-cdk-lib'
+import { RemovalPolicy, Stack } from 'aws-cdk-lib'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
 import * as iam from 'aws-cdk-lib/aws-iam'
@@ -43,9 +43,10 @@ export function grantCloudFrontRead(
  * auto-attached bucket policy. Auto-attach would scope `aws:SourceArn` to the
  * exact `distribution.distributionId`, which would create a cyclic dependency
  * back from the bucket-owning stack to this distribution (the distribution's
- * stack already depends on the bucket via this origin). The bucket policy is
- * granted separately below (`grantCloudFrontReadCrossStack`), scoped to a
- * wildcard SourceArn, to keep that cycle broken.
+ * stack already depends on the bucket via this origin). Instead, the bucket
+ * policy is added on the original `bucket` handle via
+ * `grantCloudFrontReadCrossStack`, scoped to a wildcard SourceArn, to keep
+ * that cycle broken.
  *
  * `oacId` and `importedBucketId` are taken as separate construct IDs (rather
  * than derived from one prefix) because existing callers don't always share
@@ -64,17 +65,18 @@ export function createCrossStackOacOrigin(
     region: bucket.env.region,
   })
 
+  grantCloudFrontReadCrossStack(bucket, Stack.of(scope).account)
+
   return origins.S3BucketOrigin.withOriginAccessControl(importedBucket, { originAccessControl })
 }
 
 /**
- * Grants CloudFront read access for the cross-stack case, where the bucket
- * policy is added from a stack that doesn't own the distribution. Must be
+ * Grants CloudFront read access for `createCrossStackOacOrigin`. Must be
  * called on the original (non-imported) bucket handle — imported handles
  * (`fromBucketAttributes`) silently no-op on `addToResourcePolicy`.
  *
  * Uses a wildcard, account-scoped SourceArn rather than the exact
- * distribution ARN (see `createCrossStackOacOrigin` above for why exact
+ * distribution ARN (see `createCrossStackOacOrigin` for why exact
  * scoping isn't possible here without a stack cycle). The OAC association on
  * the distribution side still gates which CloudFront principals reach the
  * bucket; this wildcard only limits the grant to this account's CloudFront
@@ -85,7 +87,7 @@ export function createCrossStackOacOrigin(
  * `aws:SourceArn`, so `StringEquals` would require an exact match against the
  * literal `…/distribution/*` string and the Allow would never fire.
  */
-export function grantCloudFrontReadCrossStack(bucket: s3.IBucket, account: string): void {
+function grantCloudFrontReadCrossStack(bucket: s3.IBucket, account: string): void {
   bucket.addToResourcePolicy(new iam.PolicyStatement({
     effect: iam.Effect.ALLOW,
     principals: [new iam.ServicePrincipal('cloudfront.amazonaws.com')],

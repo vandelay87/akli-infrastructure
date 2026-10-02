@@ -23,6 +23,7 @@ import type { CfnCacheBehavior, CfnOrigin, CfnPolicyStatement, CfnResource } fro
 interface Harness {
   imagesTemplate: Template
   recipeTemplate: Template
+  siteTemplate: Template
   imagesStack: ImagesStack
 }
 
@@ -83,6 +84,7 @@ function createHarness(): Harness {
   return {
     imagesTemplate: Template.fromStack(imagesStack),
     recipeTemplate: Template.fromStack(recipeStack),
+    siteTemplate: Template.fromStack(siteStack),
     imagesStack,
   }
 }
@@ -293,6 +295,19 @@ describe('ImagesStack', () => {
           }),
           HostedZoneId: Match.anyValue(),
         }),
+      })
+    })
+  })
+
+  describe('S3 bucket policy on TestSiteBucket (site stack template)', () => {
+    it('adds exactly one cross-stack CloudFront statement scoped to the site bucket', () => {
+      const [bucketLogicalId] = findResourceEntryByLogicalIdPrefix(harness.siteTemplate, 'AWS::S3::Bucket', 'TestSiteBucket')
+      const crossStackStatements = crossStackCloudFrontStatements(bucketPolicyStatements(harness.siteTemplate, 'TestSiteBucket'))
+
+      expect(crossStackStatements).toHaveLength(1)
+      expect(referencesLogicalId(crossStackStatements[0].Resource, bucketLogicalId)).toBe(true)
+      expect(crossStackStatements[0].Condition).toEqual({
+        StringLike: { 'aws:SourceArn': 'arn:aws:cloudfront::123456789012:distribution/*' },
       })
     })
   })
