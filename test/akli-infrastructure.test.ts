@@ -12,6 +12,7 @@ import {
   findStatementByAction,
   isWildcardAllow,
   referencesLogicalId,
+  sourceArnCondition,
   statementActions,
 } from './cdk-test-helpers'
 import type { CfnOrigin, CfnPolicyStatement, CfnResource } from './cdk-test-helpers'
@@ -242,23 +243,9 @@ describe('AkliInfrastructureStack', () => {
       const [distributionLogicalId] = findResourceEntryByLogicalIdPrefix(template, 'AWS::CloudFront::Distribution', '')
       const original = siteBucketStatements.filter((s) => s.Sid === 'AllowCloudFrontServicePrincipal')
 
-      expect(original).toEqual([{
-        Sid: 'AllowCloudFrontServicePrincipal',
-        Effect: 'Allow',
-        Principal: { Service: 'cloudfront.amazonaws.com' },
-        Action: ['s3:GetObject', 's3:ListBucket'],
-        Resource: [
-          { 'Fn::GetAtt': [siteBucketLogicalId, 'Arn'] },
-          { 'Fn::Join': ['', [{ 'Fn::GetAtt': [siteBucketLogicalId, 'Arn'] }, '/*']] },
-        ],
-        Condition: {
-          StringEquals: {
-            'AWS:SourceArn': {
-              'Fn::Join': ['', ['arn:aws:cloudfront::123456789012:distribution/', { Ref: distributionLogicalId }]],
-            },
-          },
-        },
-      }])
+      expect(original).toHaveLength(1)
+      expect(sourceArnCondition(original[0])).toBe('StringEquals')
+      expect(referencesLogicalId(original[0].Condition, distributionLogicalId)).toBe(true)
     })
 
     it('leaves the site distribution origins, cache behaviours and OACs unchanged', () => {

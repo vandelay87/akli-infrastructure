@@ -62,12 +62,16 @@ export type CfnCacheBehavior = {
   ResponseHeadersPolicyId?: { Ref?: string }
 }
 
+export type CfnDefaultCacheBehavior = Omit<CfnCacheBehavior, 'PathPattern'> & {
+  FunctionAssociations?: Array<{ EventType: string; FunctionARN: unknown }>
+}
+
 export type CfnDistributionConfig = {
   Aliases?: string[]
   Origins?: CfnOrigin[]
   CacheBehaviors?: CfnCacheBehavior[]
-  DefaultCacheBehavior?: Record<string, unknown>
-  ViewerCertificate?: Record<string, unknown>
+  DefaultCacheBehavior?: CfnDefaultCacheBehavior
+  ViewerCertificate?: { AcmCertificateArn?: unknown; SslSupportMethod?: string; MinimumProtocolVersion?: string }
   CustomErrorResponses?: Array<Record<string, unknown>>
   DefaultRootObject?: string
   OriginGroups?: { Items: Array<{ Members: { Items: Array<{ OriginId: string }> } }> }
@@ -80,6 +84,13 @@ export function cfnDistribution(template: Template): CfnResource {
 
 export function distributionConfig(dist: CfnResource): CfnDistributionConfig {
   return dist.Properties.DistributionConfig as CfnDistributionConfig
+}
+
+export function originForBehavior(
+  config: CfnDistributionConfig,
+  behavior: { TargetOriginId: string } | undefined,
+): CfnOrigin | undefined {
+  return config.Origins?.find((o) => o.Id === behavior?.TargetOriginId)
 }
 
 export function bucketPolicyStatements(template: Template, bucketIdPrefix: string): CfnPolicyStatement[] {
@@ -98,18 +109,16 @@ export function isWildcardAllow(statement: CfnPolicyStatement): boolean {
   return statement.Principal === '*' || statement.Principal?.AWS === '*'
 }
 
-export function sourceArnCondition(
-  statement: CfnPolicyStatement,
-): { operator: 'StringEquals' | 'StringLike'; value: unknown } | undefined {
+export function sourceArnCondition(statement: CfnPolicyStatement): 'StringEquals' | 'StringLike' | undefined {
   for (const operator of ['StringEquals', 'StringLike'] as const) {
     const block = statement.Condition?.[operator]
     const value = block?.['aws:SourceArn'] ?? block?.['AWS:SourceArn']
-    if (value !== undefined && value !== null) return { operator, value }
+    if (value !== undefined && value !== null) return operator
   }
   return undefined
 }
 
 /** Statements added by `grantCloudFrontReadCrossStack`: CloudFront principal with a `StringLike` SourceArn condition. */
 export function crossStackCloudFrontStatements(statements: CfnPolicyStatement[]): CfnPolicyStatement[] {
-  return statements.filter((s) => isCloudFrontServicePrincipal(s) && sourceArnCondition(s)?.operator === 'StringLike')
+  return statements.filter((s) => isCloudFrontServicePrincipal(s) && sourceArnCondition(s) === 'StringLike')
 }

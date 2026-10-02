@@ -14,6 +14,7 @@ import {
   findResourceEntryByLogicalIdPrefix,
   findStatementByAction,
   isCloudFrontServicePrincipal,
+  originForBehavior,
   referencesLogicalId,
   sourceArnCondition,
 } from './cdk-test-helpers'
@@ -137,27 +138,21 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
       const config = distributionConfig(cfnDistribution(harness.siteTemplate))
       const viewerCertificate = config.ViewerCertificate
       expect(viewerCertificate).toBeDefined()
-      const acmArn = (viewerCertificate as { AcmCertificateArn?: unknown }).AcmCertificateArn
+      const acmArn = viewerCertificate?.AcmCertificateArn
       // Cross-region cert refs come through SSM dynamic references — must exist and be non-null.
       expect(acmArn).toBeDefined()
       expect(acmArn).not.toBeNull()
-      expect((viewerCertificate as { SslSupportMethod?: string }).SslSupportMethod).toBe('sni-only')
+      expect(viewerCertificate?.SslSupportMethod).toBe('sni-only')
     })
 
     it('default behaviour sets ViewerProtocolPolicy: redirect-to-https', () => {
       const config = distributionConfig(cfnDistribution(harness.siteTemplate))
-      const defaultBehavior = config.DefaultCacheBehavior as {
-        ViewerProtocolPolicy?: string
-      }
-      expect(defaultBehavior.ViewerProtocolPolicy).toBe('redirect-to-https')
+      expect(config.DefaultCacheBehavior?.ViewerProtocolPolicy).toBe('redirect-to-https')
     })
 
     it('default behaviour ResponseHeadersPolicyId references the shared security headers policy', () => {
       const config = distributionConfig(cfnDistribution(harness.siteTemplate))
-      const defaultBehavior = config.DefaultCacheBehavior as {
-        ResponseHeadersPolicyId?: { Ref?: string } | string
-      }
-      const ref = (defaultBehavior.ResponseHeadersPolicyId as { Ref?: string } | undefined)?.Ref
+      const ref = config.DefaultCacheBehavior?.ResponseHeadersPolicyId?.Ref
       expect(ref).toBeDefined()
       // createSecurityHeadersPolicy gives the policy a stable construct id
       // starting with "SecurityHeaders" (name left unset — see cdn-policies.ts).
@@ -179,11 +174,7 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
 
     it('default behaviour origin uses OAC (OriginAccessControlId is non-null)', () => {
       const config = distributionConfig(cfnDistribution(harness.siteTemplate))
-      const origins = config.Origins ?? []
-      const defaultBehavior = config.DefaultCacheBehavior as {
-        TargetOriginId?: string
-      }
-      const origin = origins.find((o) => o.Id === defaultBehavior.TargetOriginId)
+      const origin = originForBehavior(config, config.DefaultCacheBehavior)
       expect(origin).toBeDefined()
       expect(origin?.OriginAccessControlId).toBeDefined()
       expect(origin?.OriginAccessControlId).not.toBeNull()
@@ -291,7 +282,7 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
 
     it('does not use StringEquals for the aws:SourceArn condition (must be StringLike for the wildcard to work)', () => {
       const offendingStatements = bucketPolicyStatements(harness.bucketOwnerTemplate, bucketIdPrefix).filter(
-        (s) => isCloudFrontServicePrincipal(s) && sourceArnCondition(s)?.operator === 'StringEquals',
+        (s) => isCloudFrontServicePrincipal(s) && sourceArnCondition(s) === 'StringEquals',
       )
       expect(offendingStatements).toEqual([])
     })
@@ -320,9 +311,7 @@ describe.each(CASES)('AppSiteStack ($appName)', (testCase) => {
       let isCrossRegionToken = false
       try {
         const config = distributionConfig(cfnDistribution(harness.siteTemplate))
-        const acmArn = (config.ViewerCertificate as
-          | { AcmCertificateArn?: unknown }
-          | undefined)?.AcmCertificateArn
+        const acmArn = config.ViewerCertificate?.AcmCertificateArn
         if (acmArn !== undefined && acmArn !== null) {
           const serialised = JSON.stringify(acmArn)
           isCrossRegionToken = typeof acmArn === 'object'
