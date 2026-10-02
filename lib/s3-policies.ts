@@ -1,4 +1,4 @@
-import { RemovalPolicy } from 'aws-cdk-lib'
+import { RemovalPolicy, Stack } from 'aws-cdk-lib'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
 import * as iam from 'aws-cdk-lib/aws-iam'
@@ -38,18 +38,16 @@ export function grantCloudFrontRead(
 }
 
 /**
- * Cross-stack OAC origin: re-imports the bucket via `fromBucketAttributes` so
- * `S3BucketOrigin.withOriginAccessControl` treats it as imported and skips its
- * auto-attached bucket policy. Auto-attach would scope `aws:SourceArn` to the
- * exact `distribution.distributionId`, which would create a cyclic dependency
- * back from the bucket-owning stack to this distribution (the distribution's
- * stack already depends on the bucket via this origin). The bucket policy is
- * granted separately below (`grantCloudFrontReadCrossStack`), scoped to a
- * wildcard SourceArn, to keep that cycle broken.
+ * Cross-stack OAC origin. The bucket is re-imported via `fromBucketAttributes`
+ * so `S3BucketOrigin.withOriginAccessControl` skips its auto-attached policy,
+ * whose exact-distribution `aws:SourceArn` would create a stack cycle. The
+ * grant is instead added on the original `bucket` handle (imported handles
+ * silently no-op on `addToResourcePolicy`, so `bucket` must be the owned
+ * bucket), with an account-scoped wildcard SourceArn. `StringLike` is required
+ * for the `*` to match.
  *
- * `oacId` and `importedBucketId` are taken as separate construct IDs (rather
- * than derived from one prefix) because existing callers don't always share
- * a prefix between the two — ImagesStack uses `ImagesOAC` / `ImportedRecipeImageBucket`.
+ * `oacId` and `importedBucketId` are separate because callers don't always
+ * share a prefix (ImagesStack uses `ImagesOAC` / `ImportedRecipeImageBucket`).
  */
 export function createCrossStackOacOrigin(
   scope: Construct,
@@ -64,28 +62,6 @@ export function createCrossStackOacOrigin(
     region: bucket.env.region,
   })
 
-  return origins.S3BucketOrigin.withOriginAccessControl(importedBucket, { originAccessControl })
-}
-
-/**
- * Grants CloudFront read access for the cross-stack case, where the bucket
- * policy is added from a stack that doesn't own the distribution. Must be
- * called on the original (non-imported) bucket handle — imported handles
- * (`fromBucketAttributes`) silently no-op on `addToResourcePolicy`.
- *
- * Uses a wildcard, account-scoped SourceArn rather than the exact
- * distribution ARN (see `createCrossStackOacOrigin` above for why exact
- * scoping isn't possible here without a stack cycle). The OAC association on
- * the distribution side still gates which CloudFront principals reach the
- * bucket; this wildcard only limits the grant to this account's CloudFront
- * distributions.
- *
- * `StringLike` (not `StringEquals`) is required for the trailing `*` to be
- * treated as a wildcard — CloudFront sends the specific distribution ARN as
- * `aws:SourceArn`, so `StringEquals` would require an exact match against the
- * literal `…/distribution/*` string and the Allow would never fire.
- */
-export function grantCloudFrontReadCrossStack(bucket: s3.IBucket, account: string): void {
   bucket.addToResourcePolicy(new iam.PolicyStatement({
     effect: iam.Effect.ALLOW,
     principals: [new iam.ServicePrincipal('cloudfront.amazonaws.com')],
@@ -93,8 +69,10 @@ export function grantCloudFrontReadCrossStack(bucket: s3.IBucket, account: strin
     resources: [`${bucket.bucketArn}/*`],
     conditions: {
       StringLike: {
-        'aws:SourceArn': `arn:aws:cloudfront::${account}:distribution/*`,
+        'aws:SourceArn': `arn:aws:cloudfront::${Stack.of(scope).account}:distribution/*`,
       },
     },
   }))
+
+  return origins.S3BucketOrigin.withOriginAccessControl(importedBucket, { originAccessControl })
 }

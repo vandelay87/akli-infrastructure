@@ -7,7 +7,7 @@ import * as targets from 'aws-cdk-lib/aws-route53-targets'
 import type * as s3 from 'aws-cdk-lib/aws-s3'
 import type { Construct } from 'constructs'
 import { createImageCachePolicy, createSecurityHeadersPolicy } from './cdn-policies'
-import { createCrossStackOacOrigin, grantCloudFrontReadCrossStack } from './s3-policies'
+import { createCrossStackOacOrigin } from './s3-policies'
 import { applyStackTags } from './utils'
 
 const IMAGES_DOMAIN_NAME = 'images.akli.dev'
@@ -25,8 +25,6 @@ export class ImagesStack extends Stack {
 
     const { hostedZone, imagesCertificate, recipeImageBucket, siteBucket } = props
 
-    // See `createCrossStackOacOrigin` in s3-policies.ts for the
-    // cross-stack-reimport / cyclic-dependency rationale.
     const recipeImageOrigin = createCrossStackOacOrigin(
       this,
       'ImagesOAC',
@@ -75,10 +73,6 @@ export class ImagesStack extends Stack {
         'blog/*': { ...imageBehaviorOptions, origin: siteOrigin },
       },
     })
-
-    // See `grantCloudFrontReadCrossStack` in s3-policies.ts for the
-    // wildcard-SourceArn / cyclic-dependency rationale.
-    grantCloudFrontReadCrossStack(recipeImageBucket, this.account)
 
     const aliasTarget = route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution))
 

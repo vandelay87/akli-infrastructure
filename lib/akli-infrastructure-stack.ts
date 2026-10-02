@@ -13,7 +13,7 @@ import type * as s3 from 'aws-cdk-lib/aws-s3'
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager'
 import type { Construct } from 'constructs'
 import { createCachePolicy, createImageCachePolicy, createSecurityHeadersPolicy } from './cdn-policies'
-import { createHardenedAppBucket, grantCloudFrontRead, grantCloudFrontReadCrossStack } from './s3-policies'
+import { createHardenedAppBucket, grantCloudFrontRead } from './s3-policies'
 
 interface AkliInfrastructureStackProps extends StackProps {
   hostedZone: route53.IHostedZone
@@ -178,7 +178,6 @@ export class AkliInfrastructureStack extends Stack {
 
     // Grant CloudFront access to S3 bucket
     grantCloudFrontRead(this.siteBucket, distribution, this.account)
-    grantCloudFrontReadCrossStack(this.siteBucket, this.account)
 
     // DNS A record for apex domain
     new route53.ARecord(this, 'SiteAliasRecord', {
