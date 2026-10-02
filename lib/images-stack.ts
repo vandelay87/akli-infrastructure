@@ -16,13 +16,14 @@ interface ImagesStackProps extends StackProps {
   hostedZone: route53.IHostedZone
   imagesCertificate: certificatemanager.ICertificate
   recipeImageBucket: s3.IBucket
+  siteBucket: s3.IBucket
 }
 
 export class ImagesStack extends Stack {
   constructor(scope: Construct, id: string, props: ImagesStackProps) {
     super(scope, id, props)
 
-    const { hostedZone, imagesCertificate, recipeImageBucket } = props
+    const { hostedZone, imagesCertificate, recipeImageBucket, siteBucket } = props
 
     // See `createCrossStackOacOrigin` in s3-policies.ts for the
     // cross-stack-reimport / cyclic-dependency rationale.
@@ -32,6 +33,7 @@ export class ImagesStack extends Stack {
       'ImportedRecipeImageBucket',
       recipeImageBucket,
     )
+    const siteOrigin = createCrossStackOacOrigin(this, 'SiteImagesOAC', 'ImportedSiteBucket', siteBucket)
 
     const defaultDeny404 = new cloudfront.Function(this, 'DefaultDeny404Function', {
       code: cloudfront.FunctionCode.fromInline(
@@ -43,6 +45,14 @@ export class ImagesStack extends Stack {
 
     const imageCachePolicy = createImageCachePolicy(this)
     const securityHeadersPolicy = createSecurityHeadersPolicy(this)
+
+    const imageBehaviorOptions = {
+      viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+      cachePolicy: imageCachePolicy,
+      responseHeadersPolicy: securityHeadersPolicy,
+      allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+      compress: true,
+    }
 
     const distribution = new cloudfront.Distribution(this, 'ImagesDistribution', {
       domainNames: [IMAGES_DOMAIN_NAME],
@@ -61,14 +71,8 @@ export class ImagesStack extends Stack {
         }],
       },
       additionalBehaviors: {
-        'recipes/*': {
-          origin: recipeImageOrigin,
-          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-          cachePolicy: imageCachePolicy,
-          responseHeadersPolicy: securityHeadersPolicy,
-          allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
-          compress: true,
-        },
+        'recipes/*': { ...imageBehaviorOptions, origin: recipeImageOrigin },
+        'blog/*': { ...imageBehaviorOptions, origin: siteOrigin },
       },
     })
 

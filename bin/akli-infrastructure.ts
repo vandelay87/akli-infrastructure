@@ -83,7 +83,8 @@ new ImagesStack(app, 'ImagesStack', {
   hostedZone: certStack.hostedZone,
   imagesCertificate: certStack.imagesCertificate,
   recipeImageBucket: recipeStack.imageBucket,
-  description: 'CloudFront distribution for images.akli.dev (recipe images origin)',
+  siteBucket: akliInfrastructureStack.siteBucket,
+  description: 'CloudFront distribution for images.akli.dev (recipe and blog images origins)',
   tags: {
     Project: 'akli-images',
     Environment: 'production',

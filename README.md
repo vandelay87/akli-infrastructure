@@ -13,7 +13,7 @@ Ten CDK stacks deployed across regions:
 | PokedexStack | eu-west-2 | DynamoDB table, HTTP API Gateway, Lambda handlers |
 | AuthStack | eu-west-2 | Cognito user pool, HTTP API Gateway, Lambda handlers, JWT authoriser, CloudWatch alarms |
 | RecipeStack | eu-west-2 | DynamoDB table, S3 image bucket, HTTP API Gateway, Lambda handlers (CRUD, image upload, image resizer), JWT authoriser |
-| ImagesStack | eu-west-2 | CloudFront distribution for images.akli.dev, OAC, Route 53 records — serves recipe images from the recipe-images bucket under `recipes/*` |
+| ImagesStack | eu-west-2 | CloudFront distribution for images.akli.dev, OACs, Route 53 records — serves recipe images from the recipe-images bucket under `recipes/*` and blog images from the site bucket (`AkliInfrastructureStack`) under `blog/*` |
 | ApiStack | eu-west-2 | CloudFront distribution for api.akli.dev, routes to Pokedex, Auth, and Recipe APIs |
 | PokedexSiteStack | eu-west-2 | CloudFront distribution for pokedex.akli.dev, OAC, Route 53 records — serves the Pokedex app from its own bucket root (`AppSiteStack`) |
 | SandboxSiteStack | eu-west-2 | CloudFront distribution for sandbox.akli.dev, OAC, Route 53 records — serves the Sand-box app from its own bucket root (`AppSiteStack`) |

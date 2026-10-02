@@ -2,6 +2,8 @@
 
 > **Sibling PRD:** [`personal-website/docs/prds/images-cdn-phase-1.md`](../../../personal-website/docs/prds/images-cdn-phase-1.md) — covers the frontend cutover: `recipeImageUrl` rewrite, call-site updates, and tests in `personal-website`.
 >
+> **Followed by:** [`images-cdn-phase-2.md`](./images-cdn-phase-2.md) — adds the site bucket as a second origin under `blog/*` on the same subdomain.
+>
 > **Epic context:** This is PRD 1 of 4 in the unified images CDN epic.
 > 1. **THIS PRD** — `akli-infrastructure` phase 1: stand up `images.akli.dev` with the recipe-images bucket as the first origin.
 > 2. `personal-website` phase 1 (sibling above) — switch `recipeImageUrl` to use the new subdomain.

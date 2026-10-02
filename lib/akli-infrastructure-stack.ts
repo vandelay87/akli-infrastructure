@@ -13,7 +13,7 @@ import type * as s3 from 'aws-cdk-lib/aws-s3'
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager'
 import type { Construct } from 'constructs'
 import { createCachePolicy, createImageCachePolicy, createSecurityHeadersPolicy } from './cdn-policies'
-import { createHardenedAppBucket, grantCloudFrontRead } from './s3-policies'
+import { createHardenedAppBucket, grantCloudFrontRead, grantCloudFrontReadCrossStack } from './s3-policies'
 
 interface AkliInfrastructureStackProps extends StackProps {
   hostedZone: route53.IHostedZone
@@ -21,6 +21,7 @@ interface AkliInfrastructureStackProps extends StackProps {
 }
 
 export class AkliInfrastructureStack extends Stack {
+  public readonly siteBucket: s3.Bucket
   public readonly pokedexBucket: s3.IBucket
   public readonly sandboxBucket: s3.IBucket
   public readonly storybookBucket: s3.IBucket
@@ -47,7 +48,7 @@ export class AkliInfrastructureStack extends Stack {
       secretStringValue: SecretValue.unsafePlainText(process.env.CDK_DEFAULT_REGION || ''),
     });
 
-    const siteBucket = createHardenedAppBucket(this, 'SiteBucket')
+    this.siteBucket = createHardenedAppBucket(this, 'SiteBucket')
 
     const originAccessControl = new cloudfront.S3OriginAccessControl(this, 'SiteOAC', {
       description: `OAC for ${DOMAIN_NAME}`,
@@ -87,7 +88,7 @@ export class AkliInfrastructureStack extends Stack {
       defaultTtl: Duration.seconds(60),
     })
 
-    const s3Origin = origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
+    const s3Origin = origins.S3BucketOrigin.withOriginAccessControl(this.siteBucket, {
       originAccessControl: originAccessControl,
     })
 
@@ -176,7 +177,8 @@ export class AkliInfrastructureStack extends Stack {
     })
 
     // Grant CloudFront access to S3 bucket
-    grantCloudFrontRead(siteBucket, distribution, this.account)
+    grantCloudFrontRead(this.siteBucket, distribution, this.account)
+    grantCloudFrontReadCrossStack(this.siteBucket, this.account)
 
     // DNS A record for apex domain
     new route53.ARecord(this, 'SiteAliasRecord', {
@@ -243,7 +245,7 @@ export class AkliInfrastructureStack extends Stack {
       assumedBy: githubDeployPrincipal('repo:vandelay87/personal-website:ref:refs/heads/main'),
       description: 'GitHub Actions OIDC deploy role for personal-website',
     })
-    personalWebsiteDeployRole.addToPolicy(s3AppAccessStatement(siteBucket))
+    personalWebsiteDeployRole.addToPolicy(s3AppAccessStatement(this.siteBucket))
     personalWebsiteDeployRole.addToPolicy(cloudfrontInvalidationStatement())
     personalWebsiteDeployRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
@@ -316,7 +318,7 @@ export class AkliInfrastructureStack extends Stack {
     })
 
     new CfnOutput(this, 'BucketName', {
-      value: siteBucket.bucketName,
+      value: this.siteBucket.bucketName,
       description: 'S3 bucket name',
     })
 

@@ -21,7 +21,7 @@ Seven stacks deployed across regions:
 - **PokedexStack** (eu-west-2): DynamoDB table, HTTP API Gateway, Lambda handlers
 - **AuthStack** (eu-west-2): Cognito user pool, HTTP API Gateway, Lambda handlers, JWT authoriser, CloudWatch alarms
 - **RecipeStack** (eu-west-2): DynamoDB table, S3 image bucket, HTTP API Gateway, Lambda handlers (CRUD, image upload, image resizer), JWT authoriser
-- **ImagesStack** (eu-west-2): CloudFront distribution serving `images.akli.dev` with the recipe-images bucket as origin
+- **ImagesStack** (eu-west-2): CloudFront distribution serving `images.akli.dev` from two origins: the recipe-images bucket under `recipes/*` and the site bucket under `blog/*`
 - **ApiStack** (eu-west-2): CloudFront distribution for api.akli.dev, routes to Pokedex, Auth, and Recipe APIs
 
 Cross-region references are enabled so the main stack can consume the certificate.
