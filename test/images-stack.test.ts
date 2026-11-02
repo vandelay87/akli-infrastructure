@@ -174,16 +174,14 @@ describe('ImagesStack', () => {
 
     it('CustomErrorResponses maps origin 403 to viewer 404 via /errors/404.html with a 60s error-caching TTL', () => {
       const errorResponses = distributionConfig(cfnDistribution(harness.imagesTemplate)).CustomErrorResponses ?? []
-      expect(errorResponses).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            ErrorCode: 403,
-            ResponseCode: 404,
-            ErrorCachingMinTTL: 60,
-            ResponsePagePath: '/errors/404.html',
-          }),
-        ]),
-      )
+      expect(errorResponses).toEqual([
+        expect.objectContaining({
+          ErrorCode: 403,
+          ResponseCode: 404,
+          ErrorCachingMinTTL: 60,
+          ResponsePagePath: '/errors/404.html',
+        }),
+      ])
     })
 
     it('errors/* behaviour targets the recipe-images origin and has no function associations', () => {
@@ -193,32 +191,30 @@ describe('ImagesStack', () => {
       expect(errorsBehavior.FunctionAssociations ?? []).toEqual([])
     })
 
-    it('deploys the error page to the recipe-images bucket under the errors prefix', () => {
+    it('deploys the error page to the recipe-images bucket under errors/ with a 60s cache-control', () => {
       const [recipeBucketLogicalId] = findResourceEntryByLogicalIdPrefix(
         harness.recipeTemplate,
         'AWS::S3::Bucket',
         'RecipeImagesBucket',
       )
-      const resources = harness.imagesTemplate.toJSON().Resources as Record<string, CfnResource>
-      const deployments = Object.values(resources).filter((r) => r.Type === 'Custom::CDKBucketDeployment')
-      const errorPageDeployments = deployments.filter((d) => {
-        const props = d.Properties as { DestinationBucketName?: unknown; DestinationBucketKeyPrefix?: unknown }
-        return referencesLogicalId(props.DestinationBucketName, recipeBucketLogicalId)
-          && typeof props.DestinationBucketKeyPrefix === 'string'
-          && /^errors\/?$/.test(props.DestinationBucketKeyPrefix)
-      })
-      expect(errorPageDeployments).toHaveLength(1)
-    })
-
-    it('serves the error page with a 60s cache-control', () => {
-      harness.imagesTemplate.hasResourceProperties('Custom::CDKBucketDeployment', {
-        SystemMetadata: Match.objectLike({ 'cache-control': 'max-age=60' }),
-      })
+      const [, deployment] = findResourceEntryByLogicalIdPrefix(
+        harness.imagesTemplate,
+        'Custom::CDKBucketDeployment',
+        'ErrorPageDeployment',
+      )
+      const props = deployment.Properties as {
+        DestinationBucketName?: unknown
+        DestinationBucketKeyPrefix?: unknown
+        SystemMetadata?: Record<string, string>
+      }
+      expect(referencesLogicalId(props.DestinationBucketName, recipeBucketLogicalId)).toBe(true)
+      expect(props.DestinationBucketKeyPrefix).toBe('errors')
+      expect(props.SystemMetadata).toEqual(expect.objectContaining({ 'cache-control': 'max-age=60' }))
     })
 
     it('CacheBehaviors array contains exactly three entries: recipes/*, blog/* and errors/*', () => {
       const cacheBehaviors = distributionConfig(cfnDistribution(harness.imagesTemplate)).CacheBehaviors ?? []
-      expect(cacheBehaviors.map((b) => b.PathPattern).sort()).toEqual(['blog/*', 'errors/*', 'recipes/*'])
+      expect(cacheBehaviors.map((b) => b.PathPattern)).toEqual(['recipes/*', 'blog/*', 'errors/*'])
     })
 
     describe.each(['recipes/*', 'blog/*', 'errors/*'])('%s behaviour', (pathPattern) => {

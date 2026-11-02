@@ -45,6 +45,7 @@ export class ImagesStack extends Stack {
 
     const imageCachePolicy = createImageCachePolicy(this)
     const securityHeadersPolicy = createSecurityHeadersPolicy(this)
+    const errorPageTtl = Duration.seconds(60)
 
     const imageBehaviorOptions = {
       viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -79,7 +80,7 @@ export class ImagesStack extends Stack {
         httpStatus: 403,
         responseHttpStatus: 404,
         responsePagePath: '/errors/404.html',
-        ttl: Duration.seconds(60),
+        ttl: errorPageTtl,
       }],
     })
 
@@ -87,7 +88,7 @@ export class ImagesStack extends Stack {
       sources: [s3deploy.Source.asset(path.join(__dirname, '..', 'assets', 'errors'))],
       destinationBucket: recipeImageBucket,
       destinationKeyPrefix: 'errors',
-      cacheControl: [s3deploy.CacheControl.maxAge(Duration.seconds(60))],
+      cacheControl: [s3deploy.CacheControl.maxAge(errorPageTtl)],
     })
 
     const aliasTarget = route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution))
