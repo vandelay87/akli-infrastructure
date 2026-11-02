@@ -87,6 +87,7 @@ export class ImagesStack extends Stack {
       sources: [s3deploy.Source.asset(path.join(__dirname, '..', 'assets', 'errors'))],
       destinationBucket: recipeImageBucket,
       destinationKeyPrefix: 'errors',
+      cacheControl: [s3deploy.CacheControl.maxAge(Duration.seconds(60))],
     })
 
     const aliasTarget = route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution))
