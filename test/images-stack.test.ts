@@ -210,12 +210,18 @@ describe('ImagesStack', () => {
       expect(errorPageDeployments).toHaveLength(1)
     })
 
+    it('serves the error page with a 60s cache-control', () => {
+      harness.imagesTemplate.hasResourceProperties('Custom::CDKBucketDeployment', {
+        SystemMetadata: Match.objectLike({ 'cache-control': 'max-age=60' }),
+      })
+    })
+
     it('CacheBehaviors array contains exactly three entries: recipes/*, blog/* and errors/*', () => {
       const cacheBehaviors = distributionConfig(cfnDistribution(harness.imagesTemplate)).CacheBehaviors ?? []
       expect(cacheBehaviors.map((b) => b.PathPattern).sort()).toEqual(['blog/*', 'errors/*', 'recipes/*'])
     })
 
-    describe.each(['recipes/*', 'blog/*'])('%s behaviour', (pathPattern) => {
+    describe.each(['recipes/*', 'blog/*', 'errors/*'])('%s behaviour', (pathPattern) => {
       it('allows only GET and HEAD, compresses, and redirects to HTTPS', () => {
         const behavior = findCacheBehavior(harness.imagesTemplate, pathPattern)
         expect(behavior.AllowedMethods).toEqual(['GET', 'HEAD'])
