@@ -1,10 +1,12 @@
+import * as path from 'path'
 import type { StackProps } from 'aws-cdk-lib'
-import { Stack } from 'aws-cdk-lib'
+import { Duration, Stack } from 'aws-cdk-lib'
 import type * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager'
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as targets from 'aws-cdk-lib/aws-route53-targets'
 import type * as s3 from 'aws-cdk-lib/aws-s3'
+import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment'
 import type { Construct } from 'constructs'
 import { createImageCachePolicy, createSecurityHeadersPolicy } from './cdn-policies'
 import { createCrossStackOacOrigin } from './s3-policies'
@@ -71,7 +73,20 @@ export class ImagesStack extends Stack {
       additionalBehaviors: {
         'recipes/*': { ...imageBehaviorOptions, origin: recipeImageOrigin },
         'blog/*': { ...imageBehaviorOptions, origin: siteOrigin },
+        'errors/*': { ...imageBehaviorOptions, origin: recipeImageOrigin },
       },
+      errorResponses: [{
+        httpStatus: 403,
+        responseHttpStatus: 404,
+        responsePagePath: '/errors/404.html',
+        ttl: Duration.seconds(60),
+      }],
+    })
+
+    new s3deploy.BucketDeployment(this, 'ErrorPageDeployment', {
+      sources: [s3deploy.Source.asset(path.join(__dirname, '..', 'assets', 'errors'))],
+      destinationBucket: recipeImageBucket,
+      destinationKeyPrefix: 'errors',
     })
 
     const aliasTarget = route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution))
