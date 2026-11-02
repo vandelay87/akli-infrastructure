@@ -172,9 +172,47 @@ describe('ImagesStack', () => {
       expect(has404).toBe(true)
     })
 
-    it('CacheBehaviors array contains exactly two entries: recipes/* and blog/*', () => {
+    it('CustomErrorResponses maps origin 403 to viewer 404 via /errors/404.html with a 60s error-caching TTL', () => {
+      const errorResponses = distributionConfig(cfnDistribution(harness.imagesTemplate)).CustomErrorResponses ?? []
+      expect(errorResponses).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            ErrorCode: 403,
+            ResponseCode: 404,
+            ErrorCachingMinTTL: 60,
+            ResponsePagePath: '/errors/404.html',
+          }),
+        ]),
+      )
+    })
+
+    it('errors/* behaviour targets the recipe-images origin and has no function associations', () => {
+      const errorsBehavior = findCacheBehavior(harness.imagesTemplate, 'errors/*')
+      const recipesBehavior = findCacheBehavior(harness.imagesTemplate, 'recipes/*')
+      expect(errorsBehavior.TargetOriginId).toBe(recipesBehavior.TargetOriginId)
+      expect(errorsBehavior.FunctionAssociations ?? []).toEqual([])
+    })
+
+    it('deploys the error page to the recipe-images bucket under the errors prefix', () => {
+      const [recipeBucketLogicalId] = findResourceEntryByLogicalIdPrefix(
+        harness.recipeTemplate,
+        'AWS::S3::Bucket',
+        'RecipeImagesBucket',
+      )
+      const resources = harness.imagesTemplate.toJSON().Resources as Record<string, CfnResource>
+      const deployments = Object.values(resources).filter((r) => r.Type === 'Custom::CDKBucketDeployment')
+      const errorPageDeployments = deployments.filter((d) => {
+        const props = d.Properties as { DestinationBucketName?: unknown; DestinationBucketKeyPrefix?: unknown }
+        return referencesLogicalId(props.DestinationBucketName, recipeBucketLogicalId)
+          && typeof props.DestinationBucketKeyPrefix === 'string'
+          && /^errors\/?$/.test(props.DestinationBucketKeyPrefix)
+      })
+      expect(errorPageDeployments).toHaveLength(1)
+    })
+
+    it('CacheBehaviors array contains exactly three entries: recipes/*, blog/* and errors/*', () => {
       const cacheBehaviors = distributionConfig(cfnDistribution(harness.imagesTemplate)).CacheBehaviors ?? []
-      expect(cacheBehaviors.map((b) => b.PathPattern)).toEqual(['recipes/*', 'blog/*'])
+      expect(cacheBehaviors.map((b) => b.PathPattern).sort()).toEqual(['blog/*', 'errors/*', 'recipes/*'])
     })
 
     describe.each(['recipes/*', 'blog/*'])('%s behaviour', (pathPattern) => {
@@ -315,6 +353,13 @@ describe('ImagesStack', () => {
       })
     })
 
+    it('no statement grants s3:ListBucket to the CloudFront service principal', () => {
+      const offendingStatements = bucketPolicyStatements(ownerTemplate(harness), bucketIdPrefix).filter(
+        (s) => isCloudFrontServicePrincipal(s) && statementActions(s).includes('s3:ListBucket'),
+      )
+      expect(offendingStatements).toEqual([])
+    })
+
     it('no Allow statement grants Principal: "*"', () => {
       // Restrict to Effect: Allow — the bucket has a Deny statement for
       // non-TLS access from Principal { AWS: '*' } as part of enforceSSL,
@@ -329,13 +374,6 @@ describe('ImagesStack', () => {
 
     beforeAll(() => {
       statements = bucketPolicyStatements(harness.recipeTemplate, 'RecipeImagesBucket')
-    })
-
-    it('no statement grants s3:ListBucket to the CloudFront service principal', () => {
-      const offendingStatements = statements.filter(
-        (s) => isCloudFrontServicePrincipal(s) && statementActions(s).includes('s3:ListBucket'),
-      )
-      expect(offendingStatements).toEqual([])
     })
 
     it('every statement granting the CloudFront principal includes an aws:SourceArn condition', () => {
