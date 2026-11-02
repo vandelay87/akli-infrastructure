@@ -172,12 +172,52 @@ describe('ImagesStack', () => {
       expect(has404).toBe(true)
     })
 
-    it('CacheBehaviors array contains exactly two entries: recipes/* and blog/*', () => {
-      const cacheBehaviors = distributionConfig(cfnDistribution(harness.imagesTemplate)).CacheBehaviors ?? []
-      expect(cacheBehaviors.map((b) => b.PathPattern)).toEqual(['recipes/*', 'blog/*'])
+    it('CustomErrorResponses maps origin 403 to viewer 404 via /errors/404.html with a 60s error-caching TTL', () => {
+      const errorResponses = distributionConfig(cfnDistribution(harness.imagesTemplate)).CustomErrorResponses ?? []
+      expect(errorResponses).toEqual([
+        expect.objectContaining({
+          ErrorCode: 403,
+          ResponseCode: 404,
+          ErrorCachingMinTTL: 60,
+          ResponsePagePath: '/errors/404.html',
+        }),
+      ])
     })
 
-    describe.each(['recipes/*', 'blog/*'])('%s behaviour', (pathPattern) => {
+    it('errors/* behaviour targets the recipe-images origin and has no function associations', () => {
+      const errorsBehavior = findCacheBehavior(harness.imagesTemplate, 'errors/*')
+      const recipesBehavior = findCacheBehavior(harness.imagesTemplate, 'recipes/*')
+      expect(errorsBehavior.TargetOriginId).toBe(recipesBehavior.TargetOriginId)
+      expect(errorsBehavior.FunctionAssociations ?? []).toEqual([])
+    })
+
+    it('deploys the error page to the recipe-images bucket under errors/ with a 60s cache-control', () => {
+      const [recipeBucketLogicalId] = findResourceEntryByLogicalIdPrefix(
+        harness.recipeTemplate,
+        'AWS::S3::Bucket',
+        'RecipeImagesBucket',
+      )
+      const [, deployment] = findResourceEntryByLogicalIdPrefix(
+        harness.imagesTemplate,
+        'Custom::CDKBucketDeployment',
+        'ErrorPageDeployment',
+      )
+      const props = deployment.Properties as {
+        DestinationBucketName?: unknown
+        DestinationBucketKeyPrefix?: unknown
+        SystemMetadata?: Record<string, string>
+      }
+      expect(referencesLogicalId(props.DestinationBucketName, recipeBucketLogicalId)).toBe(true)
+      expect(props.DestinationBucketKeyPrefix).toBe('errors')
+      expect(props.SystemMetadata).toEqual(expect.objectContaining({ 'cache-control': 'max-age=60' }))
+    })
+
+    it('CacheBehaviors array contains exactly three entries: recipes/*, blog/* and errors/*', () => {
+      const cacheBehaviors = distributionConfig(cfnDistribution(harness.imagesTemplate)).CacheBehaviors ?? []
+      expect(cacheBehaviors.map((b) => b.PathPattern)).toEqual(['recipes/*', 'blog/*', 'errors/*'])
+    })
+
+    describe.each(['recipes/*', 'blog/*', 'errors/*'])('%s behaviour', (pathPattern) => {
       it('allows only GET and HEAD, compresses, and redirects to HTTPS', () => {
         const behavior = findCacheBehavior(harness.imagesTemplate, pathPattern)
         expect(behavior.AllowedMethods).toEqual(['GET', 'HEAD'])
@@ -315,6 +355,13 @@ describe('ImagesStack', () => {
       })
     })
 
+    it('no statement grants s3:ListBucket to the CloudFront service principal', () => {
+      const offendingStatements = bucketPolicyStatements(ownerTemplate(harness), bucketIdPrefix).filter(
+        (s) => isCloudFrontServicePrincipal(s) && statementActions(s).includes('s3:ListBucket'),
+      )
+      expect(offendingStatements).toEqual([])
+    })
+
     it('no Allow statement grants Principal: "*"', () => {
       // Restrict to Effect: Allow — the bucket has a Deny statement for
       // non-TLS access from Principal { AWS: '*' } as part of enforceSSL,
@@ -329,13 +376,6 @@ describe('ImagesStack', () => {
 
     beforeAll(() => {
       statements = bucketPolicyStatements(harness.recipeTemplate, 'RecipeImagesBucket')
-    })
-
-    it('no statement grants s3:ListBucket to the CloudFront service principal', () => {
-      const offendingStatements = statements.filter(
-        (s) => isCloudFrontServicePrincipal(s) && statementActions(s).includes('s3:ListBucket'),
-      )
-      expect(offendingStatements).toEqual([])
     })
 
     it('every statement granting the CloudFront principal includes an aws:SourceArn condition', () => {

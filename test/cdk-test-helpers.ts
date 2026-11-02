@@ -60,11 +60,10 @@ export type CfnCacheBehavior = {
   ViewerProtocolPolicy?: string
   CachePolicyId?: { Ref?: string }
   ResponseHeadersPolicyId?: { Ref?: string }
-}
-
-export type CfnDefaultCacheBehavior = Omit<CfnCacheBehavior, 'PathPattern'> & {
   FunctionAssociations?: Array<{ EventType: string; FunctionARN: unknown }>
 }
+
+export type CfnDefaultCacheBehavior = Omit<CfnCacheBehavior, 'PathPattern'>
 
 export type CfnDistributionConfig = {
   Aliases?: string[]
